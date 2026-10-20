@@ -23,6 +23,9 @@ jobs:
     permissions:
       contents: write
       packages: write
+    outputs:
+      # The version when this push released one, the full commit sha otherwise.
+      tag: ${{ steps.release.outputs.released == 'true' && steps.release.outputs.version || github.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -68,3 +71,38 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Points homelab-workloads' prod values at the image just pushed. Argo CD rolls it out.
+  # Pushes as the kocean33-homelab-ci GitHub App, whose token is scoped here to homelab-workloads.
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: deploy-prod
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.HOMELAB_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMELAB_APP_PRIVATE_KEY }}
+          repositories: homelab-workloads
+
+      - uses: actions/checkout@v7
+        with:
+          repository: KOCEAN33/homelab-workloads
+          token: ${{ steps.app.outputs.token }}
+
+      - name: Set image.tag
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          file=savetube/envs/prod.yaml
+          sed -i -E "s/^(  tag: ).*/\1${TAG}/" "$file"
+          grep -q "^  tag: ${TAG}$" "$file"
+          git diff --quiet && exit 0
+          git config user.name "$BOT"
+          git config user.email "$(gh api "/users/${BOT}" --jq .id)+${BOT}@users.noreply.github.com"
+          git commit -am "chore(savetube): deploy ${TAG::12}"
+          git push

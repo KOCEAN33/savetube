@@ -7,7 +7,9 @@ Follow `docs/plan.md` § Build order. savetube runs in production on the homelab
 ## Current progress
 
 - The repository is public under MIT. A gitleaks pass over the full history found no secret before the switch.
-- Branches: work lands on `develop`, the default branch. A push to main is a release.
+- Branches: work lands on `develop`, the default branch. main changes only through a merged pull request: the ruleset `main` allows no direct push, no force push, no bypass, and the merge-commit method only. A merge to main is a release and a deploy.
+- Deploy: the `deploy` job in `image.yml` writes the new image tag into homelab-workloads `savetube/envs/prod.yaml` `image.tag` and pushes as the `kocean33-homelab-ci` App. Argo CD rolls it out. The job reads the variable `HOMELAB_APP_CLIENT_ID` and the secret `HOMELAB_APP_PRIVATE_KEY`, PKCS#8 from the 1Password item `kocean33-homelab-ci` in the Private vault. The `proxmox-talos-lab-op` service account cannot read that vault. The key field is labeled `개인 키`, so `op read` takes its field id `private_key`.
+- actionlint reports `client-id` on `create-github-app-token@v3` as unknown. Its bundled metadata is stale, and v3 accepts the input.
 - Build: `.github/workflows/image.yml` runs on a GitHub-hosted runner on every push to main. python-semantic-release (`releaserc.toml`) first tags the next `vX.Y.Z` and creates a GitHub Release. The image gets `X.Y.Z`, `X.Y` and the full commit sha, or only the sha when no commit bumps the version. The GHCR package is public, and the node pulls it through Harbor's `ghcr.io` pull-through cache with no pull secret.
 - The app does not know its own version. The image carries it only as the OCI label `org.opencontainers.image.version`.
 - Deploy: homelab-workloads `savetube/` holds the ApplicationSet, `envs/default.yaml`, `envs/prod.yaml`, and `manifests/prod/` with the ExternalSecrets `savetube-db` and `savetube-session` plus the static PV and PVC `savetube-archive`. Application and namespace are `savetube-prod`, and the release name is `savetube`.
@@ -41,7 +43,6 @@ Follow `docs/plan.md` § Build order. savetube runs in production on the homelab
 - The frontend bundle is 930 kB, and `frontend/README.md` is still the Vite template.
 - The tests in `test_layout`, `test_ytdl`, `test_auth`, `test_k8s` and `test_db` were written beside the code, not test-first. A mutation pass would show what they miss.
 - `docs/plan.md` § Homelab deployment was meant to move to homelab-workloads before the repository went public. It holds hostnames and infrastructure layout, no secrets.
-- No deploy job updates `envs/prod.yaml`. A new image needs a hand edit of `image.tag`. lrr-reader's deploy job is the pattern, and it needs the `kocean33-homelab-ci` App key as a savetube repository secret.
 
 ## Next steps
 
