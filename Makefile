@@ -10,8 +10,8 @@ check:
 	uv run pytest -q
 
 lint:
-	uv run ruff check src tests
-	uv run ruff format --check src tests
+	uv run ruff check savetube tests
+	uv run ruff format --check savetube tests
 
 web:
 	uv run savetube web

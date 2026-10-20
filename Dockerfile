@@ -23,7 +23,7 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 COPY pyproject.toml uv.lock LICENSE ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-install-project
-COPY src ./src
+COPY savetube ./savetube
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-dev --no-editable
 COPY --from=frontend /src/dist ./static
 
