@@ -6,7 +6,7 @@ Take the savetube scaffold to a deployable state on the homelab cluster, then fo
 
 ## Current progress
 
-- This repository holds the whole scaffold. Whether it is committed and pushed is the first thing to check (`git status`, `git log origin/main..`).
+- This repository holds the whole scaffold, pushed to origin main.
   - Backend `src/savetube/`: config, OIDC login (`web/auth.py`), read API (`web/api.py`), schema plus alembic `migrations/versions/0001_initial_schema.py`, storage pipeline (`pipeline.py`, `jobs.py`), procrastinate queue (`queue.py`), recorder Job from the CronJob template (`k8s.py`), CLI (`cli.py`).
   - Frontend `frontend/`: Vite, React and shadcn `dashboard-01`, read-only pages.
   - Helm chart `charts/savetube/`. `tests/test_chart.py` holds 10 tests, written test-first from three anchors the user confirmed. `helm lint` passes and `kubectl apply --dry-run=server` accepts the render.
@@ -39,15 +39,14 @@ Take the savetube scaffold to a deployable state on the homelab cluster, then fo
 
 ## Next steps
 
-1. Commit this repository through git-committer, and push only with the user's OK. The Argo CD Application reads the chart from GitHub.
-2. Create `homelab-workloads/savetube/appset.yaml` and `savetube/envs/prod.yaml`. The user approved this.
+1. Create `homelab-workloads/savetube/appset.yaml` and `savetube/envs/prod.yaml`. The user approved this.
    - Copy the Helm shape in homelab-workloads `README.md`, plus `lrr-reader/appset.yaml`.
    - The Application is multi-source: the chart from `git@github.com:KOCEAN33/savetube.git`, path `charts/savetube`, and the values through a `$values` ref.
    - It needs the ExternalSecrets `savetube-db` (key `url`, password escaped with `urlquery`), `savetube-session` and `harbor-pull`.
    - Check that Argo CD holds credentials for the savetube repository.
    - Expect ImagePullBackOff until a Harbor image exists, and Pending until the `tank/youtube` PV exists.
-3. The production role and Database in homelab-platform `manifest/postgres/` need the user's explicit permission before the commit (homelab-platform `CLAUDE.md`).
-4. Continue with `docs/plan.md` § Build order.
+2. The production role and Database in homelab-platform `manifest/postgres/` need the user's explicit permission before the commit (homelab-platform `CLAUDE.md`).
+3. Continue with `docs/plan.md` § Build order.
 
 ## Suggested skills
 
