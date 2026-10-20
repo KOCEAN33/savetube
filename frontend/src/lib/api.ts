@@ -38,13 +38,23 @@ export interface Channel {
   dir_name: string
   video_count: number
   bytes: number
+  include_words: string[]
+  exclude_words: string[]
 }
 
 export interface Source {
   id: number
   url: string
-  kind: "tab" | "playlist"
+  kind: "tab" | "playlist" | "playlists"
   channel_id: string | null
+  parent_id: number | null
+  // Child playlist URLs a `playlists` parent must not re-add. Empty on any other source.
+  ignored_urls: string[]
+  // Off: polls list the source but download nothing.
+  archiving: boolean
+  include_words: string[]
+  exclude_words: string[]
+  other_channels: boolean
   enabled: boolean
   poll_interval_minutes: number
   rule_id: number
@@ -60,7 +70,6 @@ export interface Rule {
   format: string
   use_cookies: boolean
   watch_lives: boolean
-  max_concurrent: number
 }
 
 export interface Job {
@@ -74,6 +83,8 @@ export interface Job {
   created_at: string
   started_at: string | null
   finished_at: string | null
+  // A queued archive job waiting for the download window or a free slot.
+  deferred_until: string | null
 }
 
 export interface Video {
@@ -172,18 +183,67 @@ function get<T>(path: string, query: Query = {}): Promise<T> {
   return request<T>("GET", qs ? `${path}?${qs}` : path)
 }
 
-export type Tab = "videos" | "shorts" | "streams"
+export type Tab = "videos" | "shorts" | "streams" | "playlists"
 
 export interface SourceIn {
   url: string
   tabs: Tab[]
   rule_id: number
   poll_interval_minutes: number
+  include_words: string[]
+  exclude_words: string[]
+  other_channels: boolean
 }
 
-export type SourcePatch = Partial<Pick<Source, "enabled" | "rule_id" | "poll_interval_minutes">>
+export type SourcePatch = Partial<
+  Pick<
+    Source,
+    | "enabled"
+    | "rule_id"
+    | "poll_interval_minutes"
+    | "include_words"
+    | "exclude_words"
+    | "other_channels"
+    | "ignored_urls"
+    | "archiving"
+  >
+>
+
+export interface ChannelPlaylist {
+  id: string
+  title: string
+  url: string
+  source_id: number | null
+}
+
+export interface TitleWord {
+  word: string
+  count: number
+}
+
+export interface TitleWords {
+  include_words: string[]
+  exclude_words: string[]
+}
+
+export interface TitlePreview {
+  total: number
+  kept: number
+  titles: { video_id: string; title: string; kept: boolean }[]
+}
 
 export type RuleIn = Omit<Rule, "id">
+
+export interface DownloadSettingsIn {
+  max_concurrent: number
+  rate_limit_bytes: number | null
+  window_start: string | null
+  window_end: string | null
+}
+
+export interface DownloadSettings extends DownloadSettingsIn {
+  timezone: string
+}
 
 export const mutations = {
   createSources: (body: SourceIn) => request<Source[]>("POST", "/api/sources", body),
@@ -191,6 +251,11 @@ export const mutations = {
     request<Source>("PATCH", `/api/sources/${id}`, body),
   pollSource: (id: number) => request<Source>("POST", `/api/sources/${id}/poll`),
   deleteSource: (id: number) => request<void>("DELETE", `/api/sources/${id}`),
+  updateChannel: (id: string, body: Partial<TitleWords>) =>
+    request<Channel>("PATCH", `/api/channels/${encodeURIComponent(id)}`, body),
+  replaceDownloadSettings: (body: DownloadSettingsIn) =>
+    request<DownloadSettings>("PUT", "/api/download-settings", body),
+  replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
   createRule: (body: RuleIn) => request<Rule>("POST", "/api/rules", body),
   replaceRule: (id: number, body: RuleIn) => request<Rule>("PUT", `/api/rules/${id}`, body),
   deleteRule: (id: number) => request<void>("DELETE", `/api/rules/${id}`),
@@ -203,6 +268,15 @@ export const api = {
   channels: () => get<Channel[]>("/api/channels"),
   sources: () => get<Source[]>("/api/sources"),
   rules: () => get<Rule[]>("/api/rules"),
+  globalWords: () => get<TitleWords>("/api/words"),
+  downloadSettings: () => get<DownloadSettings>("/api/download-settings"),
+  // A POST that writes nothing: it lists live through yt-dlp, which can answer 502 or 504.
+  channelPlaylists: (url: string) =>
+    request<ChannelPlaylist[]>("POST", "/api/channel-playlists", { url }),
+  channelWords: (id: string) => get<TitleWord[]>(`/api/channels/${encodeURIComponent(id)}/words`),
+  // A POST that writes nothing: the word lists ride in the body.
+  titlePreview: (id: number, body: TitleWords) =>
+    request<TitlePreview>("POST", `/api/sources/${id}/title-preview`, body),
   jobs: (query: { kind?: JobKind; state?: JobState; limit?: number }) =>
     get<Job[]>("/api/jobs", query),
   videos: (query: {

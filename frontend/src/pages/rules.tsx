@@ -35,7 +35,6 @@ const EMPTY: RuleIn = {
   format: "bv*+ba/b",
   use_cookies: false,
   watch_lives: false,
-  max_concurrent: 1,
 }
 
 function yesNo(value: boolean): string {
@@ -163,14 +162,13 @@ export function RulesPage() {
                   <TableHead>Format</TableHead>
                   <TableHead>Cookies</TableHead>
                   <TableHead>Watch lives</TableHead>
-                  <TableHead className="text-right">Max concurrent</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {rows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center text-muted-foreground">
+                    <TableCell colSpan={7} className="text-center text-muted-foreground">
                       No rules yet. A source needs one.
                     </TableCell>
                   </TableRow>
@@ -189,7 +187,6 @@ export function RulesPage() {
                     <TableCell className="font-mono text-xs">{r.format}</TableCell>
                     <TableCell>{yesNo(r.use_cookies)}</TableCell>
                     <TableCell>{yesNo(r.watch_lives)}</TableCell>
-                    <TableCell className="text-right">{r.max_concurrent}</TableCell>
                     <TableCell className="text-right whitespace-nowrap">
                       <Button
                         variant="ghost"
