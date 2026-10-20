@@ -184,9 +184,9 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 
 This section moves to homelab-workloads before the repository goes public.
 
-- Build: the in-cluster ARC runner pushes the image to a new Harbor project, like lrr-reader.
-- Deployment: the Helm chart `charts/savetube/` in this repository, because the scheduler depends on names the chart renders: the CronJob, the `recorder` container, the env variables. `homelab-workloads/savetube/` holds only `appset.yaml` and `envs/<env>.yaml`, and the Application is multi-source: the chart from this repository, the values through a `$values` ref to homelab-workloads.
-- The chart takes every secret as an existing Secret: the database URL, the session key, the optional OIDC client secret, the cookie file. The ExternalSecrets live in homelab-workloads.
+- Build: a GitHub-hosted runner pushes the image to `ghcr.io/kocean33/savetube`, public like the repository. The lab dropped self-hosted runners, and GHCR needs no secret beyond `GITHUB_TOKEN`. The node pulls it through Harbor's `ghcr.io` pull-through cache, so no pull secret is needed.
+- Deployment: the Helm chart `charts/savetube/` in this repository, because the scheduler depends on names the chart renders: the CronJob, the `recorder` container, the env variables. The Application is multi-source: the chart from this repository over HTTPS, the values from `homelab-workloads/savetube/envs/`, and the ExternalSecrets and static PV from `homelab-workloads/savetube/manifests/<env>/`. The release name is `savetube`, and the namespace carries the environment.
+- The chart takes every secret as an existing Secret: the database URL, the session key, the optional OIDC client secret, the cookie file.
 - `savetube-db` in the app namespace holds the whole libpq URL under `url`, templated from the vault password. A base64 password holds `/` and `+`, so the template escapes it with `urlquery`, or the URL splits at the `/`.
 - Database: a `Database` object, a `managed.roles` entry, and ExternalSecret `savetube-db` on the shared Cluster (homelab-platform `docs/specs/10-postgres.md`). Development and the DB-gated tests use `pg-dev.lab.hiriri.com:5432` on `postgres-dev`, role `savetube` with CREATEDB, as saveweb does (`.env.sample`). The tests create and drop their own database, `savetube_test`.
 - UI: `savetube.lab.hiriri.com` through the Gateway, tailnet and LAN only. Never Cloudflare Tunnel, because its terms forbid proxying video (proxmox-talos-lab `docs/specs/50-applications.md`).
@@ -209,7 +209,7 @@ This section moves to homelab-workloads before the repository goes public.
 ## Build order
 
 1. Check `tank` free space and decide the dataset's snapshot template.
-2. Create the Harbor project and the ARC build. The image builds and downloads a public video under `compose.yaml` on OrbStack. Prove an image with Python, Deno, ffmpeg, yt-dlp and the bgutil plugin runs one from-start capture of a public live in the cluster through `YoutubeDL`.
+2. Push the first image to GHCR. The image builds and downloads a public video under `compose.yaml` on OrbStack. Prove an image with Python, Deno, ffmpeg, yt-dlp and the bgutil plugin runs one from-start capture of a public live in the cluster through `YoutubeDL`.
 3. Prove a members-only download and a members-only live with the chosen account's cookies.
 4. Build the recorder Job and the scheduler's live detection, with Discord notifications. Live recording is the requirement nothing else covers.
 5. Build the archive worker, the queue, and the tree layout.
