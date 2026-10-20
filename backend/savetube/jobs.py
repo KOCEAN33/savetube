@@ -28,6 +28,12 @@ Runner = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 # Puts a new queue job for the `job` row, due at the given time, and returns
 # the queue's job id.
 Defer = Callable[[int, datetime], Awaitable[int]]
+# Queue jobs left running by a dead worker, as (queue job id, `job` id).
+Stalled = Callable[[], Awaitable[list[tuple[int, int]]]]
+# Ends a queue job as failed, so no worker takes it again.
+Finish = Callable[[int], Awaitable[None]]
+
+STALLED_LOG = "worker stopped during the download"
 
 
 class DownloadFailed(Exception):
@@ -94,6 +100,26 @@ async def _defer(
             job.finished_at = datetime.now(UTC)
             job.log_tail = f"defer failed: {type(e).__name__}: {e}"[-LOG_TAIL_CHARS:]
         await session.commit()
+
+
+async def reclaim_stalled(
+    sessionmaker: async_sessionmaker, settings: Settings, *, stalled: Stalled, finish: Finish
+) -> None:
+    """Fail the jobs of a dead worker. Their rows would stay running and hold
+    download slots forever. The next poll queues each video again."""
+    for queue_job_id, job_id in await stalled():
+        async with sessionmaker() as session:
+            job = await session.get(Job, job_id)
+            if job is not None and job.state in (JobState.QUEUED, JobState.RUNNING):
+                log.warning("job %s: %s", job_id, STALLED_LOG)
+                job.state = JobState.FAILED
+                job.finished_at = datetime.now(UTC)
+                job.log_tail = STALLED_LOG
+                if job.video_id is not None:
+                    await _set_video_state(session, job.video_id, VideoState.FAILED)
+                await session.commit()
+        shutil.rmtree(settings.incoming_root / str(job_id), ignore_errors=True)
+        await finish(queue_job_id)
 
 
 async def run(

@@ -144,6 +144,8 @@ class Source(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     url: Mapped[str] = mapped_column(unique=True)
+    # A playlist's title from YouTube. Null for a tab or a channel's playlists.
+    title: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[SourceKind] = mapped_column(_enum(SourceKind))
     # Null for a playlist that spans channels.
     channel_id: Mapped[str | None] = mapped_column(ForeignKey("channel.id"))
@@ -157,8 +159,6 @@ class Source(Base):
     other_channels: Mapped[bool] = mapped_column(default=False, server_default=false())
     # The `playlists` source that created this playlist source.
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("source.id", ondelete="CASCADE"))
-    # On a `playlists` source: child URLs the user deleted, never created again.
-    ignored_urls: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
     # Off: polls record the listing but create no videos and no archive jobs.
     # The server default is on for rows from before the flag existed.
     archiving: Mapped[bool] = mapped_column(default=False, server_default=true())

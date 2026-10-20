@@ -23,19 +23,27 @@ def _web(args: argparse.Namespace) -> None:
 
 
 def _scheduler(args: argparse.Namespace) -> None:
-    from savetube import scheduler
+    from savetube import health, scheduler
 
-    start_http_server(get_settings().metrics_port)
-    asyncio.run(scheduler.run(get_settings()))
+    settings = get_settings()
+    start_http_server(settings.metrics_port)
+
+    async def main() -> None:
+        async with await health.serve(settings.health_port):
+            await scheduler.run(settings)
+
+    asyncio.run(main())
 
 
 def _worker(args: argparse.Namespace) -> None:
+    from savetube import health
     from savetube.queue import ARCHIVE_QUEUE, app
 
-    start_http_server(get_settings().metrics_port)
+    settings = get_settings()
+    start_http_server(settings.metrics_port)
 
     async def main() -> None:
-        async with app.open_async():
+        async with await health.serve(settings.health_port), app.open_async():
             # PgBouncer in transaction mode cannot hold a LISTEN, so the worker polls.
             await app.run_worker_async(
                 queues=[ARCHIVE_QUEUE],

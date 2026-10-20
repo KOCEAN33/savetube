@@ -111,6 +111,8 @@ async def sync(
     if source.kind is SourceKind.PLAYLISTS:
         await _add_playlists(session, source, listing)
         return [], []
+    if source.kind is SourceKind.PLAYLIST and listing.get("title"):
+        source.title = listing["title"]
 
     shorts = source.url.endswith("/shorts")
     # A tab's entries carry no channel. The listing itself does.
@@ -259,31 +261,34 @@ async def _replace_listing(
 
 
 async def _add_playlists(session: AsyncSession, parent: Source, listing: dict[str, Any]) -> None:
-    """A child playlist source per listed playlist that is not a source yet and
-    not ignored. A child whose playlist left the listing is disabled."""
-    urls = []
+    """A child playlist source per listed playlist that is not a source yet. A
+    disabled child is still a source, so it is never created again. A child
+    whose playlist left the listing is disabled."""
+    titles: dict[str, str | None] = {}
     for e in listing.get("entries") or []:
         try:
             [parsed] = parse_source_url(e.get("url") or "")
         except InvalidSourceUrl:
             continue
         if parsed.kind is SourceKind.PLAYLIST:
-            urls.append(parsed.url)
-    urls = list(dict.fromkeys(urls))
+            titles.setdefault(parsed.url, e.get("title"))
+    urls = list(titles)
     if not urls:
         # An empty listing proves nothing about the channel's playlists.
         return
-    for child in await session.scalars(
-        select(Source).where(Source.parent_id == parent.id, Source.enabled, Source.url.not_in(urls))
-    ):
-        child.enabled = False
-        child.last_error = UNLISTED
+    for child in await session.scalars(select(Source).where(Source.parent_id == parent.id)):
+        if child.url in titles:
+            child.title = titles[child.url] or child.title
+        elif child.enabled:
+            child.enabled = False
+            child.last_error = UNLISTED
     taken = set(await session.scalars(select(Source.url).where(Source.url.in_(urls))))
     now = datetime.now(UTC)
     interval = timedelta(minutes=parent.poll_interval_minutes)
     session.add_all(
         Source(
             url=url,
+            title=titles[url],
             kind=SourceKind.PLAYLIST,
             channel_id=parent.channel_id,
             rule_id=parent.rule_id,
@@ -295,7 +300,7 @@ async def _add_playlists(session: AsyncSession, parent: Source, listing: dict[st
             last_polled_at=now - interval * random.random(),
         )
         for url in urls
-        if url not in taken and url not in parent.ignored_urls
+        if url not in taken
     )
     await session.flush()
 

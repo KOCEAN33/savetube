@@ -703,11 +703,17 @@ PLAYLISTS_LISTING = {
 }
 
 
+async def _requeue_nothing(job_id, queue_job_id):
+    return None
+
+
 def _api(settings, lister=None):
-    from savetube.web.api import get_lister
+    from savetube.web.api import get_lister, get_requeue
 
     app = create_app(settings)
     app.dependency_overrides[current_user] = lambda: User(sub="u")
+    # The real requeue opens the procrastinate queue at SAVETUBE_DATABASE_URL.
+    app.dependency_overrides[get_requeue] = lambda: _requeue_nothing
     if lister is not None:
         app.dependency_overrides[get_lister] = lambda: lister
     return TestClient(app, headers={"X-Requested-With": "savetube"})
@@ -1237,7 +1243,7 @@ async def _children(sessionmaker):
 
 
 @pytest.mark.anyio
-async def test_a_deleted_child_stays_deleted_until_restored(settings):
+async def test_a_child_is_disabled_not_deleted_and_never_recreated(settings):
     _rule_and_parent(settings)
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
@@ -1246,17 +1252,22 @@ async def test_a_deleted_child_stays_deleted_until_restored(settings):
     assert a.url == f"{PL}A"
 
     with _api(settings) as client:
-        assert client.delete(f"/api/sources/{a.id}").status_code == 204
-        parent = next(s for s in client.get("/api/sources").json() if s["id"] == 1)
-        assert parent["ignored_urls"] == [f"{PL}A"]
+        refused = client.delete(f"/api/sources/{a.id}")
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == "a playlist of a tracked channel can only be disabled"
+        assert client.patch(f"/api/sources/{a.id}", json={"enabled": False}).status_code == 200
+        assert "ignored_urls" not in client.get("/api/sources").json()[0]
     await _poll(sessionmaker, settings, 1, PLAYLISTS_LISTING)
-    assert [c.url for c in await _children(sessionmaker)] == [f"{PL}B", f"{PL}C"]
+    children = await _children(sessionmaker)
+    assert [(c.id, c.url, c.enabled, c.title) for c in children] == [
+        (a.id, f"{PL}A", False, "◀︎YOMI Stream▶︎"),
+        (children[1].id, f"{PL}B", True, "◀︎KASUKA Stream▶︎"),
+        (children[2].id, f"{PL}C", True, "◀︎BD LIVE▶︎"),
+    ]
 
     with _api(settings) as client:
-        restored = client.patch("/api/sources/1", json={"ignored_urls": []})
-        assert restored.json()["ignored_urls"] == []
-    await _poll(sessionmaker, settings, 1, PLAYLISTS_LISTING)
-    assert [c.url for c in await _children(sessionmaker)] == [f"{PL}A", f"{PL}B", f"{PL}C"]
+        restored = client.patch(f"/api/sources/{a.id}", json={"enabled": True}).json()
+    assert restored["enabled"] is True
     await engine.dispose()
 
 
@@ -1873,4 +1884,110 @@ async def test_a_parent_passes_archiving_to_its_children(settings):
     with _api(settings) as client:
         client.patch("/api/sources/1", json={"archiving": True})
     assert [c.archiving for c in await _children(sessionmaker)] == [True, True, True]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_reclaim_fails_the_jobs_of_a_dead_worker(settings):
+    from savetube.jobs import STALLED_LOG, reclaim_stalled
+
+    _job_rows(
+        settings,
+        "UPDATE job SET state = 'running', attempts = 1 WHERE id = 1",
+        "UPDATE video SET state = 'downloading' WHERE id = 'v1'",
+        "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id) VALUES"
+        " (2, 'archive', 'queued', 'busy1', 0, 701),"
+        " (3, 'archive', 'running', 'busy2', 1, 702)",
+    )
+    incoming = settings.incoming_root / "1"
+    incoming.mkdir(parents=True)
+    (incoming / "v1.mkv.part").write_bytes(b"x")
+    finished = []
+
+    async def stalled():
+        return [(700, 1), (701, 2)]
+
+    async def finish(queue_job_id):
+        finished.append(queue_job_id)
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await reclaim_stalled(sessionmaker, settings, stalled=stalled, finish=finish)
+    async with sessionmaker() as session:
+        jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
+        video = await session.get(Video, "v1")
+    assert STALLED_LOG == "worker stopped during the download"
+    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, STALLED_LOG)
+    assert jobs[1].finished_at is not None
+    assert jobs[2].state is JobState.FAILED
+    assert jobs[3].state is JobState.RUNNING
+    assert video.state is VideoState.FAILED
+    assert not incoming.exists()
+    assert finished == [700, 701]
+    await engine.dispose()
+
+
+def test_putting_download_settings_reschedules_deferred_jobs(settings):
+    from savetube.web.api import get_requeue
+
+    _job_rows(
+        settings,
+        "UPDATE job SET deferred_until = now() + interval '5 hours' WHERE id = 1",
+        "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id, deferred_until)"
+        " VALUES (2, 'archive', 'queued', 'busy1', 0, 501, NULL),"
+        "        (3, 'archive', 'queued', 'busy2', 0, 502, now() + interval '1 minute'),"
+        "        (4, 'archive', 'failed', 'busy2', 1, 503, now() + interval '1 hour')",
+    )
+    calls = []
+
+    async def requeue(job_id, queue_job_id):
+        calls.append((job_id, queue_job_id))
+        # A worker took 502 before the cancel.
+        return None if queue_job_id == 502 else 900 + job_id
+
+    app = create_app(settings)
+    app.dependency_overrides[current_user] = lambda: User(sub="u")
+    app.dependency_overrides[get_requeue] = lambda: requeue
+    with TestClient(app, headers={"X-Requested-With": "savetube"}) as client:
+        response = client.put("/api/download-settings", json={"max_concurrent": 2})
+        assert response.status_code == 200
+        jobs = {j["id"]: j for j in client.get("/api/jobs").json()}
+    assert sorted(calls) == [(1, 500), (3, 502)]
+    assert jobs[1]["deferred_until"] is None
+    assert jobs[3]["deferred_until"] is not None
+    assert jobs[2]["deferred_until"] is None
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        queue_ids = dict(c.execute(sa.text("SELECT id, queue_job_id FROM job")).all())
+    engine.dispose()
+    assert queue_ids == {1: 901, 2: 501, 3: 502, 4: 503}
+
+
+@pytest.mark.anyio
+async def test_playlist_sources_carry_their_title(settings):
+    _rule_and_parent(settings)
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await _poll(sessionmaker, settings, 1, PLAYLISTS_LISTING)
+    assert [c.title for c in await _children(sessionmaker)] == [
+        "◀︎YOMI Stream▶︎",
+        "◀︎KASUKA Stream▶︎",
+        "◀︎BD LIVE▶︎",
+    ]
+    renamed = {
+        **PLAYLISTS_LISTING,
+        "entries": [
+            {**e, "title": "YOMI 歌枠"} if e["id"].endswith("A") else e
+            for e in PLAYLISTS_LISTING["entries"]
+        ],
+    }
+    await _poll(sessionmaker, settings, 1, renamed)
+    a, b, _ = await _children(sessionmaker)
+    assert a.title == "YOMI 歌枠"
+
+    await _poll(sessionmaker, settings, b.id, {"title": "◀︎KASUKA 歌枠▶︎", "entries": []})
+    with _api(settings) as client:
+        titles = {s["id"]: s["title"] for s in client.get("/api/sources").json()}
+    assert titles[1] is None
+    assert titles[b.id] == "◀︎KASUKA 歌枠▶︎"
     await engine.dispose()

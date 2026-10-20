@@ -18,6 +18,19 @@ x-app: &app
   environment:
     SAVETUBE_ARCHIVE_ROOT: /archive
 
+# The chart's livenessProbe: GET /healthz, answered by the process's asyncio
+# loop. The image has no curl, so Python makes the request.
+x-health: &health
+  test:
+    - CMD
+    - python
+    - -c
+    - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3)
+  interval: 10s
+  timeout: 5s
+  retries: 3
+  start_period: 15s
+
 services:
   migrate:
     <<: *app
@@ -42,6 +55,7 @@ services:
     <<: *app
     command: [worker]
     network_mode: service:worker-pot
+    healthcheck: *health
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -51,6 +65,7 @@ services:
   scheduler:
     <<: *app
     command: [scheduler]
+    healthcheck: *health
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
+from savetube.jobs import reclaim_stalled
 from savetube.live import Seen, check_channel, watched_channels
 from savetube.poll import due_sources, poll_source
 from savetube.storage import disk_usage
@@ -52,6 +53,25 @@ async def poll_sources(settings: Settings) -> None:
         await poll_source(
             sessionmaker, source_id, settings, lister=list_entries, enqueue=enqueue, cancel=cancel
         )
+
+
+async def reclaim(settings: Settings) -> None:
+    from procrastinate.jobs import Status
+
+    from savetube.queue import ARCHIVE_QUEUE, app
+
+    async def stalled() -> list[tuple[int, int]]:
+        # A worker without a heartbeat for 30 s, procrastinate's default and
+        # the worker's own stalled_worker_timeout.
+        found = await app.job_manager.get_stalled_jobs(queue=ARCHIVE_QUEUE, task_name="archive")
+        return [(j.id, j.task_kwargs["job_id"]) for j in found if j.id is not None]
+
+    async def finish(queue_job_id: int) -> None:
+        await app.job_manager.finish_job_by_id_async(
+            queue_job_id, status=Status.FAILED, delete_job=False
+        )
+
+    await reclaim_stalled(default_sessionmaker(), settings, stalled=stalled, finish=finish)
 
 
 async def detect_lives(seen: Seen) -> None:
@@ -94,5 +114,6 @@ async def run(settings: Settings) -> None:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(_every("storage sample", lambda: sample_storage(settings)))
             tg.create_task(_every("source poll", lambda: poll_sources(settings)))
+            tg.create_task(_every("stalled job reclaim", lambda: reclaim(settings)))
             seen: Seen = {}
             tg.create_task(_every("live detection", lambda: detect_lives(seen)))

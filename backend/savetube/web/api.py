@@ -1,4 +1,6 @@
 import asyncio
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Any
 
@@ -31,6 +33,8 @@ from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
 from savetube.web.auth import CurrentUser, User, current_user
 from savetube.ytdl import DEFAULT_FORMAT, list_entries
+
+log = logging.getLogger(__name__)
 
 
 async def get_session(request: Request):
@@ -103,6 +107,7 @@ class ChannelOut(_Out):
 class SourceOut(_Out):
     id: int
     url: str
+    title: str | None
     kind: str
     channel_id: str | None
     enabled: bool
@@ -112,7 +117,6 @@ class SourceOut(_Out):
     exclude_words: list[str]
     other_channels: bool
     parent_id: int | None
-    ignored_urls: list[str]
     archiving: bool
     last_polled_at: datetime | None
     last_error: str | None
@@ -323,8 +327,6 @@ class SourcePatch(BaseModel):
     include_words: WordList | None = None
     exclude_words: WordList | None = None
     other_channels: bool | None = None
-    # On a `playlists` source. Removing a URL lets the next poll create it again.
-    ignored_urls: list[str] | None = None
     archiving: bool | None = None
 
 
@@ -444,13 +446,13 @@ async def poll_now(session: Session, source_id: int) -> SourceOut:
 @router.delete("/sources/{source_id}", status_code=204)
 async def delete_source(session: Session, source_id: int) -> None:
     """Stored videos and their files stay. Only the source's references go, and
-    the playlist sources a `playlists` source created. A deleted child stays
-    ignored by its parent's polls."""
+    the playlist sources a `playlists` source created. Such a child is only
+    disabled: its row keeps the parent poll from creating it again."""
     source = await _source(session, source_id)
     if source.parent_id is not None:
-        parent = await session.get(Source, source.parent_id)
-        if source.url not in parent.ignored_urls:
-            parent.ignored_urls = [*parent.ignored_urls, source.url]
+        raise HTTPException(
+            status_code=409, detail="a playlist of a tracked channel can only be disabled"
+        )
     await session.delete(source)
     await session.commit()
 
@@ -697,10 +699,25 @@ async def download_settings(session: Session) -> DownloadSettingsOut:
     return _settings_out(await limits.load(session))
 
 
+# Replaces a deferred job's queue job with one due now. None when a worker
+# took the old one first.
+Requeue = Callable[[int, int | None], Awaitable[int | None]]
+
+
+async def get_requeue() -> AsyncIterator[Requeue]:
+    """The queue, opened for this request only. Tests override it."""
+    from savetube.queue import app, requeue_now
+
+    async with app.open_async():
+        yield requeue_now
+
+
 @router.put("/download-settings")
 async def replace_download_settings(
-    session: Session, body: DownloadSettingsIn
+    session: Session, body: DownloadSettingsIn, requeue: Annotated[Requeue, Depends(get_requeue)]
 ) -> DownloadSettingsOut:
+    """Deferred jobs run again at once, so a widened or removed window or a
+    raised limit takes effect now instead of at the old deferral time."""
     row = await session.get(DownloadSettings, 1)
     if row is None:
         row = DownloadSettings(id=1)
@@ -710,4 +727,20 @@ async def replace_download_settings(
     row.window_start = time.fromisoformat(body.window_start) if body.window_start else None
     row.window_end = time.fromisoformat(body.window_end) if body.window_end else None
     await session.commit()
+    deferred = await session.scalars(
+        select(Job).where(
+            Job.kind == JobKind.ARCHIVE,
+            Job.state == JobState.QUEUED,
+            Job.deferred_until.is_not(None),
+        )
+    )
+    for job in deferred.all():
+        try:
+            queue_job_id = await requeue(job.id, job.queue_job_id)
+        except Exception:
+            log.exception("requeue of job %s failed", job.id)
+            continue
+        if queue_job_id is not None:
+            job.queue_job_id, job.deferred_until = queue_job_id, None
+            await session.commit()
     return _settings_out(row)

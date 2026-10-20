@@ -165,11 +165,12 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 ### Channel playlists
 
 - Two modes. "Track all" is one source of kind `playlists` at `https://www.youtube.com/<channel>/playlists`. "Pick some" is one `playlist` source per chosen playlist.
-- A `playlists` source downloads nothing itself. Each poll lists the channel's playlists and creates a child `playlist` source for every playlist URL that is not a source yet and not in the parent's `ignored_urls`. A child stores `parent_id` and starts with `last_polled_at` set to a random point within its interval, so new children do not all fall due at once. Deleting the parent deletes its children.
+- A `playlists` source downloads nothing itself. Each poll lists the channel's playlists and creates a child `playlist` source for every playlist URL that is not a source yet. A child stores `parent_id` and starts with `last_polled_at` set to a random point within its interval, so new children do not all fall due at once. Deleting the parent deletes its children.
 - A child copies the parent's rule, poll interval and other-channel flag at creation. A later change of those on the parent is copied to every child. A child is skipped while its parent is disabled.
-- Deleting a child adds its URL to the parent's `ignored_urls`, so the next parent poll does not create it again. Removing the URL from `ignored_urls` restores it on the next parent poll.
+- A child cannot be deleted, only disabled. Its row stays, so the parent poll never creates it again and its title stays visible. `DELETE` on a child returns 409. Enabling it again restores it.
 - A child whose playlist no longer appears in a successful, non-empty parent listing is disabled with `last_error` "playlist no longer listed on the channel".
 - Each playlist stays its own source, so `video_source` keeps playlist membership for the playlist view.
+- `source.title` holds the playlist's title for a `playlist` source. The parent poll sets it on create and refreshes it on every poll, and a playlist's own poll refreshes it from its listing. `GET /api/sources` carries `title`, null for a tab.
 - `source.other_channels`, default off, decides whether a playlist source archives videos uploaded by other channels. Off keeps only entries whose `channel_id` equals the source's channel. A child always keeps its parent's channel. A playlist source without a parent takes its channel from the listing's `channel_id`. With `other_channels` off and no channel, the poll queues nothing and sets `last_error`.
 
 ### Title words
@@ -192,8 +193,8 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 | Method and path | Body or query | Returns |
 | --- | --- | --- |
 | `POST /api/sources` | `tabs` also accepts `playlists`. New fields `include_words`, `exclude_words` (lists of strings, default empty) and `other_channels` (default false) | the created sources |
-| `PATCH /api/sources/{id}` | also `include_words`, `exclude_words`, `other_channels`, `ignored_urls` | the source |
-| `GET /api/sources` | | each source also carries `include_words`, `exclude_words`, `other_channels`, `parent_id`, `ignored_urls` |
+| `PATCH /api/sources/{id}` | also `include_words`, `exclude_words`, `other_channels`, `enabled` | the source |
+| `GET /api/sources` | | each source also carries `include_words`, `exclude_words`, `other_channels`, `parent_id`, `title` |
 | `POST /api/channel-playlists` | `{url}`, a channel URL | `[{id, title, url, source_id}]`, `source_id` null for a playlist that is not a source yet. Lists live through yt-dlp, at most two at a time, 502 on a yt-dlp error, 504 after 120 s |
 | `GET /api/channels/{id}/words` | | `[{word, count}]`, best first |
 | `POST /api/sources/{id}/title-preview` | `{include_words, exclude_words}`, the source's own lists being edited | `{total, kept, titles: [{video_id, title, kept}]}` from the source's `listing_entry` rows, matched with the stored global and channel lists merged in |
@@ -220,6 +221,9 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 - A download already running when the window closes runs to the end.
 - An archive task that starts outside the window, or with no free slot, defers its procrastinate job and leaves the `job` row `queued`. Outside the window it defers to the next window start. Without a free slot it defers 60 s. `job.deferred_until` shows the time. The slot check takes a Postgres advisory lock, so two workers cannot both take the last slot.
 - `rule.max_concurrent` is dropped.
+- A `PUT /api/download-settings` reschedules every deferred job, so a widened or removed window takes effect at once instead of at the old window start.
+- Process health and job ownership are separate. Kubernetes judges health: worker and scheduler serve `GET /healthz` on `SAVETUBE_HEALTH_PORT` (default 8081) from their own asyncio loop, so a stuck loop fails the probe, and the chart sets a livenessProbe on it. The metrics port cannot serve this, because `prometheus_client` answers from its own thread while the loop hangs. Docker compose runs the same check as a `healthcheck`. Job ownership stays in Postgres as procrastinate's heartbeat lease.
+- The scheduler reclaims an archive job left `running` by a dead worker every minute. It reads procrastinate's stalled jobs, found by the worker heartbeat. The `job` row becomes `failed` with `log_tail` "worker stopped during the download", and its `.incoming/<job id>/` is deleted. Without this, a dead worker's jobs hold download slots forever. The next poll queues the video again, within `MAX_ARCHIVE_ATTEMPTS`.
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
