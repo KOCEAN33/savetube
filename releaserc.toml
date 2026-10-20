@@ -1,0 +1,12 @@
+# python-semantic-release: the next version comes from Conventional Commits since the last
+# v* tag. feat bumps minor, fix and perf bump patch, other types make no release.
+# Tags are the only version source. No file is rewritten and no commit lands on main.
+[semantic_release]
+tag_format = "v{version}"
+commit_parser = "conventional"
+allow_zero_version = true
+# While at 0.x, a breaking change bumps minor. 1.0.0 is a deliberate step.
+major_on_zero = false
+
+[semantic_release.branches.main]
+match = "main"

@@ -1,13 +1,19 @@
 name: image
 
+# Development happens on develop. A push to main releases: semantic-release tags the
+# next version from the commit messages (releaserc.toml), and the image carries it.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# Two releases at once would compute the same next version.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   # GitHub-hosted: the lab runs no self-hosted runner. The cluster pulls the
@@ -15,10 +21,26 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Tags and creates the GitHub Release only. A tag pushed with GITHUB_TOKEN
+      # starts no workflow, so this job builds the image itself.
+      - id: release
+        if: github.ref == 'refs/heads/main'
+        uses: python-semantic-release/python-semantic-release@v10.7.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          config_file: releaserc.toml
+          commit: false
+          tag: true
+          push: true
+          vcs_release: true
+          changelog: false
 
       - uses: docker/setup-buildx-action@v4
 
@@ -35,7 +57,8 @@ jobs:
           flavor: latest=false
           tags: |
             type=sha,format=long,prefix=
-            type=ref,event=tag
+            type=semver,pattern={{version}},value=${{ steps.release.outputs.tag }},enable=${{ steps.release.outputs.released == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release.outputs.tag }},enable=${{ steps.release.outputs.released == 'true' }}
 
       - uses: docker/build-push-action@v7
         with:

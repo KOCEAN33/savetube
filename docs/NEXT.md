@@ -7,7 +7,9 @@ Follow `docs/plan.md` § Build order. savetube runs in production on the homelab
 ## Current progress
 
 - The repository is public under MIT. A gitleaks pass over the full history found no secret before the switch.
-- Build: `.github/workflows/image.yml` runs on a GitHub-hosted runner and pushes `ghcr.io/kocean33/savetube:<full commit sha>` on every push to main. The GHCR package is public, and the node pulls it through Harbor's `ghcr.io` pull-through cache with no pull secret.
+- Branches: work lands on `develop`, the default branch. A push to main is a release.
+- Build: `.github/workflows/image.yml` runs on a GitHub-hosted runner on every push to main. python-semantic-release (`releaserc.toml`) first tags the next `vX.Y.Z` and creates a GitHub Release. The image gets `X.Y.Z`, `X.Y` and the full commit sha, or only the sha when no commit bumps the version. The GHCR package is public, and the node pulls it through Harbor's `ghcr.io` pull-through cache with no pull secret.
+- The app does not know its own version. The image carries it only as the OCI label `org.opencontainers.image.version`.
 - Deploy: homelab-workloads `savetube/` holds the ApplicationSet, `envs/default.yaml`, `envs/prod.yaml`, and `manifests/prod/` with the ExternalSecrets `savetube-db` and `savetube-session` plus the static PV and PVC `savetube-archive`. Application and namespace are `savetube-prod`, and the release name is `savetube`.
 - Running in `savetube-prod`: web, worker and scheduler. Migration `0001` applied. `https://savetube.lab.hiriri.com/healthz` answers 200, and `/auth/login` redirects to Zitadel with PKCE.
 - A browser login has not been tried end to end.
