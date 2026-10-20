@@ -23,7 +23,7 @@ Check the archive features of `v0.2.0` in production through a browser, then rev
 - Built and checked locally end to end: the Rules and Sources pages create and edit rules and sources, the scheduler polls due sources, the worker downloads into the tree. In production these are deployed and not yet exercised.
 - Live detection runs in the scheduler and queues `record` jobs. A check against real channels found two live and two upcoming streams on NASA and none on VESPERBELL. Nothing records them yet.
 - Not built: recorder Job creation, Discord notifications, job-state metrics, cancel, a manual retry, the `missed` reconciliation, ServiceMonitor, canary CronJob.
-- Released in `v0.2.0` through pull request #4, checked locally against real VESPERBELL listings: channel playlists, title words at global, channel and source level, listing before downloading, download limits, stalled-job reclaim, `/healthz` with livenessProbe. The design is in `docs/plan.md` sections Channel playlists, Title words, Listing before downloading, Download limits.
+- Released in `v0.2.0` through pull request #4, checked locally against real VESPERBELL listings: channel playlists, title words at global, channel and source level, listing before downloading, download limits, stalled-job reclaim, `/healthz` with livenessProbe. The design is in `docs/plan/archive.md`.
 - No CI runs on a pull request, because `image.yml` triggers only on a push to main.
 - The user's decisions behind the design, which the plan states as rules: word lists merge by union with no per-source opt-out, a global include word restricts every source on purpose, words apply to live detection too, children of a "track all" source are disabled and never deleted, health is Kubernetes' job and job ownership stays in the Postgres lease, limits are global only and the rate limit is per download, a download running at the window end finishes.
 
@@ -56,7 +56,7 @@ Check the archive features of `v0.2.0` in production through a browser, then rev
 - The pot-provider sidecar runs without `readOnlyRootFilesystem`. Whether the image writes to its root filesystem is unchecked.
 - The frontend bundle is 930 kB, and `frontend/README.md` is still the Vite template.
 - The tests in `test_layout`, `test_ytdl`, `test_auth`, `test_k8s` and `test_db` were written beside the code, not test-first. A mutation pass would show what they miss.
-- `docs/plan.md` § Homelab deployment was meant to move to homelab-workloads before the repository went public. It holds hostnames and infrastructure layout, no secrets.
+- `docs/plan/operations.md` § Homelab deployment was meant to move to homelab-workloads before the repository went public. It holds hostnames and infrastructure layout, no secrets.
 
 ## Next steps
 
@@ -76,7 +76,7 @@ Check the archive features of `v0.2.0` in production through a browser, then rev
 
 ## Pointers
 
-- `docs/plan.md`: design and Build order
+- `docs/plan/README.md`: design index, requirements and Build order
 - `charts/savetube/values.yaml`
 - homelab-workloads `savetube/`
 - `.env.sample` and `Makefile`
