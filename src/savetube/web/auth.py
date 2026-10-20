@@ -82,6 +82,7 @@ def install(app: FastAPI, settings: Settings) -> None:
         try:
             token = await client.authorize_access_token(request)
         except OAuthError as e:
+            log.warning("login failed: %s: %s", e.error, e.description)
             return PlainTextResponse(f"login failed: {e.error}", status_code=400)
         claims = token["userinfo"]
         # Zitadel's flat `groups` claim comes from an Action on the userinfo

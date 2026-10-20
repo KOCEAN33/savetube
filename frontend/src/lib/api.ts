@@ -112,6 +112,11 @@ export function loginUrl(): string {
 
 type Query = Record<string, string | number | undefined>
 
+// Parallel requests that all get 401 must start one login, not one each: every
+// /auth/login rewrites the session cookie with a new state and PKCE verifier,
+// so concurrent logins break each other's callback.
+let redirectingToLogin = false
+
 async function get<T>(path: string, query: Query = {}): Promise<T> {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(query)) {
@@ -123,7 +128,10 @@ async function get<T>(path: string, query: Query = {}): Promise<T> {
     headers: { Accept: "application/json" },
   })
   if (res.status === 401) {
-    window.location.assign(loginUrl())
+    if (!redirectingToLogin) {
+      redirectingToLogin = true
+      window.location.assign(loginUrl())
+    }
     throw new ApiError(401, "Not signed in")
   }
   if (!res.ok) {
