@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -19,7 +19,6 @@ from savetube.db.models import (
     JobKind,
     JobState,
     ListingEntry,
-    Rule,
     Source,
     SourceKind,
     StorageSample,
@@ -28,7 +27,7 @@ from savetube.db.models import (
 )
 from savetube.layout import VideoType
 from savetube.limits import TIMEZONE
-from savetube.poll import Lister
+from savetube.pipeline import get_or_create_channel
 from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
 from savetube.web.auth import CurrentUser, User, current_user
@@ -100,6 +99,10 @@ class ChannelOut(_Out):
     dir_name: str
     include_words: list[str]
     exclude_words: list[str]
+    date_after: date | None
+    format: str
+    use_cookies: bool
+    watch_lives: bool
     video_count: int
     bytes: int
 
@@ -112,7 +115,6 @@ class SourceOut(_Out):
     channel_id: str | None
     enabled: bool
     poll_interval_minutes: int
-    rule_id: int
     include_words: list[str]
     exclude_words: list[str]
     other_channels: bool
@@ -122,21 +124,14 @@ class SourceOut(_Out):
     last_error: str | None
 
 
-class RuleOut(_Out):
-    id: int
-    name: str
-    types: list[str]
-    date_after: date | None
-    format: str
-    use_cookies: bool
-    watch_lives: bool
-
-
 class JobOut(_Out):
     id: int
     kind: JobKind
     state: JobState
     video_id: str | None
+    # The video's title and channel, null for a job without a video.
+    title: str | None
+    channel_id: str | None
     attempts: int
     miss_reason: str | None
     scheduled_at: datetime | None
@@ -176,9 +171,14 @@ class WordsIn(BaseModel):
     exclude_words: WordList = []
 
 
-class WordsPatch(BaseModel):
+class ChannelPatch(BaseModel):
     include_words: WordList | None = None
     exclude_words: WordList | None = None
+    # Null clears the cutoff, so only an omitted field leaves it alone.
+    date_after: date | None = None
+    format: Annotated[str | None, Field(min_length=1)] = None
+    use_cookies: bool | None = None
+    watch_lives: bool | None = None
 
 
 @router.get("/me")
@@ -251,6 +251,10 @@ def _channels_query():
             Channel.dir_name,
             Channel.include_words,
             Channel.exclude_words,
+            Channel.date_after,
+            Channel.format,
+            Channel.use_cookies,
+            Channel.watch_lives,
             func.count(Video.id).label("video_count"),
             _size.label("bytes"),
         )
@@ -266,14 +270,19 @@ async def channels(session: Session) -> list[ChannelOut]:
 
 
 @router.patch("/channels/{channel_id}")
-async def update_channel(session: Session, channel_id: str, body: WordsPatch) -> ChannelOut:
+async def update_channel(session: Session, channel_id: str, body: ChannelPatch) -> ChannelOut:
     channel = await session.get(Channel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404)
     _normalize(body)
-    for field, value in body.model_dump(exclude_none=True).items():
-        setattr(channel, field, value)
+    for field, value in body.model_dump(exclude_unset=True).items():
+        if value is not None or field == "date_after":
+            setattr(channel, field, value)
     await session.commit()
+    return await _channel_out(session, channel_id)
+
+
+async def _channel_out(session: AsyncSession, channel_id: str) -> ChannelOut:
     row = (await session.execute(_channels_query().where(Channel.id == channel_id))).one()
     return ChannelOut.model_validate(row)
 
@@ -310,7 +319,6 @@ class SourceIn(BaseModel):
     url: str
     # For a bare channel URL: one source per tab.
     tabs: list[Tab] = []
-    rule_id: int
     poll_interval_minutes: Annotated[int, Field(ge=10, le=7 * 24 * 60)] = 360
     enabled: bool = True
     include_words: WordList = []
@@ -322,7 +330,6 @@ class SourceIn(BaseModel):
 
 class SourcePatch(BaseModel):
     enabled: bool | None = None
-    rule_id: int | None = None
     poll_interval_minutes: Annotated[int | None, Field(ge=10, le=7 * 24 * 60)] = None
     include_words: WordList | None = None
     exclude_words: WordList | None = None
@@ -361,9 +368,26 @@ def _normalize(body: BaseModel) -> None:
             setattr(body, field, words.normalize_words(value))
 
 
-def get_lister() -> Lister:
-    """The lister the scheduler's poll uses. Tests override it."""
-    return list_entries
+# A channel URL, and a cap on the entries listed or None for all of them.
+Scanner = Callable[[str, int | None], dict[str, Any]]
+
+
+def get_scanner() -> Scanner:
+    """Listings without cookies, as the scheduler's poll makes them. Tests override it."""
+    return lambda url, limit: list_entries(url, None, limit)
+
+
+async def _known_channel(session: AsyncSession, url: str) -> str | None:
+    """The stored channel of a new tab or `playlists` source, when another source
+    of the same channel URL already found it. Until then the first poll does."""
+    if "/playlist?" in url:
+        return None
+    base = url.rsplit("/", 1)[0]
+    return await session.scalar(
+        select(Source.channel_id)
+        .where(Source.url.startswith(f"{base}/", autoescape=True), Source.channel_id.is_not(None))
+        .limit(1)
+    )
 
 
 async def _source(session: AsyncSession, source_id: int) -> Source:
@@ -373,18 +397,12 @@ async def _source(session: AsyncSession, source_id: int) -> Source:
     return source
 
 
-async def _check_rule(session: AsyncSession, rule_id: int) -> None:
-    if await session.get(Rule, rule_id) is None:
-        raise HTTPException(status_code=422, detail=f"no rule {rule_id}")
-
-
 @router.post("/sources", status_code=201)
 async def create_sources(session: Session, body: SourceIn) -> list[SourceOut]:
     try:
         parsed = parse_source_url(body.url, body.tabs)
     except InvalidSourceUrl as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
-    await _check_rule(session, body.rule_id)
     _normalize(body)
     urls = [p.url for p in parsed]
     taken = list(await session.scalars(select(Source.url).where(Source.url.in_(urls))))
@@ -394,7 +412,7 @@ async def create_sources(session: Session, body: SourceIn) -> list[SourceOut]:
         Source(
             url=p.url,
             kind=p.kind,
-            rule_id=body.rule_id,
+            channel_id=await _known_channel(session, p.url),
             poll_interval_minutes=body.poll_interval_minutes,
             enabled=body.enabled,
             include_words=body.include_words,
@@ -412,8 +430,6 @@ async def create_sources(session: Session, body: SourceIn) -> list[SourceOut]:
 @router.patch("/sources/{source_id}")
 async def update_source(session: Session, source_id: int, body: SourcePatch) -> SourceOut:
     source = await _source(session, source_id)
-    if body.rule_id is not None:
-        await _check_rule(session, body.rule_id)
     _normalize(body)
     changes = body.model_dump(exclude_none=True)
     for field, value in changes.items():
@@ -431,7 +447,7 @@ async def update_source(session: Session, source_id: int, body: SourcePatch) -> 
     return SourceOut.model_validate(source)
 
 
-_INHERITED = frozenset({"rule_id", "poll_interval_minutes", "other_channels", "archiving"})
+_INHERITED = frozenset({"poll_interval_minutes", "other_channels", "archiving"})
 
 
 @router.post("/sources/{source_id}/poll", status_code=202)
@@ -491,35 +507,57 @@ class ChannelUrl(BaseModel):
 # A listing holds a yt-dlp extraction and YouTube requests for its whole run.
 _listings = asyncio.Semaphore(2)
 CHANNEL_PLAYLISTS_TIMEOUT = 120
+# Entries per tab in a channel scan: one page of YouTube's tab listing.
+SCAN_PAGE = 30
+# yt-dlp's answer for a tab the channel lacks, such as Shorts on a channel without any.
+_NO_TAB = "does not have a"
+SCAN_TABS = (Tab.VIDEOS, Tab.SHORTS, Tab.STREAMS)
 
 
-@router.post("/channel-playlists")
-async def channel_playlists(
-    session: Session, body: ChannelUrl, lister: Annotated[Lister, Depends(get_lister)]
-) -> list[ChannelPlaylist]:
-    """The channel's playlists, listed live, each with its source if one exists."""
+def _channel_base(url: str) -> str:
+    """`https://www.youtube.com/<channel>` for a channel URL, with or without a tab."""
     try:
-        [parsed] = parse_source_url(body.url, [Tab.PLAYLISTS])
+        [parsed, *_] = parse_source_url(url, [Tab.VIDEOS])
     except InvalidSourceUrl as e:
         raise HTTPException(status_code=422, detail=str(e)) from None
-    if parsed.kind is not SourceKind.PLAYLISTS:
+    if parsed.kind is SourceKind.PLAYLIST:
         raise HTTPException(status_code=422, detail="not a channel URL")
-    try:
-        async with _listings, asyncio.timeout(CHANNEL_PLAYLISTS_TIMEOUT):
-            # On a timeout the thread runs on, and its result is dropped.
-            listing = await asyncio.to_thread(lister, parsed.url, None)
-    except TimeoutError:
-        raise HTTPException(status_code=504, detail="listing the playlists timed out") from None
-    except DownloadError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from None
-    playlists = []
+    return parsed.url.rsplit("/", 1)[0]
+
+
+async def _list(scanner: Scanner, url: str, limit: int | None) -> dict[str, Any]:
+    async with _listings:
+        # On a timeout the thread runs on, and its result is dropped.
+        return await asyncio.to_thread(scanner, url, limit)
+
+
+def _playlists(listing: dict[str, Any]) -> list[tuple[dict[str, Any], str]]:
+    """Each playlist entry of a channel's /playlists listing, with its canonical URL."""
+    found = []
     for e in listing.get("entries") or []:
         try:
             [p] = parse_source_url(e.get("url") or "")
         except InvalidSourceUrl:
             continue
         if p.kind is SourceKind.PLAYLIST:
-            playlists.append((e, p.url))
+            found.append((e, p.url))
+    return found
+
+
+@router.post("/channel-playlists")
+async def channel_playlists(
+    session: Session, body: ChannelUrl, scanner: Annotated[Scanner, Depends(get_scanner)]
+) -> list[ChannelPlaylist]:
+    """The channel's playlists, listed live, each with its source if one exists."""
+    url = f"{_channel_base(body.url)}/{Tab.PLAYLISTS}"
+    try:
+        async with asyncio.timeout(CHANNEL_PLAYLISTS_TIMEOUT):
+            listing = await _list(scanner, url, None)
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="listing the playlists timed out") from None
+    except DownloadError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from None
+    playlists = _playlists(listing)
     sources = dict(
         (
             await session.execute(
@@ -535,6 +573,185 @@ async def channel_playlists(
     ]
 
 
+class ScanEntry(_Out):
+    video_id: str
+    title: str
+
+
+class ScanPlaylist(_Out):
+    id: str
+    title: str
+    url: str
+
+
+class ChannelScan(_Out):
+    url: str
+    channel_id: str
+    handle: str | None
+    name: str
+    # Keyed by tab. Null for a tab the channel lacks.
+    tabs: dict[str, list[ScanEntry] | None]
+    playlists: list[ScanPlaylist]
+    # Words that recur in the scanned titles, best first.
+    suggestions: list[WordCount]
+
+
+async def _scan_one(scanner: Scanner, url: str, limit: int | None) -> dict[str, Any] | None:
+    try:
+        return await _list(scanner, url, limit)
+    except DownloadError as e:
+        if _NO_TAB in str(e):
+            return None
+        raise
+
+
+@router.post("/channel-scan")
+async def channel_scan(
+    body: ChannelUrl, scanner: Annotated[Scanner, Depends(get_scanner)]
+) -> ChannelScan:
+    """The first page of each video tab and every playlist, listed live, so the
+    words can be set against real titles before anything is stored."""
+    base = _channel_base(body.url)
+    try:
+        async with asyncio.timeout(CHANNEL_PLAYLISTS_TIMEOUT):
+            *tabs, playlists = await asyncio.gather(
+                *(_scan_one(scanner, f"{base}/{t}", SCAN_PAGE) for t in SCAN_TABS),
+                _scan_one(scanner, f"{base}/{Tab.PLAYLISTS}", None),
+            )
+    except TimeoutError:
+        raise HTTPException(status_code=504, detail="scanning the channel timed out") from None
+    except DownloadError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from None
+    owner = next((x for x in (*tabs, playlists) if x and x.get("channel_id")), None)
+    if owner is None:
+        raise HTTPException(status_code=502, detail="the channel lists no tab")
+    entries = {
+        t.value: None
+        if listing is None
+        else [
+            ScanEntry(video_id=e["id"], title=e.get("title") or e["id"])
+            for e in listing.get("entries") or []
+            if e.get("id")
+        ]
+        for t, listing in zip(SCAN_TABS, tabs, strict=True)
+    }
+    titles = [e.title for listed in entries.values() for e in listed or []]
+    return ChannelScan(
+        url=base,
+        channel_id=owner["channel_id"],
+        handle=owner.get("uploader_id"),
+        name=owner.get("channel") or owner.get("uploader") or owner["channel_id"],
+        tabs=entries,
+        playlists=[
+            ScanPlaylist(id=e["id"], title=e.get("title") or e["id"], url=u)
+            for e, u in _playlists(playlists or {})
+        ],
+        suggestions=[WordCount(word=w, count=n) for w, n in words.rank(titles)],
+    )
+
+
+class TitlePreviewIn(WordsIn):
+    channel_id: str | None = None
+    titles: Annotated[list[str], Field(max_length=1000)]
+
+
+class TitleKept(_Out):
+    title: str
+    kept: bool
+
+
+@router.post("/title-preview")
+async def title_preview_any(session: Session, body: TitlePreviewIn) -> list[TitleKept]:
+    """How the words would filter titles that are not stored, such as a scan's.
+    The stored global lists, and the channel's when it is stored, are merged in."""
+    lists = await words.effective(
+        session, body.channel_id, (body.include_words, body.exclude_words)
+    )
+    return [TitleKept(title=t, kept=words.matches(t, *lists)) for t in body.titles]
+
+
+class PlaylistPick(BaseModel):
+    url: str
+    title: str | None = None
+
+
+class ChannelIn(WordsIn):
+    # The scan's `url`, `channel_id`, `handle` and `name`.
+    url: str
+    channel_id: Annotated[str, Field(min_length=1, max_length=64)]
+    handle: str | None = None
+    name: Annotated[str, Field(min_length=1)]
+    tabs: list[Literal[Tab.VIDEOS, Tab.SHORTS, Tab.STREAMS]] = []
+    # Track all: one `playlists` source. Otherwise one source per picked playlist.
+    all_playlists: bool = False
+    playlists: list[PlaylistPick] = []
+    watch_lives: bool = False
+    date_after: date | None = None
+    format: Annotated[str, Field(min_length=1)] = DEFAULT_FORMAT
+    use_cookies: bool = False
+    poll_interval_minutes: Annotated[int, Field(ge=10, le=7 * 24 * 60)] = 360
+
+
+class ChannelWithSources(ChannelOut):
+    sources: list[SourceOut]
+
+
+@router.post("/channels", status_code=201)
+async def create_channel(session: Session, body: ChannelIn) -> ChannelWithSources:
+    """The channel with its settings and its sources, archiving from the next tick."""
+    if not body.tabs and not body.all_playlists and not body.playlists:
+        raise HTTPException(status_code=422, detail="choose a tab or a playlist")
+    if body.watch_lives and not body.tabs:
+        raise HTTPException(status_code=422, detail="recording lives needs a tab")
+    base = _channel_base(body.url)
+    _normalize(body)
+    wanted: list[tuple[str, SourceKind, str | None]] = [
+        (f"{base}/{t}", SourceKind.TAB, None) for t in dict.fromkeys(body.tabs)
+    ]
+    if body.all_playlists:
+        wanted.append((f"{base}/{Tab.PLAYLISTS}", SourceKind.PLAYLISTS, None))
+    else:
+        for pick in body.playlists:
+            try:
+                [p] = parse_source_url(pick.url)
+            except InvalidSourceUrl as e:
+                raise HTTPException(status_code=422, detail=str(e)) from None
+            if p.kind is not SourceKind.PLAYLIST:
+                raise HTTPException(status_code=422, detail=f"not a playlist: {pick.url}")
+            wanted.append((p.url, SourceKind.PLAYLIST, pick.title))
+    urls = [u for u, _, _ in wanted]
+    taken = list(await session.scalars(select(Source.url).where(Source.url.in_(urls))))
+    if taken:
+        raise HTTPException(status_code=409, detail=f"already a source: {', '.join(taken)}")
+
+    # A channel stored as another playlist's uploader keeps its directory name.
+    channel = await get_or_create_channel(
+        session, {"channel_id": body.channel_id, "channel": body.name, "uploader_id": body.handle}
+    )
+    channel.include_words, channel.exclude_words = body.include_words, body.exclude_words
+    channel.date_after, channel.format = body.date_after, body.format
+    channel.use_cookies, channel.watch_lives = body.use_cookies, body.watch_lives
+    # No relationship() orders inserts, so the FK target is flushed first.
+    await session.flush()
+    created = [
+        Source(
+            url=url,
+            kind=kind,
+            title=title,
+            channel_id=channel.id,
+            poll_interval_minutes=body.poll_interval_minutes,
+            archiving=True,
+        )
+        for url, kind, title in wanted
+    ]
+    session.add_all(created)
+    await session.commit()
+    out = await _channel_out(session, body.channel_id)
+    return ChannelWithSources(
+        **out.model_dump(), sources=[SourceOut.model_validate(s) for s in created]
+    )
+
+
 @router.get("/channels/{channel_id}/words")
 async def channel_words(session: Session, channel_id: str) -> list[WordCount]:
     """Title word suggestions from every listing that showed the channel's videos."""
@@ -548,78 +765,31 @@ async def channel_words(session: Session, channel_id: str) -> list[WordCount]:
     return [WordCount(word=w, count=n) for w, n in words.rank(list(titles))]
 
 
-@router.get("/rules")
-async def rules(session: Session) -> list[RuleOut]:
-    return [
-        RuleOut.model_validate(r) for r in await session.scalars(select(Rule).order_by(Rule.id))
-    ]
-
-
-class RuleIn(BaseModel):
-    name: Annotated[str, Field(min_length=1, max_length=100)]
-    types: Annotated[list[VideoType], Field(min_length=1)]
-    date_after: date | None = None
-    format: Annotated[str, Field(min_length=1)] = DEFAULT_FORMAT
-    use_cookies: bool = False
-    watch_lives: bool = False
-
-
-async def _rule_name_free(session: AsyncSession, name: str, rule_id: int | None = None) -> None:
-    q = select(Rule.id).where(Rule.name == name)
-    if rule_id is not None:
-        q = q.where(Rule.id != rule_id)
-    if await session.scalar(q) is not None:
-        raise HTTPException(status_code=409, detail=f"a rule named {name!r} exists")
-
-
-@router.post("/rules", status_code=201)
-async def create_rule(session: Session, body: RuleIn) -> RuleOut:
-    await _rule_name_free(session, body.name)
-    rule = Rule(**body.model_dump())
-    session.add(rule)
-    await session.commit()
-    return RuleOut.model_validate(rule)
-
-
-@router.put("/rules/{rule_id}")
-async def replace_rule(session: Session, rule_id: int, body: RuleIn) -> RuleOut:
-    rule = await session.get(Rule, rule_id)
-    if rule is None:
-        raise HTTPException(status_code=404)
-    await _rule_name_free(session, body.name, rule_id)
-    for field, value in body.model_dump().items():
-        setattr(rule, field, value)
-    await session.commit()
-    return RuleOut.model_validate(rule)
-
-
-@router.delete("/rules/{rule_id}", status_code=204)
-async def delete_rule(session: Session, rule_id: int) -> None:
-    rule = await session.get(Rule, rule_id)
-    if rule is None:
-        raise HTTPException(status_code=404)
-    used = await session.scalar(
-        select(func.count()).select_from(Source).where(Source.rule_id == rule_id)
-    )
-    if used:
-        raise HTTPException(status_code=409, detail=f"{used} sources use this rule")
-    await session.delete(rule)
-    await session.commit()
-
-
 @router.get("/jobs")
 async def jobs(
     session: Session,
     kind: JobKind | None = None,
     state: JobState | None = None,
+    channel_id: str | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[JobOut]:
-    q = select(Job).order_by(Job.id.desc()).limit(limit)
+    q = (
+        select(Job, Video.title, Video.channel_id)
+        .outerjoin(Video, Video.id == Job.video_id)
+        .order_by(Job.id.desc())
+        .limit(limit)
+    )
     if kind:
         q = q.where(Job.kind == kind)
     if state:
         q = q.where(Job.state == state)
-    return [JobOut.model_validate(j) for j in await session.scalars(q)]
+    if channel_id:
+        q = q.where(Video.channel_id == channel_id)
+    own = JobOut.model_fields.keys() - {"title", "channel_id"}
+    return [
+        JobOut(**{f: getattr(j, f) for f in own}, title=title, channel_id=cid)
+        for j, title, cid in await session.execute(q)
+    ]
 
 
 @router.get("/videos")

@@ -1,5 +1,5 @@
 """Download limits for archive jobs: a concurrency cap, a rate limit, and a
-daily window in Asia/Seoul (docs/plan.md, Download limits)."""
+daily window in Asia/Seoul (docs/plan/archive.md, Download limits)."""
 
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo

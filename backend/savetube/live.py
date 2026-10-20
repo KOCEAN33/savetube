@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from yt_dlp.utils import DownloadError
 
 from savetube import words
-from savetube.db.models import Job, JobKind, Rule, Source, SourceKind, Video, VideoState
+from savetube.db.models import Channel, Job, JobKind, Source, SourceKind, Video, VideoState
 from savetube.layout import VideoType
 from savetube.pipeline import get_or_create_channel
 
@@ -52,11 +52,10 @@ def parse_feed(xml: str) -> list[str]:
 
 
 def _watching(q):
-    return q.join(Rule, Rule.id == Source.rule_id).where(
+    return q.join(Channel, Channel.id == Source.channel_id).where(
         Source.enabled,
         Source.kind == SourceKind.TAB,
-        Source.channel_id.is_not(None),
-        Rule.watch_lives,
+        Channel.watch_lives,
     )
 
 

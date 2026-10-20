@@ -17,7 +17,7 @@ from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import Job, JobState, Video, VideoState
 from savetube.limits import admit
-from savetube.pipeline import from_shorts_tab, prepare_incoming, rule_for, store
+from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
 from savetube.ytdl import DEFAULT_FORMAT, build_params, copy_cookies, download, video_url
 
 log = logging.getLogger(__name__)
@@ -148,7 +148,9 @@ async def run(
                 return
             ratelimit = limits.rate_limit_bytes
         video_id = job.video_id
-        rule = await rule_for(session, video_id)
+        channel = await settings_channel(session, video_id)
+        use_cookies = channel is not None and channel.use_cookies
+        fmt = channel.format if channel is not None else DEFAULT_FORMAT
         shorts = await from_shorts_tab(session, video_id)
         job.deferred_until = None
         job.state = JobState.RUNNING
@@ -164,13 +166,15 @@ async def run(
         # Outside `incoming`, so the cookie jar never moves into the tree.
         with tempfile.TemporaryDirectory(prefix="savetube-") as private:
             cookiefile = None
-            if rule and rule.use_cookies:
+            if use_cookies:
                 if settings.cookies_file is None:
-                    raise RuntimeError("the rule uses cookies and SAVETUBE_COOKIES_FILE is unset")
+                    raise RuntimeError(
+                        "the channel uses cookies and SAVETUBE_COOKIES_FILE is unset"
+                    )
                 cookiefile = copy_cookies(settings.cookies_file, Path(private))
             params = build_params(
                 incoming,
-                format=rule.format if rule else DEFAULT_FORMAT,
+                format=fmt,
                 cookiefile=cookiefile,
                 live=live,
                 ratelimit=ratelimit,

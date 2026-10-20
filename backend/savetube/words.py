@@ -1,5 +1,5 @@
 """Title words: suggestions extracted from a channel's titles, and the include and
-exclude filter a source applies to them (docs/plan.md, Title words)."""
+exclude filter a source applies to them (docs/plan/archive.md, Title words)."""
 
 import re
 from collections import Counter

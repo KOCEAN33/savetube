@@ -1,8 +1,9 @@
 """Runs against a real Postgres. SAVETUBE_TEST_DATABASE_URL is an admin URL whose
 role has CREATEDB. Each run creates and drops its own database, savetube_test."""
 
+import asyncio
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
@@ -219,13 +220,13 @@ async def test_poll_queues_unstored_videos_once(settings):
 
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{videos}', 'b', false, false)",
-        "UPDATE rule SET date_after = '2026-01-01'",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes) VALUES"
-        " (1, 'https://www.youtube.com/@chan/videos', 'tab', 1, true, 360),"
-        " (2, 'https://www.youtube.com/playlist?list=PL1', 'playlist', 1, true, 360),"
-        " (3, 'https://www.youtube.com/@off/videos', 'tab', 1, false, 360)",
+        # The poll finds this channel by the listing's channel id.
+        "INSERT INTO channel (id, name, dir_name, date_after) VALUES"
+        " ('UC1', 'Chan', 'Chan [UC1]', '2026-01-01')",
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@chan/videos', 'tab', true, 360),"
+        " (2, 'https://www.youtube.com/playlist?list=PL1', 'playlist', true, 360),"
+        " (3, 'https://www.youtube.com/@off/videos', 'tab', false, 360)",
         "UPDATE source SET other_channels = true WHERE id = 2",
         "INSERT INTO channel (id, name, dir_name) VALUES ('UC0', 'Zero', 'Zero [UC0]')",
         "INSERT INTO video (id, channel_id, type, title, state) VALUES"
@@ -260,8 +261,9 @@ async def test_poll_queues_unstored_videos_once(settings):
         jobs = {
             j.video_id: j for j in await session.scalars(sa.select(Job).where(Job.id.in_(deferred)))
         }
-        # `past_live` is a live, which the rule's types leave out.
-        assert sorted(jobs) == ["new", "retry", "undated"]
+        # The tab decides what is kept, so a past live on it is archived too.
+        # `old` is before the channel's date cutoff.
+        assert sorted(jobs) == ["new", "past_live", "retry", "undated"]
         assert all(j.queue_job_id == 1000 + j.id for j in jobs.values())
         assert (await session.get(Video, "new")).state is VideoState.PENDING
         assert (await session.get(Video, "new")).channel_id == "UC1"
@@ -273,7 +275,7 @@ async def test_poll_queues_unstored_videos_once(settings):
         linked = set(
             await session.scalars(sa.select(VideoSource.video_id).where(VideoSource.source_id == 1))
         )
-        assert linked == {"new", "undated", "done", "gave_up", "retry", "queued"}
+        assert linked == {"new", "undated", "past_live", "done", "gave_up", "retry", "queued"}
         assert await due_sources(session, datetime.now(UTC)) == [2]
 
     # A second poll of the same listing finds every video queued or done.
@@ -327,23 +329,11 @@ async def test_poll_queues_unstored_videos_once(settings):
     await engine.dispose()
 
 
-def test_api_writes_sources_and_rules(settings):
+def test_api_writes_sources(settings):
     app = create_app(settings)
     app.dependency_overrides[current_user] = lambda: User(sub="u")
-    rule = {"name": "all", "types": ["videos", "shorts"], "date_after": "2026-01-01"}
     with TestClient(app, headers={"X-Requested-With": "savetube"}) as client:
-        assert client.post("/api/rules", json=rule).status_code == 201
-        assert client.post("/api/rules", json=rule).status_code == 409
-        rule_id = client.get("/api/rules").json()[0]["id"]
-        replaced = client.put(f"/api/rules/{rule_id}", json=rule | {"use_cookies": True})
-        assert replaced.json()["use_cookies"] is True
-        assert replaced.json()["date_after"] == "2026-01-01"
-
-        body = {
-            "url": "https://www.youtube.com/@chan",
-            "tabs": ["videos", "shorts"],
-            "rule_id": rule_id,
-        }
+        body = {"url": "https://www.youtube.com/@chan", "tabs": ["videos", "shorts"]}
         created = client.post("/api/sources", json=body)
         assert created.status_code == 201
         assert [s["url"] for s in created.json()] == [
@@ -352,7 +342,6 @@ def test_api_writes_sources_and_rules(settings):
         ]
         assert client.post("/api/sources", json=body | {"tabs": ["shorts"]}).status_code == 409
         assert client.post("/api/sources", json=body | {"tabs": []}).status_code == 422
-        assert client.post("/api/sources", json=body | {"rule_id": 999}).status_code == 422
 
         source_id = created.json()[0]["id"]
         patched = client.patch(f"/api/sources/{source_id}", json={"enabled": False})
@@ -360,10 +349,8 @@ def test_api_writes_sources_and_rules(settings):
         assert patched.json()["poll_interval_minutes"] == 360
         assert client.post(f"/api/sources/{source_id}/poll").status_code == 202
 
-        assert client.delete(f"/api/rules/{rule_id}").status_code == 409
         for s in created.json():
             assert client.delete(f"/api/sources/{s['id']}").status_code == 204
-        assert client.delete(f"/api/rules/{rule_id}").status_code == 204
         assert client.get("/api/sources").json() == []
 
 
@@ -371,9 +358,11 @@ def test_api_refuses_a_write_without_the_csrf_header(settings):
     app = create_app(settings)
     app.dependency_overrides[current_user] = lambda: User(sub="u")
     with TestClient(app) as client:
-        response = client.post("/api/rules", json={"name": "x", "types": ["videos"]})
+        response = client.post(
+            "/api/sources", json={"url": "https://www.youtube.com/@chan", "tabs": ["videos"]}
+        )
         assert response.status_code == 403
-        assert client.get("/api/rules").json() == []
+        assert client.get("/api/sources").json() == []
 
 
 NASA = "UCLA_DiR1FfKNvjuUpBHmylQ"
@@ -414,16 +403,14 @@ def _no_streams(channel_id):
 
 
 def _watch(settings, channel_id=NASA):
-    """A record job needs an enabled tab source of the channel whose rule watches lives."""
+    """A record job needs a channel watching lives and an enabled tab source of it."""
     _sql(
         settings,
-        "INSERT INTO rule (name, types, format, use_cookies, watch_lives)"
-        " VALUES ('watch', '{lives}', 'b', false, true)",
-        "INSERT INTO channel (id, name, dir_name) VALUES"
-        f" ('{channel_id}', 'NASA', 'NASA [{channel_id}]')",
-        "INSERT INTO source (url, kind, channel_id, rule_id, enabled, poll_interval_minutes)"
-        f" SELECT 'https://www.youtube.com/channel/{channel_id}/streams', 'tab', '{channel_id}',"
-        "  id, true, 360 FROM rule WHERE name = 'watch'",
+        "INSERT INTO channel (id, name, dir_name, watch_lives) VALUES"
+        f" ('{channel_id}', 'NASA', 'NASA [{channel_id}]', true)",
+        "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" ('https://www.youtube.com/channel/{channel_id}/streams', 'tab', '{channel_id}',"
+        "  true, 360)",
     )
 
 
@@ -532,22 +519,19 @@ async def test_a_probed_id_is_not_probed_again(settings):
 
 
 @pytest.mark.anyio
-async def test_watched_channels_are_enabled_tabs_whose_rule_watches_lives(settings):
+async def test_watched_channels_watch_lives_and_have_an_enabled_tab(settings):
     from savetube.live import watched_channels
 
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'watch', '{lives}', 'b', false, true),"
-        "        (2, 'quiet', '{lives}', 'b', false, false)",
-        "INSERT INTO channel (id, name, dir_name) VALUES"
-        " ('UC1', 'a', 'a'), ('UC2', 'b', 'b'), ('UC3', 'c', 'c')",
-        "INSERT INTO source (url, kind, channel_id, rule_id, enabled, poll_interval_minutes)"
-        " VALUES ('https://www.youtube.com/@a/streams', 'tab', 'UC1', 1, true, 360),"
-        "        ('https://www.youtube.com/@a/videos', 'tab', 'UC1', 1, true, 360),"
-        "        ('https://www.youtube.com/@b/streams', 'tab', 'UC2', 2, true, 360),"
-        "        ('https://www.youtube.com/@c/streams', 'tab', 'UC3', 1, false, 360),"
-        "        ('https://www.youtube.com/playlist?list=PL1', 'playlist', NULL, 1, true, 360)",
+        "INSERT INTO channel (id, name, dir_name, watch_lives) VALUES"
+        " ('UC1', 'a', 'a', true), ('UC2', 'b', 'b', false), ('UC3', 'c', 'c', true)",
+        "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes)"
+        " VALUES ('https://www.youtube.com/@a/streams', 'tab', 'UC1', true, 360),"
+        "        ('https://www.youtube.com/@a/videos', 'tab', 'UC1', true, 360),"
+        "        ('https://www.youtube.com/@b/streams', 'tab', 'UC2', true, 360),"
+        "        ('https://www.youtube.com/@c/streams', 'tab', 'UC3', false, 360),"
+        "        ('https://www.youtube.com/playlist?list=PL1', 'playlist', NULL, true, 360)",
     )
     engine = make_engine(settings.sqlalchemy_url)
     async with make_sessionmaker(engine)() as session:
@@ -562,10 +546,8 @@ async def test_a_detected_live_is_archived_once_it_ends(settings):
 
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, true)",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes) VALUES"
-        " (1, 'https://www.youtube.com/@VESPERBELL/streams', 'tab', 1, true, 360)",
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@VESPERBELL/streams', 'tab', true, 360)",
         "INSERT INTO channel (id, name, dir_name) VALUES"
         " ('UCPd0Z22gF43dUidPYEQO5-w', 'VESPERBELL', 'VESPERBELL [UCPd0Z22gF43dUidPYEQO5-w]')",
         "INSERT INTO video (id, channel_id, type, title, state) VALUES"
@@ -708,14 +690,14 @@ async def _requeue_nothing(job_id, queue_job_id):
 
 
 def _api(settings, lister=None):
-    from savetube.web.api import get_lister, get_requeue
+    from savetube.web.api import get_requeue, get_scanner
 
     app = create_app(settings)
     app.dependency_overrides[current_user] = lambda: User(sub="u")
     # The real requeue opens the procrastinate queue at SAVETUBE_DATABASE_URL.
     app.dependency_overrides[get_requeue] = lambda: _requeue_nothing
     if lister is not None:
-        app.dependency_overrides[get_lister] = lambda: lister
+        app.dependency_overrides[get_scanner] = lambda: lister
     return TestClient(app, headers={"X-Requested-With": "savetube"})
 
 
@@ -740,11 +722,9 @@ async def test_poll_keeps_the_full_listing_and_archives_titles_the_words_pass(se
 
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, false)",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes,"
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes,"
         " include_words, exclude_words) VALUES"
-        " (1, 'https://www.youtube.com/@VESPERBELL/streams', 'tab', 1, true, 360,"
+        " (1, 'https://www.youtube.com/@VESPERBELL/streams', 'tab', true, 360,"
         "  '{歌枠}', '{メン限}')",
     )
     listing = {
@@ -818,14 +798,11 @@ async def test_playlists_source_makes_a_child_per_new_playlist_and_archives_noth
 
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, false),"
-        "        (2, 'other', '{videos}', 'b', false, false)",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes,"
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes,"
         " include_words, exclude_words, other_channels) VALUES"
-        f" (1, 'https://www.youtube.com/channel/{VESP}/playlists', 'playlists', 1, true, 120,"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/playlists', 'playlists', true, 120,"
         "  '{歌枠}', '{告知}', true),"
-        " (2, 'https://www.youtube.com/playlist?list=PLu4d2yplfpFdB', 'playlist', 2, true, 360,"
+        " (2, 'https://www.youtube.com/playlist?list=PLu4d2yplfpFdB', 'playlist', true, 360,"
         "  '{}', '{}', false)",
         # Explicit ids leave the sequence behind.
         "SELECT setval('source_id_seq', 2)",
@@ -859,7 +836,6 @@ async def test_playlists_source_makes_a_child_per_new_playlist_and_archives_noth
             c.kind,
             c.parent_id,
             c.channel_id,
-            c.rule_id,
             c.poll_interval_minutes,
             c.include_words,
             c.exclude_words,
@@ -872,7 +848,6 @@ async def test_playlists_source_makes_a_child_per_new_playlist_and_archives_noth
             SourceKind.PLAYLIST,
             1,
             VESP,
-            1,
             120,
             # Words are not copied. A child merges its parent's lists when matched.
             [],
@@ -894,17 +869,15 @@ async def test_playlist_source_skips_other_channels_unless_allowed(settings):
 
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, false)",
         "INSERT INTO channel (id, name, dir_name) VALUES"
         f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
-        "INSERT INTO source (id, url, kind, channel_id, rule_id, enabled, poll_interval_minutes)"
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes)"
         f" VALUES (1, 'https://www.youtube.com/channel/{VESP}/playlists', 'playlists', '{VESP}',"
-        "  1, false, 360)",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes, parent_id,"
+        "  false, 360)",
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes, parent_id,"
         " other_channels) VALUES"
-        " (2, 'https://www.youtube.com/playlist?list=PLown', 'playlist', 1, true, 360, 1, false),"
-        " (3, 'https://www.youtube.com/playlist?list=PLall', 'playlist', 1, true, 360, 1, true)",
+        " (2, 'https://www.youtube.com/playlist?list=PLown', 'playlist', true, 360, 1, false),"
+        " (3, 'https://www.youtube.com/playlist?list=PLall', 'playlist', true, 360, 1, true)",
     )
     # A playlist listing whose top level names no channel: the parent's applies.
     listing = {
@@ -938,18 +911,16 @@ async def test_playlist_source_skips_other_channels_unless_allowed(settings):
 def test_api_sources_carry_title_words_and_list_channel_playlists(settings):
     listed = []
 
-    def lister(url, cookiefile):
+    def lister(url, limit):
         listed.append(url)
         return PLAYLISTS_LISTING
 
     with _api(settings, lister) as client:
-        rule_id = client.post("/api/rules", json={"name": "r", "types": ["lives"]}).json()["id"]
         created = client.post(
             "/api/sources",
             json={
                 "url": f"https://www.youtube.com/channel/{VESP}",
                 "tabs": ["streams", "playlists"],
-                "rule_id": rule_id,
                 "include_words": [" 歌枠", "歌枠 ", "", "Cover", "cover"],
                 "other_channels": True,
             },
@@ -979,10 +950,7 @@ def test_api_sources_carry_title_words_and_list_channel_playlists(settings):
 
         single = client.post(
             "/api/sources",
-            json={
-                "url": "https://www.youtube.com/playlist?list=PLu4d2yplfpFdB",
-                "rule_id": rule_id,
-            },
+            json={"url": "https://www.youtube.com/playlist?list=PLu4d2yplfpFdB"},
         ).json()[0]
         assert single["include_words"] == [] and single["other_channels"] is False
 
@@ -1011,22 +979,19 @@ async def test_a_live_is_recorded_only_when_a_watching_source_passes_its_title(s
 
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'watch', '{lives}', 'b', false, true),"
-        "        (2, 'quiet', '{lives}', 'b', false, false)",
-        "INSERT INTO channel (id, name, dir_name) VALUES"
-        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
-        "INSERT INTO source (url, kind, channel_id, rule_id, enabled, poll_interval_minutes,"
+        "INSERT INTO channel (id, name, dir_name, watch_lives) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', true)",
+        "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes,"
         " include_words, exclude_words) VALUES"
-        f" ('https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', 1, true, 360,"
+        f" ('https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360,"
         "  '{歌枠}', '{メン限}'),"
-        f" ('https://www.youtube.com/channel/{VESP}/videos', 'tab', '{VESP}', 1, true, 360,"
+        f" ('https://www.youtube.com/channel/{VESP}/videos', 'tab', '{VESP}', true, 360,"
         "  '{3DLIVE}', '{}'),"
         # Empty words pass every title, but these two never watch: one is
-        # disabled, the other's rule does not watch lives.
-        f" ('https://www.youtube.com/channel/{VESP}/shorts', 'tab', '{VESP}', 1, false, 360,"
+        # disabled, the other is not a tab.
+        f" ('https://www.youtube.com/channel/{VESP}/shorts', 'tab', '{VESP}', false, 360,"
         "  '{}', '{}'),"
-        f" ('https://www.youtube.com/playlist?list=PLx', 'playlist', '{VESP}', 2, true, 360,"
+        f" ('https://www.youtube.com/playlist?list=PLx', 'playlist', '{VESP}', true, 360,"
         "  '{}', '{}')",
     )
 
@@ -1080,14 +1045,12 @@ async def test_poll_and_preview_merge_global_channel_and_source_words(settings):
 
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{videos,lives}', 'b', false, false)",
         "UPDATE global_words SET include_words = '{歌枠}', exclude_words = '{告知}'",
         "INSERT INTO channel (id, name, dir_name, include_words) VALUES"
         f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', '{{cover}}')",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes,"
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes,"
         " exclude_words) VALUES"
-        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', 1, true, 360,"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', true, 360,"
         "  '{メン限}')",
     )
     listing = {
@@ -1188,7 +1151,7 @@ def test_api_global_and_channel_words(settings):
 def test_api_channel_playlists_reports_a_yt_dlp_failure_as_502(settings):
     from yt_dlp.utils import DownloadError
 
-    def lister(url, cookiefile):
+    def lister(url, limit):
         raise DownloadError("ERROR: [youtube:tab] @gone: This channel does not exist.")
 
     with _api(settings, lister) as client:
@@ -1203,17 +1166,14 @@ KMNZ = "UCwuS0uY-Z2Gr_5OV2oFybFA"
 PL = "https://www.youtube.com/playlist?list=PLu4d2yplfpFd"
 
 
-def _rule_and_parent(settings, *extra, enabled="true", other_channels="false"):
+def _parent(settings, *extra, enabled="true", other_channels="false"):
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, false),"
-        "        (2, 'other', '{videos}', 'b', false, false)",
         "INSERT INTO channel (id, name, dir_name) VALUES"
         f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
-        "INSERT INTO source (id, url, kind, channel_id, rule_id, enabled, poll_interval_minutes,"
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
         " include_words, other_channels) VALUES"
-        f" (1, 'https://www.youtube.com/channel/{VESP}/playlists', 'playlists', '{VESP}', 1,"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/playlists', 'playlists', '{VESP}',"
         f"  {enabled}, 120, '{{歌枠}}', {other_channels})",
         "SELECT setval('source_id_seq', 1)",
         *extra,
@@ -1244,7 +1204,7 @@ async def _children(sessionmaker):
 
 @pytest.mark.anyio
 async def test_a_child_is_disabled_not_deleted_and_never_recreated(settings):
-    _rule_and_parent(settings)
+    _parent(settings)
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
     await _poll(sessionmaker, settings, 1, PLAYLISTS_LISTING)
@@ -1275,7 +1235,7 @@ async def test_a_child_is_disabled_not_deleted_and_never_recreated(settings):
 async def test_new_children_spread_their_first_poll_over_the_interval(settings):
     from savetube.poll import due_sources
 
-    _rule_and_parent(settings)
+    _parent(settings)
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
     before = datetime.now(UTC)
@@ -1294,11 +1254,11 @@ async def test_new_children_spread_their_first_poll_over_the_interval(settings):
 async def test_a_disabled_parent_holds_its_children(settings):
     from savetube.poll import due_sources
 
-    _rule_and_parent(
+    _parent(
         settings,
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes, parent_id)"
-        f" VALUES (2, '{PL}A', 'playlist', 1, true, 120, 1),"
-        "        (3, 'https://www.youtube.com/playlist?list=PLlone', 'playlist', 1, true, 120,"
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes, parent_id)"
+        f" VALUES (2, '{PL}A', 'playlist', true, 120, 1),"
+        "        (3, 'https://www.youtube.com/playlist?list=PLlone', 'playlist', true, 120,"
         "         NULL)",
         enabled="false",
     )
@@ -1313,10 +1273,10 @@ async def test_a_disabled_parent_holds_its_children(settings):
 
 
 def test_patching_a_parent_copies_its_settings_but_not_its_words(settings):
-    _rule_and_parent(
+    _parent(
         settings,
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes, parent_id,"
-        " include_words) VALUES (2, '{PL}A', 'playlist', 1, true, 120, 1, '{Cover}')".replace(
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes, parent_id,"
+        " include_words) VALUES (2, '{PL}A', 'playlist', true, 120, 1, '{Cover}')".replace(
             "{PL}", PL
         ),
     )
@@ -1324,7 +1284,6 @@ def test_patching_a_parent_copies_its_settings_but_not_its_words(settings):
         response = client.patch(
             "/api/sources/1",
             json={
-                "rule_id": 2,
                 "poll_interval_minutes": 60,
                 "other_channels": True,
                 "include_words": ["告知"],
@@ -1334,23 +1293,22 @@ def test_patching_a_parent_copies_its_settings_but_not_its_words(settings):
         assert response.status_code == 200
         child = next(s for s in client.get("/api/sources").json() if s["id"] == 2)
     assert (
-        child["rule_id"],
         child["poll_interval_minutes"],
         child["other_channels"],
         child["include_words"],
         child["enabled"],
-    ) == (2, 60, True, ["Cover"], True)
+    ) == (60, True, ["Cover"], True)
 
 
 @pytest.mark.anyio
 async def test_a_child_merges_parent_words_and_each_uploaders_channel_words(settings):
-    _rule_and_parent(
+    _parent(
         settings,
         f"UPDATE channel SET exclude_words = '{{告知}}' WHERE id = '{VESP}'",
         "INSERT INTO channel (id, name, dir_name, exclude_words) VALUES"
         f" ('{KMNZ}', 'KMNZ', 'KMNZ [{KMNZ}]', '{{ヨミネロ}}')",
-        "INSERT INTO source (id, url, kind, channel_id, rule_id, enabled, poll_interval_minutes,"
-        f" parent_id, other_channels) VALUES (2, '{PL}A', 'playlist', '{VESP}', 1, true, 120, 1,"
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
+        f" parent_id, other_channels) VALUES (2, '{PL}A', 'playlist', '{VESP}', true, 120, 1,"
         "  true)",
     )
 
@@ -1389,10 +1347,8 @@ async def test_a_child_merges_parent_words_and_each_uploaders_channel_words(sett
 async def test_a_playlist_without_an_owner_needs_other_channels(settings):
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, false)",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes) VALUES"
-        " (1, 'https://www.youtube.com/playlist?list=PLmix', 'playlist', 1, true, 360)",
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/playlist?list=PLmix', 'playlist', true, 360)",
     )
     listing = {
         "entries": [
@@ -1414,15 +1370,13 @@ async def test_a_playlist_without_an_owner_needs_other_channels(settings):
 async def test_poll_links_every_stored_video_and_cancels_queued_jobs_the_words_drop(settings):
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, false)",
         "INSERT INTO channel (id, name, dir_name) VALUES"
         f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
-        "INSERT INTO source (id, url, kind, channel_id, rule_id, enabled, poll_interval_minutes,"
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
         " exclude_words) VALUES"
-        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', 1, true, 360,"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360,"
         "  '{告知}'),"
-        f" (2, 'https://www.youtube.com/channel/{VESP}/videos', 'tab', '{VESP}', 1, true, 360,"
+        f" (2, 'https://www.youtube.com/channel/{VESP}/videos', 'tab', '{VESP}', true, 360,"
         "  '{}')",
         "INSERT INTO video (id, channel_id, type, title, state) VALUES"
         f" ('stored', '{VESP}', 'lives', 's', 'complete'),"
@@ -1489,7 +1443,7 @@ async def test_poll_links_every_stored_video_and_cancels_queued_jobs_the_words_d
 
 @pytest.mark.anyio
 async def test_a_playlist_gone_from_the_channel_disables_its_child(settings):
-    _rule_and_parent(settings)
+    _parent(settings)
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
     await _poll(sessionmaker, settings, 1, PLAYLISTS_LISTING)
@@ -1511,10 +1465,8 @@ async def test_a_playlist_gone_from_the_channel_disables_its_child(settings):
 async def test_an_empty_listing_keeps_the_last_titles(settings):
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, false)",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes) VALUES"
-        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', 1, true, 360)",
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', true, 360)",
     )
     listing = {
         "channel_id": VESP,
@@ -1579,10 +1531,10 @@ async def test_the_streams_tab_decides_live_words_when_it_watches(settings):
     _watch(settings)
     _sql(
         settings,
-        "INSERT INTO source (url, kind, channel_id, rule_id, enabled, poll_interval_minutes,"
+        "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes,"
         " include_words)"
-        f" SELECT 'https://www.youtube.com/channel/{NASA}/videos', 'tab', '{NASA}', id, true, 360,"
-        "  '{}' FROM rule WHERE name = 'watch'",
+        f" VALUES ('https://www.youtube.com/channel/{NASA}/videos', 'tab', '{NASA}', true, 360,"
+        "  '{}')",
         # The /streams source from _watch now wants only Artemis.
         "UPDATE source SET include_words = '{Artemis}' WHERE url LIKE '%/streams'",
     )
@@ -1616,7 +1568,7 @@ def test_api_channel_playlists_is_a_post_with_a_timeout(settings, monkeypatch):
 
     monkeypatch.setattr(api, "CHANNEL_PLAYLISTS_TIMEOUT", 0.2)
 
-    def slow(url, cookiefile):
+    def slow(url, limit):
         time.sleep(1)
         return PLAYLISTS_LISTING
 
@@ -1816,16 +1768,12 @@ def test_api_download_settings_and_job_deferral(settings):
 
         [job] = client.get("/api/jobs").json()
         assert job["deferred_until"] == "2026-10-21T14:00:00Z"
-        rule = client.post("/api/rules", json={"name": "r", "types": ["videos"]}).json()
-        assert "max_concurrent" not in rule
 
 
 @pytest.mark.anyio
 async def test_a_source_lists_without_downloading_until_archiving_is_on(settings):
     _sql(
         settings,
-        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives)"
-        " VALUES (1, 'r', '{lives}', 'b', false, false)",
         "INSERT INTO channel (id, name, dir_name) VALUES"
         f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
         "INSERT INTO video (id, channel_id, type, title, state) VALUES"
@@ -1842,7 +1790,7 @@ async def test_a_source_lists_without_downloading_until_archiving_is_on(settings
     with _api(settings) as client:
         [source] = client.post(
             "/api/sources",
-            json={"url": f"https://www.youtube.com/channel/{VESP}/streams", "rule_id": 1},
+            json={"url": f"https://www.youtube.com/channel/{VESP}/streams"},
         ).json()
     assert source["archiving"] is False
 
@@ -1870,11 +1818,11 @@ async def test_a_source_lists_without_downloading_until_archiving_is_on(settings
 
 @pytest.mark.anyio
 async def test_a_parent_passes_archiving_to_its_children(settings):
-    _rule_and_parent(
+    _parent(
         settings,
         "UPDATE source SET archiving = false WHERE id = 1",
-        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes, parent_id,"
-        f" archiving) VALUES (2, '{PL}A', 'playlist', 1, true, 120, 1, false)",
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes, parent_id,"
+        f" archiving) VALUES (2, '{PL}A', 'playlist', true, 120, 1, false)",
         "SELECT setval('source_id_seq', 2)",
     )
     engine = make_engine(settings.sqlalchemy_url)
@@ -1965,7 +1913,7 @@ def test_putting_download_settings_reschedules_deferred_jobs(settings):
 
 @pytest.mark.anyio
 async def test_playlist_sources_carry_their_title(settings):
-    _rule_and_parent(settings)
+    _parent(settings)
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
     await _poll(sessionmaker, settings, 1, PLAYLISTS_LISTING)
@@ -1991,3 +1939,364 @@ async def test_playlist_sources_carry_their_title(settings):
     assert titles[1] is None
     assert titles[b.id] == "◀︎KASUKA 歌枠▶︎"
     await engine.dispose()
+
+
+def test_migration_0005_moves_rule_settings_onto_channels(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.begin() as c:
+        c.execute(sa.text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.upgrade(cfg, "0004")
+    _sql(
+        settings,
+        "INSERT INTO rule (id, name, types, date_after, format, use_cookies, watch_lives) VALUES"
+        " (1, 'a', '{videos}', '2026-02-01', 'f1', false, false),"
+        " (2, 'b', '{lives}', '2026-01-01', 'f2', true, true),"
+        " (3, 'c', '{videos}', NULL, 'f3', false, false)",
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        " ('UC1', 'a', 'a'), ('UC2', 'b', 'b'), ('UC3', 'c', 'c')",
+        "INSERT INTO source (id, url, kind, channel_id, rule_id, enabled, poll_interval_minutes)"
+        " VALUES (1, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', 1, true, 360),"
+        "        (2, 'https://www.youtube.com/@a/streams', 'tab', 'UC1', 2, true, 360),"
+        "        (3, 'https://www.youtube.com/@b/videos', 'tab', 'UC2', 3, true, 360),"
+        "        (4, 'https://www.youtube.com/@b/streams', 'tab', 'UC2', 1, true, 360),"
+        "        (5, 'https://www.youtube.com/playlist?list=PL1', 'playlist', NULL, 2, true, 360)",
+    )
+    command.upgrade(cfg, "head")
+    with engine.connect() as c:
+        rows = c.execute(
+            sa.text(
+                "SELECT id, date_after, format, use_cookies, watch_lives FROM channel ORDER BY id"
+            )
+        ).all()
+        rule_table = c.execute(sa.text("SELECT to_regclass('rule')")).scalar()
+        columns = set(
+            c.execute(
+                sa.text(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = 'source'"
+                )
+            ).scalars()
+        )
+    engine.dispose()
+    assert [tuple(r) for r in rows] == [
+        # Either flag on wins, the earliest cutoff wins, the lowest source id's format.
+        ("UC1", date(2026, 1, 1), "f1", True, True),
+        # No cutoff is the earliest of all.
+        ("UC2", None, "f3", False, False),
+        ("UC3", None, "bv*+ba/b", False, False),
+    ]
+    assert rule_table is None
+    assert "rule_id" not in columns
+
+
+def _scanner(failing=None):
+    """A fake listing per URL, recording each call. `failing` maps a tab to its error."""
+    from yt_dlp.utils import DownloadError
+
+    calls = []
+    head = {"channel_id": VESP, "channel": "VESPERBELL", "uploader_id": "@VESPERBELL"}
+    listings = {
+        "videos": {**head, "entries": [{"id": "cover", "title": "IRIS OUT (Cover)"}]},
+        "shorts": {**head, "entries": [{"id": "short", "title": "#shorts 【歌枠】切り抜き"}]},
+        "streams": {
+            **head,
+            "entries": [
+                {"id": "utawaku", "title": UTAWAKU},
+                {"id": "notice", "title": "【歌枠】重大告知アリ"},
+            ],
+        },
+        "playlists": PLAYLISTS_LISTING,
+    }
+
+    def scan(url, limit):
+        calls.append((url, limit))
+        tab = url.rsplit("/", 1)[1]
+        if failing and tab in failing:
+            raise DownloadError(failing[tab])
+        return listings[tab]
+
+    return scan, calls
+
+
+def test_api_channel_scan_lists_the_first_page_of_each_tab_and_the_playlists(settings):
+    scan, calls = _scanner({"shorts": "ERROR: This channel does not have a shorts tab"})
+    with _api(settings, scan) as client:
+        response = client.post(
+            "/api/channel-scan", json={"url": "https://www.youtube.com/@VESPERBELL/videos"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert sorted(calls) == [
+            ("https://www.youtube.com/@VESPERBELL/playlists", None),
+            ("https://www.youtube.com/@VESPERBELL/shorts", 30),
+            ("https://www.youtube.com/@VESPERBELL/streams", 30),
+            ("https://www.youtube.com/@VESPERBELL/videos", 30),
+        ]
+        assert (body["url"], body["channel_id"], body["handle"], body["name"]) == (
+            "https://www.youtube.com/@VESPERBELL",
+            VESP,
+            "@VESPERBELL",
+            "VESPERBELL",
+        )
+        assert body["tabs"] == {
+            "videos": [{"video_id": "cover", "title": "IRIS OUT (Cover)"}],
+            # The channel has no Shorts tab.
+            "shorts": None,
+            "streams": [
+                {"video_id": "utawaku", "title": UTAWAKU},
+                {"video_id": "notice", "title": "【歌枠】重大告知アリ"},
+            ],
+        }
+        assert [p["title"] for p in body["playlists"]] == [
+            "◀︎YOMI Stream▶︎",
+            "◀︎KASUKA Stream▶︎",
+            "◀︎BD LIVE▶︎",
+        ]
+        assert body["suggestions"] == [{"word": "歌枠", "count": 2}]
+        bad = client.post(
+            "/api/channel-scan", json={"url": "https://www.youtube.com/playlist?list=PL1"}
+        )
+        assert bad.status_code == 422
+        # Nothing is stored by a scan.
+        assert client.get("/api/channels").json() == []
+
+    gone, _ = _scanner(dict.fromkeys(["videos", "shorts", "streams", "playlists"], "gone"))
+    with _api(settings, gone) as client:
+        response = client.post("/api/channel-scan", json={"url": "https://www.youtube.com/@x"})
+    assert response.status_code == 502 and response.json()["detail"] == "gone"
+
+
+def test_api_channel_scan_times_out(settings, monkeypatch):
+    import time
+
+    from savetube.web import api
+
+    monkeypatch.setattr(api, "CHANNEL_PLAYLISTS_TIMEOUT", 0.2)
+
+    def slow(url, limit):
+        time.sleep(1)
+        return {}
+
+    with _api(settings, slow) as client:
+        response = client.post("/api/channel-scan", json={"url": "https://www.youtube.com/@x"})
+    assert response.status_code == 504
+
+
+def test_api_title_preview_merges_stored_global_and_channel_words(settings):
+    _sql(
+        settings,
+        "UPDATE global_words SET exclude_words = '{告知}'",
+        "INSERT INTO channel (id, name, dir_name, exclude_words) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', '{{Cover}}')",
+    )
+    titles = [UTAWAKU, "【歌枠】重大告知アリ", "IRIS OUT (Cover)", GUERRILLA]
+    with _api(settings) as client:
+
+        def kept(**body):
+            response = client.post(
+                "/api/title-preview",
+                json={"titles": titles, "include_words": [], "exclude_words": []} | body,
+            )
+            assert response.status_code == 200
+            assert [t["title"] for t in response.json()] == titles
+            return [t["kept"] for t in response.json()]
+
+        # A channel not stored yet, as at onboarding: only the global lists.
+        assert kept() == [True, False, True, True]
+        assert kept(include_words=["歌枠 "]) == [True, False, False, False]
+        assert kept(channel_id=VESP) == [True, False, False, True]
+        assert kept(channel_id="UCnew", exclude_words=["ゲリラ"]) == [True, False, True, False]
+
+
+def _channel_body(**extra):
+    return {
+        "url": "https://www.youtube.com/@VESPERBELL",
+        "channel_id": VESP,
+        "handle": "@VESPERBELL",
+        "name": "VESPERBELL",
+        "tabs": ["streams", "videos"],
+        "playlists": [{"url": f"{PL}B", "title": "◀︎KASUKA Stream▶︎"}],
+        "watch_lives": True,
+        "include_words": ["歌枠", " 歌枠"],
+        "exclude_words": ["告知"],
+        "date_after": "2026-01-01",
+        "format": "wa",
+        "use_cookies": True,
+    } | extra
+
+
+def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings):
+    with _api(settings) as client:
+        response = client.post("/api/channels", json=_channel_body())
+        assert response.status_code == 201
+        body = response.json()
+        assert {k: body[k] for k in ("id", "handle", "name", "dir_name")} == {
+            "id": VESP,
+            "handle": "@VESPERBELL",
+            "name": "VESPERBELL",
+            "dir_name": f"VESPERBELL [{VESP}]",
+        }
+        assert (body["include_words"], body["exclude_words"]) == (["歌枠"], ["告知"])
+        assert (body["date_after"], body["format"], body["use_cookies"], body["watch_lives"]) == (
+            "2026-01-01",
+            "wa",
+            True,
+            True,
+        )
+        assert [
+            (s["url"], s["kind"], s["title"], s["channel_id"], s["archiving"], s["include_words"])
+            for s in body["sources"]
+        ] == [
+            ("https://www.youtube.com/@VESPERBELL/streams", "tab", None, VESP, True, []),
+            ("https://www.youtube.com/@VESPERBELL/videos", "tab", None, VESP, True, []),
+            (f"{PL}B", "playlist", "◀︎KASUKA Stream▶︎", VESP, True, []),
+        ]
+        again = client.post("/api/channels", json=_channel_body(tabs=["videos"], playlists=[]))
+        assert again.status_code == 409
+
+        assert (
+            client.post(
+                "/api/channels", json=_channel_body(tabs=[], playlists=[], watch_lives=False)
+            ).status_code
+            == 422
+        )
+        only_playlists = _channel_body(tabs=[], all_playlists=True)
+        assert client.post("/api/channels", json=only_playlists).status_code == 422
+
+        # A tab added later takes the channel the other tabs already found.
+        [shorts] = client.post(
+            "/api/sources", json={"url": "https://www.youtube.com/@VESPERBELL/shorts"}
+        ).json()
+        assert shorts["channel_id"] == VESP
+
+        patched = client.patch(
+            f"/api/channels/{VESP}",
+            json={"date_after": None, "format": "bv*+ba/b", "use_cookies": False},
+        )
+        assert patched.status_code == 200
+        channel = patched.json()
+        assert (channel["date_after"], channel["format"], channel["use_cookies"]) == (
+            None,
+            "bv*+ba/b",
+            False,
+        )
+        # An omitted field stays.
+        assert channel["watch_lives"] is True and channel["include_words"] == ["歌枠"]
+        assert client.patch(f"/api/channels/{VESP}", json={"format": ""}).status_code == 422
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def watched():
+        from savetube.live import watched_channels
+
+        async with sessionmaker() as session:
+            return await watched_channels(session)
+
+    assert asyncio.run(watched()) == [VESP]
+
+
+def test_api_tracks_all_playlists_of_a_new_channel(settings):
+    with _api(settings) as client:
+        body = client.post(
+            "/api/channels",
+            json=_channel_body(tabs=["videos"], all_playlists=True, playlists=[]),
+        ).json()
+    assert [(s["url"], s["kind"], s["archiving"]) for s in body["sources"]] == [
+        ("https://www.youtube.com/@VESPERBELL/videos", "tab", True),
+        ("https://www.youtube.com/@VESPERBELL/playlists", "playlists", True),
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_poll_uses_cookies_only_for_a_channel_that_wants_them(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name, use_cookies) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', true)",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360),"
+        " (2, 'https://www.youtube.com/playlist?list=PLnew', 'playlist', NULL, true, 360)",
+    )
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    cookies = []
+
+    def lister(url, cookiefile):
+        cookies.append(cookiefile)
+        return {"entries": []}
+
+    for source_id in (1, 2):
+        await poll_source_with(sessionmaker, settings, source_id, lister)
+    async with sessionmaker() as session:
+        errors = [(await session.get(Source, i)).last_error for i in (1, 2)]
+    # SAVETUBE_COOKIES_FILE is unset in the test settings.
+    assert errors == [
+        "RuntimeError: the channel uses cookies and SAVETUBE_COOKIES_FILE is unset",
+        None,
+    ]
+    assert cookies == [None]
+
+    cookie_file = settings.archive_root.parent / "cookies.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\n")
+    await poll_source_with(
+        sessionmaker, settings.model_copy(update={"cookies_file": cookie_file}), 1, lister
+    )
+    assert cookies[-1] is not None and cookies[-1].name == "cookies.txt"
+    await engine.dispose()
+
+
+async def poll_source_with(sessionmaker, settings, source_id, lister):
+    from savetube.poll import poll_source
+
+    await poll_source(
+        sessionmaker, source_id, settings, lister=lister, enqueue=_enqueue, cancel=_cancel
+    )
+
+
+@pytest.mark.anyio
+async def test_a_download_takes_format_and_cookies_from_its_sources_channel(settings):
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa' WHERE id = 'UC1'",
+        "INSERT INTO channel (id, name, dir_name, format, use_cookies) VALUES"
+        " ('UC2', 'B', 'B [UC2]', 'ba', true)",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/playlist?list=PLb', 'playlist', 'UC2', true, 360)",
+    )
+    # Not listed by any source: the video's own channel applies.
+    job, runner, _ = await _run(settings)
+    assert runner.params["format"] == "wa" and "cookiefile" not in runner.params
+
+    # Listed by a source of a channel that uses cookies, with no cookie file set.
+    _sql(
+        settings,
+        "INSERT INTO video_source (video_id, source_id) VALUES ('v1', 1)",
+        "UPDATE job SET state = 'queued' WHERE id = 1",
+    )
+    with pytest.raises(RuntimeError):
+        await _run(settings)
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        job = c.execute(sa.text("SELECT state, log_tail FROM job WHERE id = 1")).one()
+    engine.dispose()
+    assert job.state == "failed"
+    assert job.log_tail == "the channel uses cookies and SAVETUBE_COOKIES_FILE is unset"
+
+
+def test_api_lists_a_channels_archive_jobs_with_titles(settings):
+    _job_rows(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('w1', 'UC2', 'videos', 'other', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'queued', 'w1', 0)",
+    )
+    with _api(settings) as client:
+        jobs = client.get("/api/jobs", params={"channel_id": "UC2"}).json()
+    assert [(j["id"], j["title"], j["channel_id"]) for j in jobs] == [(2, "other", "UC2")]
