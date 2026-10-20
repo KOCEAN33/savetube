@@ -117,15 +117,36 @@ type Query = Record<string, string | number | undefined>
 // so concurrent logins break each other's callback.
 let redirectingToLogin = false
 
-async function get<T>(path: string, query: Query = {}): Promise<T> {
-  const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined && value !== "") params.set(key, String(value))
+// FastAPI puts a message in `detail`: a string from the app, or a list of
+// validation errors from pydantic.
+async function errorMessage(res: Response, path: string): Promise<string> {
+  try {
+    const body = (await res.json()) as { detail?: unknown }
+    if (typeof body.detail === "string") return body.detail
+    if (Array.isArray(body.detail)) {
+      return body.detail
+        .map((d: { loc?: unknown[]; msg?: string }) => `${d.loc?.slice(1).join(".")}: ${d.msg}`)
+        .join("; ")
+    }
+  } catch {
+    // Not JSON: fall through to the status line.
   }
-  const qs = params.toString()
-  const res = await fetch(qs ? `${path}?${qs}` : path, {
+  return `${res.status} ${res.statusText} for ${path}`
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json" }
+  if (method !== "GET") {
+    // The backend refuses a write without it: a cross-origin page cannot set
+    // a custom header without a CORS preflight.
+    headers["X-Requested-With"] = "savetube"
+  }
+  if (body !== undefined) headers["Content-Type"] = "application/json"
+  const res = await fetch(path, {
+    method,
     credentials: "same-origin",
-    headers: { Accept: "application/json" },
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (res.status === 401) {
     if (!redirectingToLogin) {
@@ -135,9 +156,43 @@ async function get<T>(path: string, query: Query = {}): Promise<T> {
     throw new ApiError(401, "Not signed in")
   }
   if (!res.ok) {
-    throw new ApiError(res.status, `${res.status} ${res.statusText} for ${path}`)
+    throw new ApiError(res.status, await errorMessage(res, path))
   }
+  if (res.status === 204) return undefined as T
   return (await res.json()) as T
+}
+
+function get<T>(path: string, query: Query = {}): Promise<T> {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== "") params.set(key, String(value))
+  }
+  const qs = params.toString()
+  return request<T>("GET", qs ? `${path}?${qs}` : path)
+}
+
+export type Tab = "videos" | "shorts" | "streams"
+
+export interface SourceIn {
+  url: string
+  tabs: Tab[]
+  rule_id: number
+  poll_interval_minutes: number
+}
+
+export type SourcePatch = Partial<Pick<Source, "enabled" | "rule_id" | "poll_interval_minutes">>
+
+export type RuleIn = Omit<Rule, "id">
+
+export const mutations = {
+  createSources: (body: SourceIn) => request<Source[]>("POST", "/api/sources", body),
+  updateSource: (id: number, body: SourcePatch) =>
+    request<Source>("PATCH", `/api/sources/${id}`, body),
+  pollSource: (id: number) => request<Source>("POST", `/api/sources/${id}/poll`),
+  deleteSource: (id: number) => request<void>("DELETE", `/api/sources/${id}`),
+  createRule: (body: RuleIn) => request<Rule>("POST", "/api/rules", body),
+  replaceRule: (id: number, body: RuleIn) => request<Rule>("PUT", `/api/rules/${id}`, body),
+  deleteRule: (id: number) => request<void>("DELETE", `/api/rules/${id}`),
 }
 
 export const api = {
