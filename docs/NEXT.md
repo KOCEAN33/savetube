@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build live detection, then review live recording with the user before building the recorder path. Archiving existing videos works end to end from the UI.
+Build the agreed archive features: channel playlists, the title word rule, and tag word suggestions. Review live recording with the user before building the recorder path.
 
 ## Current progress
 
@@ -19,7 +19,8 @@ Build live detection, then review live recording with the user before building t
 - Postgres: the production role and `Database` `savetube` on Cluster `postgres` (homelab-platform `manifest/postgres/`). 1Password items `savetube-db` and `savetube-session`, each one field (`password`, `secret`).
 - Storage: `tank/youtube` (proxmox-talos-lab inventory), mounted rw at `/var/mnt/youtube`, root owned by 1000.
 - Built and checked locally end to end: the Rules and Sources pages create and edit rules and sources, the scheduler polls due sources, the worker downloads into the tree. The production rollout of this is unchecked.
-- Not built: live detection, recorder Job creation, Discord notifications, job-state metrics, cancel, a manual retry, the `missed` reconciliation, ServiceMonitor, canary CronJob. `rule.max_concurrent` is stored but nothing enforces it.
+- Live detection runs in the scheduler and queues `record` jobs. A check against real channels found two live and two upcoming streams on NASA and none on VESPERBELL. Nothing records them yet.
+- Not built: recorder Job creation, Discord notifications, job-state metrics, cancel, a manual retry, the `missed` reconciliation, ServiceMonitor, canary CronJob. `rule.max_concurrent` is stored but nothing enforces it.
 - An archive job whose worker pod dies stays `running`, and no poll queues its video again. A worker rollout during a download causes this.
 
 ## What worked
@@ -53,7 +54,11 @@ Build live detection, then review live recording with the user before building t
 ## Next steps
 
 1. Log in through a browser at `https://savetube.lab.hiriri.com` as a user holding `savetube-admin`, add a source, and watch the first archive job in production.
-2. Build live detection (`docs/plan.md` § Live detection).
+2. Build the agreed archive features test-first with the `tdd` skill. The example channel is `https://www.youtube.com/channel/UCPd0Z22gF43dUidPYEQO5-w` (VESPERBELL).
+   - Channel playlists offer two modes: track all of them, including ones added later, or pick some.
+   - Whether a playlist source also downloads videos from other channels is a per-source option.
+   - The title rule is an include word list and an exclude word list, matched case-insensitively. Example: the Live tab with include `歌枠` keeps `【歌枠】ちょっと疲れちゃってるんだと思うよ【VESPERBELL ヨミ】` and skips `【ゲリラ(豪雨)】私魔女のキキ(危機)…`.
+3. Tag word suggestions need examples the user confirms before the first test.
 
 ## Suggested skills
 

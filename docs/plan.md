@@ -1,6 +1,6 @@
 # savetube plan
 
-Draft for archiving chosen YouTube channels and playlists, recording lives from their first second, and managing both from one web UI. Built: web with login, the UI and API for sources and rules, source polling, the archive worker, the storage pipeline, the image. Live detection and recording are not built.
+Draft for archiving chosen YouTube channels and playlists, recording lives from their first second, and managing both from one web UI. Built: web with login, the UI and API for sources and rules, source polling, live detection, the archive worker, the storage pipeline, the image. Live recording is not built.
 
 ## Requirements
 
@@ -162,11 +162,22 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 
 ### Live detection
 
-- Every watched channel's RSS feed, polled every few minutes, finds new and upcoming video ids. RSS needs no quota.
-- Data API `videos.list` with `liveStreamingDetails` reads `scheduledStartTime` and `actualStartTime` for up to 50 ids per call at 1 unit. The default allocation is 10,000 units/day.
-- An upcoming stream gets a recorder Job a few minutes before `scheduledStartTime`, running with `--wait-for-video` and `--live-from-start`.
-- A stream with no waiting room appears in neither feed in time. The scheduler also polls each watched channel's `/live` page through yt-dlp extraction, about once a minute, for watched channels only.
+- A watched channel is the channel of an enabled tab source whose rule has "watch lives" on.
+- Every minute, per watched channel, the scheduler reads three places: the RSS feed, the first page of the Live tab, and the `/live` page.
+- The RSS feed holds only the 15 newest uploads. On a busy channel a waiting room drops out of it days before the stream, so the Live tab's `is_upcoming` and `is_live` entries are candidates too.
+- Each candidate id is probed once per scheduler process with yt-dlp and `ignore_no_formats_error`. Without that option an upcoming stream raises "This live event will begin in ..." instead of returning `release_timestamp`. A probe that fails, such as a members-only video without cookies, is skipped.
+- The `/live` page finds a stream with no waiting room. "The channel is not currently live" is the normal answer and is not an error.
+- No Data API key is used. The probe reads the scheduled start that `videos.list` would.
+- A detection is a queued `record` job. `scheduled_at` comes from `release_timestamp` for an upcoming stream and is null for a stream found live. The record job keeps a video to one detection across scheduler restarts.
+- The first check of a channel probes up to 15 feed ids and takes about a minute. Later checks take seconds.
+- A queued record job does not stop the archive poll from queuing the VOD. Until a recorder exists, the VOD is the only copy of a detected live.
 - WebSub push needs a public HTTPS callback, which the tailnet-only cluster lacks. Not used.
+
+### Recording and the VOD
+
+- An upcoming stream gets a recorder Job a few minutes before `scheduled_at`, running with `--wait-for-video` and `--live-from-start`. Not built.
+- A live recording can have gaps or buffering, so when both a recording and the VOD exist, the two are compared. How to compare and which to keep is open.
+- Some streams get no VOD after they end. For those, the recording is the only copy and stays.
 
 ### Login
 
