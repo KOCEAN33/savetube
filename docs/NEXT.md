@@ -21,8 +21,8 @@ Ship the archive features built on `develop` (channel playlists, title words, do
 - Built and checked locally end to end: the Rules and Sources pages create and edit rules and sources, the scheduler polls due sources, the worker downloads into the tree. The production rollout of this is unchecked.
 - Live detection runs in the scheduler and queues `record` jobs. A check against real channels found two live and two upcoming streams on NASA and none on VESPERBELL. Nothing records them yet.
 - Not built: recorder Job creation, Discord notifications, job-state metrics, cancel, a manual retry, the `missed` reconciliation, ServiceMonitor, canary CronJob.
-- Built on `develop` and checked locally against real VESPERBELL listings, in commits `6a1047e`-`14ce9c3`: channel playlists, title words at global, channel and source level, listing before downloading, download limits, stalled-job reclaim, `/healthz` with livenessProbe. The design is in `docs/plan.md` sections Channel playlists, Title words, Listing before downloading, Download limits. Migrations `0003` and `0004` are not applied in production.
-- `develop` is 14 commits ahead of `origin/develop` and unpushed. The user has not authorized the push.
+- Built on `develop` and checked locally against real VESPERBELL listings, in commits `6a1047e`-`14ce9c3`: channel playlists, title words at global, channel and source level, listing before downloading, download limits, stalled-job reclaim, `/healthz` with livenessProbe. The design is in `docs/plan.md` sections Channel playlists, Title words, Listing before downloading, Download limits. Migrations `0002`, `0003` and `0004` are not applied in production.
+- `develop` is pushed. Pull request #4 (`develop` to main) is open, and the user merges it. No CI runs on a pull request, because `image.yml` triggers only on a push to main.
 - The user's decisions behind the design, which the plan states as rules: word lists merge by union with no per-source opt-out, a global include word restricts every source on purpose, words apply to live detection too, children of a "track all" source are disabled and never deleted, health is Kubernetes' job and job ownership stays in the Postgres lease, limits are global only and the rate limit is per download, a download running at the window end finishes.
 
 ## What worked
@@ -58,7 +58,7 @@ Ship the archive features built on `develop` (channel playlists, title words, do
 
 ## Next steps
 
-1. Ask the user to authorize pushing `develop`, then open a pull request to main. A merge to main releases and deploys, and runs migrations `0003` and `0004`.
+1. After the user merges #4, watch the `image.yml` run, the release tag, and the Argo CD rollout in `savetube-prod`. Check that the scheduler's `migrate` init container applied `0002`-`0004`.
 2. Log in through a browser at `https://savetube.lab.hiriri.com` as a user holding `savetube-admin`, add a source, start its downloads, and watch the first archive job in production. Check the worker and scheduler livenessProbes stay green.
 3. Follow-ups:
    - `JobOut` omits `log_tail`, so the reclaim reason "worker stopped during the download" shows only in the database.
