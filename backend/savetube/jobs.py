@@ -3,15 +3,18 @@
 import asyncio
 import json
 import multiprocessing
+import shutil
 import tempfile
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
-from savetube.db.models import Job, JobState
+from savetube.db.models import Job, JobState, Video, VideoState
 from savetube.pipeline import from_shorts_tab, prepare_incoming, rule_for, store
 from savetube.ytdl import DEFAULT_FORMAT, build_params, copy_cookies, download, video_url
 
@@ -61,6 +64,13 @@ async def in_process(url: str, params: dict[str, Any]) -> dict[str, Any]:
     return await asyncio.to_thread(download, url, params)
 
 
+async def _set_video_state(session: AsyncSession, video_id: str, state: VideoState) -> None:
+    video = await session.get(Video, video_id)
+    # A video stored by an earlier job stays complete through a re-download.
+    if video is not None and video.state is not VideoState.COMPLETE:
+        video.state = state
+
+
 async def run(job_id: int, settings: Settings, *, live: bool, runner: Runner) -> None:
     sessionmaker = default_sessionmaker()
     async with sessionmaker() as session:
@@ -73,41 +83,48 @@ async def run(job_id: int, settings: Settings, *, live: bool, runner: Runner) ->
         job.state = JobState.RUNNING
         job.attempts += 1
         job.started_at = datetime.now(UTC)
+        await _set_video_state(session, video_id, VideoState.DOWNLOADING)
         await session.commit()
 
-    incoming = prepare_incoming(settings.incoming_root, job_id)
-    # Outside `incoming`, so the cookie jar never moves into the tree.
-    with tempfile.TemporaryDirectory(prefix="savetube-") as private:
-        cookiefile = None
-        if rule and rule.use_cookies:
-            if settings.cookies_file is None:
-                raise RuntimeError("the rule uses cookies and SAVETUBE_COOKIES_FILE is unset")
-            cookiefile = copy_cookies(settings.cookies_file, Path(private))
-        params = build_params(
-            incoming,
-            format=rule.format if rule else DEFAULT_FORMAT,
-            cookiefile=cookiefile,
-            live=live,
-        )
-        try:
+    # Any failure past RUNNING must reach the row, or the job stays running and
+    # no poll queues the video again.
+    try:
+        incoming = prepare_incoming(settings.incoming_root, job_id)
+        # Outside `incoming`, so the cookie jar never moves into the tree.
+        with tempfile.TemporaryDirectory(prefix="savetube-") as private:
+            cookiefile = None
+            if rule and rule.use_cookies:
+                if settings.cookies_file is None:
+                    raise RuntimeError("the rule uses cookies and SAVETUBE_COOKIES_FILE is unset")
+                cookiefile = copy_cookies(settings.cookies_file, Path(private))
+            params = build_params(
+                incoming,
+                format=rule.format if rule else DEFAULT_FORMAT,
+                cookiefile=cookiefile,
+                live=live,
+            )
             info = await runner(video_url(video_id), params)
-        except Exception as e:
-            async with sessionmaker() as session:
-                job = await session.get(Job, job_id)
-                job.state = JobState.FAILED
-                job.finished_at = datetime.now(UTC)
-                job.log_tail = str(e)[-LOG_TAIL_CHARS:]
-                await session.commit()
-            raise
 
-    async with sessionmaker() as session:
-        job = await session.get(Job, job_id)
-        await store(
-            session,
-            job=job,
-            info=info,
-            incoming=incoming,
-            archive_root=settings.archive_root,
-            from_shorts_tab=shorts,
-        )
-        await session.commit()
+        async with sessionmaker() as session:
+            job = await session.get(Job, job_id)
+            await store(
+                session,
+                job=job,
+                info=info,
+                incoming=incoming,
+                archive_root=settings.archive_root,
+                from_shorts_tab=shorts,
+            )
+            await session.commit()
+    except Exception as e:
+        # A retry is a new job with a new directory, so a partial download
+        # would otherwise stay on the dataset for good.
+        shutil.rmtree(settings.incoming_root / str(job_id), ignore_errors=True)
+        async with sessionmaker() as session:
+            job = await session.get(Job, job_id)
+            job.state = JobState.FAILED
+            job.finished_at = datetime.now(UTC)
+            job.log_tail = (str(e) or type(e).__name__)[-LOG_TAIL_CHARS:]
+            await _set_video_state(session, video_id, VideoState.FAILED)
+            await session.commit()
+        raise
