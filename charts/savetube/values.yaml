@@ -1,5 +1,5 @@
 image:
-  repository: harbor.lab.hiriri.com/savetube/savetube
+  repository: ghcr.io/kocean33/savetube
   # Defaults to the chart's appVersion.
   tag: ""
   pullPolicy: IfNotPresent
