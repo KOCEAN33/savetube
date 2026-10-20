@@ -1,6 +1,7 @@
 SHELL := bash
 ENV := set -a; [ -f .env ] && . ./.env; set +a;
-# Run from the repo root, so pydantic-settings finds .env in the working directory.
+# check and web run from the repo root, so pydantic-settings finds .env in the
+# working directory. lint runs in backend/, because ruff caches in the working directory.
 PY := uv run --project backend
 
 .PHONY: check lint web
@@ -12,8 +13,8 @@ check:
 	$(PY) pytest -q backend/tests
 
 lint:
-	$(PY) ruff check backend
-	$(PY) ruff format --check backend
+	cd backend && uv run ruff check
+	cd backend && uv run ruff format --check
 
 web:
 	$(PY) savetube web
