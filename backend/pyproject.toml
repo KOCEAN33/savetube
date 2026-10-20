@@ -3,7 +3,6 @@ name = "savetube"
 version = "0.1.0"
 description = "Self-hosted YouTube archiver and live recorder built on yt-dlp"
 license = "MIT"
-license-files = ["LICENSE"]
 authors = [
     { name = "kocean33", email = "dev@xanny.us" }
 ]

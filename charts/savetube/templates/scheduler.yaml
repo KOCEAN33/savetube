@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "savetube.labels" . | nindent 4 }}
 ---
-# Recorder Jobs are made from the CronJob template at runtime (savetube/k8s.py).
+# Recorder Jobs are made from the CronJob template at runtime (backend/savetube/k8s.py).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

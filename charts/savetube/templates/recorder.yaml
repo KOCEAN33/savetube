@@ -1,5 +1,5 @@
 # Never runs on its own schedule. The scheduler copies jobTemplate into one Job
-# per live, `kubectl create job --from=cronjob/...` style (savetube/k8s.py),
+# per live, `kubectl create job --from=cronjob/...` style (backend/savetube/k8s.py),
 # so the image and pod spec here follow every upgrade.
 apiVersion: batch/v1
 kind: CronJob

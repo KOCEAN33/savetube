@@ -11,7 +11,7 @@ from lightkube.resources.batch_v1 import CronJob
 from savetube.config import Settings
 from savetube.k8s import RECORDER_CONTAINER, recorder_job
 
-CHART = Path(__file__).parent.parent / "charts" / "savetube"
+CHART = Path(__file__).parents[2] / "charts" / "savetube"
 IMAGE = "harbor.lab.hiriri.com/savetube/savetube:abc123"
 
 VALUES = {

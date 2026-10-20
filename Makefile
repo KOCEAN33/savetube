@@ -1,5 +1,7 @@
 SHELL := bash
 ENV := set -a; [ -f .env ] && . ./.env; set +a;
+# Run from the repo root, so pydantic-settings finds .env in the working directory.
+PY := uv run --project backend
 
 .PHONY: check lint web
 
@@ -7,11 +9,11 @@ ENV := set -a; [ -f .env ] && . ./.env; set +a;
 # refuses to run without it.
 check:
 	@$(ENV) [ -n "$$SAVETUBE_TEST_DATABASE_URL" ] || { echo "SAVETUBE_TEST_DATABASE_URL is unset (see .env.sample)"; exit 1; }; \
-	uv run pytest -q
+	$(PY) pytest -q backend/tests
 
 lint:
-	uv run ruff check savetube tests
-	uv run ruff format --check savetube tests
+	$(PY) ruff check backend
+	$(PY) ruff format --check backend
 
 web:
-	uv run savetube web
+	$(PY) savetube web
