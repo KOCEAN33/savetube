@@ -48,8 +48,8 @@ export interface Source {
   kind: "tab" | "playlist" | "playlists"
   channel_id: string | null
   parent_id: number | null
-  // Child playlist URLs a `playlists` parent must not re-add. Empty on any other source.
-  ignored_urls: string[]
+  // The playlist's title for a `playlist` source. Null for a tab or `playlists` source.
+  title: string | null
   // Off: polls list the source but download nothing.
   archiving: boolean
   include_words: string[]
@@ -204,7 +204,6 @@ export type SourcePatch = Partial<
     | "include_words"
     | "exclude_words"
     | "other_channels"
-    | "ignored_urls"
     | "archiving"
   >
 >

@@ -97,11 +97,14 @@ export function WordSuggestions({
   onAdd,
   disabled,
   target,
+  present,
 }: {
   channelId: string | null
   onAdd: (word: string, list: WordList) => void
   disabled: boolean
   target: ReactNode
+  // Every word already in an effective list, keyed by its lowercase form.
+  present: Map<string, WordList>
 }) {
   const words = useQuery({
     queryKey: ["channel-words", channelId],
@@ -119,34 +122,47 @@ export function WordSuggestions({
     else if (words.data.length > 0)
       body = (
         <ul className="flex flex-wrap gap-1">
-          {words.data.map(({ word, count }) => (
-            <li key={word} className="flex items-center gap-0.5 rounded-md border pl-2 text-xs">
-              <span>{word}</span>
-              <span className="text-muted-foreground">{count}</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                aria-label={`Include ${word}`}
-                title="Include"
-                disabled={disabled}
-                onClick={() => onAdd(word, "include_words")}
-              >
-                <PlusIcon />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                aria-label={`Exclude ${word}`}
-                title="Exclude"
-                disabled={disabled}
-                onClick={() => onAdd(word, "exclude_words")}
-              >
-                <MinusIcon />
-              </Button>
-            </li>
-          ))}
+          {words.data.map(({ word, count }) => {
+            const list = present.get(word.toLowerCase())
+            if (list)
+              return (
+                <li
+                  key={word}
+                  className="flex h-6 items-center gap-1 rounded-md border border-dashed px-2 text-xs text-muted-foreground"
+                >
+                  <span>{word}</span>
+                  <span>{list === "include_words" ? "included" : "excluded"}</span>
+                </li>
+              )
+            return (
+              <li key={word} className="flex items-center gap-0.5 rounded-md border pl-2 text-xs">
+                <span>{word}</span>
+                <span className="text-muted-foreground">{count}</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Include ${word}`}
+                  title="Include"
+                  disabled={disabled}
+                  onClick={() => onAdd(word, "include_words")}
+                >
+                  <PlusIcon />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Exclude ${word}`}
+                  title="Exclude"
+                  disabled={disabled}
+                  onClick={() => onAdd(word, "exclude_words")}
+                >
+                  <MinusIcon />
+                </Button>
+              </li>
+            )
+          })}
         </ul>
       )
   }

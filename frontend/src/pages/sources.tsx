@@ -322,53 +322,19 @@ function ReadOnlyWords({ label, words }: { label: string; words: string[] }) {
   )
 }
 
-const COPIED_TO_CHILDREN = "Copied to every playlist this source has added."
-
-function IgnoredPlaylists({ source }: { source: Source }) {
-  const queryClient = useQueryClient()
-  const restore = useMutation({
-    mutationFn: (url: string) =>
-      mutations.updateSource(source.id, {
-        ignored_urls: source.ignored_urls.filter((u) => u !== url),
-      }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["sources"] }),
-  })
-  if (source.ignored_urls.length === 0) return null
-  return (
-    <section className="flex flex-col gap-2 rounded-md border p-3">
-      <div className="flex flex-col gap-0.5">
-        <span className="text-sm font-medium">Deleted playlists</span>
-        <span className="text-xs text-muted-foreground">
-          Track all skips these. A restored playlist comes back on the next poll.
-        </span>
-      </div>
-      <ul className="flex flex-col gap-1 text-xs">
-        {source.ignored_urls.map((url) => (
-          <li key={url} className="flex items-center gap-2">
-            <a
-              className="min-w-0 flex-1 truncate hover:underline"
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {url}
-            </a>
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              disabled={restore.isPending}
-              onClick={() => restore.mutate(url)}
-            >
-              Restore
-            </Button>
-          </li>
-        ))}
-      </ul>
-      {restore.isError && <ErrorBox error={restore.error} />}
-    </section>
-  )
+// Short name for a source: the playlist title, or "<channel> / <tab>" for a
+// channel URL. The full URL stays on a second line.
+function sourceLabel(s: Source, channelName: string | undefined): string {
+  if (s.title) return s.title
+  const url = new URL(s.url)
+  const list = url.searchParams.get("list")
+  if (list) return list
+  const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent)
+  const tab = parts.at(-1) ?? ""
+  return `${channelName ?? parts.slice(0, -1).join("/")} / ${tab}`
 }
+
+const COPIED_TO_CHILDREN = "Copied to every playlist this source has added."
 
 function EditSourceForm({
   source,
@@ -425,6 +391,15 @@ function EditSourceForm({
     ? saveChannel.variables
     : channel && { include_words: channel.include_words, exclude_words: channel.exclude_words }
   const writing = saveChannel.isPending || saveGlobal.isPending
+  const present = new Map<string, WordList>()
+  for (const lists of [globalWords.data, channelWords, parent, words]) {
+    if (!lists) continue
+    for (const list of ["include_words", "exclude_words"] as const) {
+      for (const w of lists[list]) {
+        if (!present.has(w.toLowerCase())) present.set(w.toLowerCase(), list)
+      }
+    }
+  }
 
   function addSuggestion(word: string, list: WordList) {
     if (target === "source") {
@@ -540,11 +515,11 @@ function EditSourceForm({
           </p>
         )}
       </section>
-      <IgnoredPlaylists source={source} />
       <WordSuggestions
         channelId={source.channel_id}
         onAdd={addSuggestion}
         disabled={writing}
+        present={present}
         target={
           <ToggleGroup
             type="single"
@@ -618,11 +593,15 @@ function StartDownloadsButton({ source }: { source: Source }) {
   )
 }
 
-function SourceActions({ source, onEdit }: { source: Source; onEdit: () => void }) {
-  const confirmText =
-    source.parent_id === null
-      ? `Delete source ${source.url}? Stored videos stay.`
-      : `Delete source ${source.url}? Stored videos stay. Track all will not add this playlist again.`
+function SourceActions({
+  source,
+  label,
+  onEdit,
+}: {
+  source: Source
+  label: string
+  onEdit: () => void
+}) {
   const queryClient = useQueryClient()
   const onSuccess = () => queryClient.invalidateQueries({ queryKey: ["sources"] })
   const poll = useMutation({ mutationFn: () => mutations.pollSource(source.id), onSuccess })
@@ -654,15 +633,20 @@ function SourceActions({ source, onEdit }: { source: Source; onEdit: () => void 
         <DropdownMenuItem onSelect={() => toggle.mutate()}>
           {source.enabled ? "Disable" : "Enable"}
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          variant="destructive"
-          onSelect={() => {
-            if (window.confirm(confirmText)) remove.mutate()
-          }}
-        >
-          Delete
-        </DropdownMenuItem>
+        {/* A child of "track all" cannot be deleted (409): disabling keeps its row, so the parent never re-adds it. */}
+        {source.parent_id === null && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => {
+                if (window.confirm(`Delete source "${label}"? Stored videos stay.`)) remove.mutate()
+              }}
+            >
+              Delete
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -676,7 +660,7 @@ function RuleSelect({ source, rules }: { source: Source; rules: Rule[] }) {
   })
   return (
     <Select value={String(source.rule_id)} onValueChange={(v) => update.mutate(Number(v))}>
-      <SelectTrigger size="sm" className="w-40" aria-label="Rule">
+      <SelectTrigger size="sm" className="w-32" aria-label="Rule">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -717,6 +701,8 @@ export function SourcesPage() {
   const rules = useQuery({ queryKey: ["rules"], queryFn: api.rules })
   const [adding, setAdding] = useState(false)
   const [added, setAdded] = useState(false)
+  const [hideDisabledChildren, setHideDisabledChildren] = useState(false)
+  const disabledChildren = sources.data?.filter((s) => s.parent_id !== null && !s.enabled).length ?? 0
   const [editingId, setEditingId] = useState<number | null>(null)
   const byId = new Map(sources.data?.map((s) => [s.id, s]))
   const editing = editingId === null ? undefined : byId.get(editingId)
@@ -777,9 +763,20 @@ export function SourcesPage() {
       <PageSection
         title="Sources"
         actions={
-          <Button size="sm" onClick={() => setAdding(true)}>
-            <PlusIcon /> Add source
-          </Button>
+          <div className="flex items-center gap-4">
+            {disabledChildren > 0 && (
+              <Label className="font-normal">
+                <Checkbox
+                  checked={hideDisabledChildren}
+                  onCheckedChange={(on) => setHideDisabledChildren(on === true)}
+                />
+                Hide disabled playlists ({disabledChildren})
+              </Label>
+            )}
+            <Button size="sm" onClick={() => setAdding(true)}>
+              <PlusIcon /> Add source
+            </Button>
+          </div>
         }
       >
         <QueryState query={sources}>
@@ -787,71 +784,94 @@ export function SourcesPage() {
             <Table>
               <TableHeader className="bg-muted">
                 <TableRow>
-                  <TableHead>URL</TableHead>
-                  <TableHead>Kind</TableHead>
-                  <TableHead>Channel</TableHead>
+                  <TableHead>Source</TableHead>
                   <TableHead>Rule</TableHead>
                   <TableHead>Poll</TableHead>
-                  <TableHead>Last sync</TableHead>
-                  <TableHead>Last error</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {rows.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center text-muted-foreground">
+                    <TableCell colSpan={4} className="text-center text-muted-foreground">
                       No sources yet.
                     </TableCell>
                   </TableRow>
                 )}
-                {groupByParent(rows).map(({ source: s, childCount }) => (
-                  <TableRow key={s.id}>
-                    <TableCell className="max-w-80 truncate">
-                      {s.parent_id !== null && (
-                        <CornerDownRightIcon className="mr-1 ml-2 inline size-3.5 text-muted-foreground" />
-                      )}
-                      <a className="hover:underline" href={s.url} target="_blank" rel="noreferrer">
-                        {s.url}
-                      </a>{" "}
-                      {!s.enabled && <Badge variant="outline">disabled</Badge>}
-                      {!s.archiving && (
-                        <>
-                          <Badge variant="secondary">listing only</Badge>{" "}
-                          <StartDownloadsButton source={s} />
-                        </>
-                      )}
-                      {s.enabled && parentOf(s)?.enabled === false && (
-                        <Badge variant="outline" title="Skipped while its parent is disabled">
-                          parent disabled
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {s.kind}
-                      {s.kind === "playlists" && (
-                        <span className="text-muted-foreground"> ({childCount} found)</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {s.channel_id ? (channelName.get(s.channel_id) ?? s.channel_id) : "-"}
-                    </TableCell>
-                    <TableCell>
-                      <RuleSelect source={s} rules={rules.data ?? []} />
-                      {s.kind === "playlists" && (
-                        <p className="mt-1 text-xs text-muted-foreground">{COPIED_TO_CHILDREN}</p>
-                      )}
-                    </TableCell>
-                    <TableCell>every {s.poll_interval_minutes} min</TableCell>
-                    <TableCell>{s.last_polled_at ? formatDateTime(s.last_polled_at) : "waiting"}</TableCell>
-                    <TableCell className="max-w-80 truncate text-destructive" title={s.last_error ?? ""}>
-                      {s.last_error ?? ""}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <SourceActions source={s} onEdit={() => setEditingId(s.id)} />
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {groupByParent(rows)
+                  .filter(({ source: s }) => !(hideDisabledChildren && s.parent_id !== null && !s.enabled))
+                  .map(({ source: s, childCount }) => {
+                    const label = sourceLabel(
+                      s,
+                      s.channel_id ? channelName.get(s.channel_id) : undefined,
+                    )
+                    return (
+                      <TableRow key={s.id}>
+                        {/* w-full with max-w-0 gives this column the leftover width and truncates inside it. */}
+                        <TableCell className="w-full max-w-0">
+                          <div className={s.parent_id !== null ? "flex gap-1 pl-4" : "flex gap-1"}>
+                            {s.parent_id !== null && (
+                              <CornerDownRightIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                            )}
+                            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                              <div className="flex min-w-0 items-center gap-1">
+                                <span className="truncate font-medium" title={label}>
+                                  {label}
+                                </span>
+                                {!s.enabled && <Badge variant="outline">disabled</Badge>}
+                                {s.enabled && parentOf(s)?.enabled === false && (
+                                  <Badge variant="outline" title="Skipped while its parent is disabled">
+                                    parent disabled
+                                  </Badge>
+                                )}
+                                {!s.archiving && <Badge variant="secondary">listing only</Badge>}
+                              </div>
+                              <div className="flex min-w-0 gap-1 text-xs text-muted-foreground">
+                                <span className="shrink-0">
+                                  {s.kind}
+                                  {s.kind === "playlists" && ` (${childCount} found)`}
+                                </span>
+                                <a
+                                  className="truncate hover:underline"
+                                  href={s.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={s.url}
+                                >
+                                  {s.url}
+                                </a>
+                              </div>
+                              {s.last_error && (
+                                <span className="truncate text-xs text-destructive" title={s.last_error}>
+                                  {s.last_error}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <RuleSelect source={s} rules={rules.data ?? []} />
+                          {s.kind === "playlists" && (
+                            <p className="mt-1 text-xs text-muted-foreground" title={COPIED_TO_CHILDREN}>
+                              Also sets its playlists
+                            </p>
+                          )}
+                        </TableCell>
+                        <TableCell className="align-top text-xs">
+                          <div>every {s.poll_interval_minutes} min</div>
+                          <div className="text-muted-foreground">
+                            {s.last_polled_at ? formatDateTime(s.last_polled_at) : "waiting"}
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="flex items-center justify-end gap-1">
+                            {!s.archiving && <StartDownloadsButton source={s} />}
+                            <SourceActions source={s} label={label} onEdit={() => setEditingId(s.id)} />
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
               </TableBody>
             </Table>
           )}
@@ -880,8 +900,16 @@ export function SourcesPage() {
       <Sheet open={editing !== undefined} onOpenChange={(open) => !open && setEditingId(null)}>
         <SheetContent className="data-[side=right]:sm:max-w-xl">
           <SheetHeader>
-            <SheetTitle>Edit title words</SheetTitle>
-            <SheetDescription className="truncate">{editing?.url}</SheetDescription>
+            <SheetTitle className="truncate pr-6">
+              {editing &&
+                sourceLabel(
+                  editing,
+                  editing.channel_id ? channelName.get(editing.channel_id) : undefined,
+                )}
+            </SheetTitle>
+            <SheetDescription className="truncate" title={editing?.url}>
+              Title words for {editing?.url}
+            </SheetDescription>
           </SheetHeader>
           {editing && (
             <EditSourceForm
