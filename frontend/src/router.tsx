@@ -1,25 +1,23 @@
 import { createBrowserRouter } from "react-router"
 
 import { AppLayout, NotFound } from "@/components/app-layout"
+import { ChannelPage } from "@/pages/channel"
+import { ChannelsPage } from "@/pages/channels"
 import { DashboardPage } from "@/pages/dashboard"
-import { DownloadSettingsPage } from "@/pages/download-settings"
-import { JobsPage } from "@/pages/jobs"
-import { RulesPage } from "@/pages/rules"
-import { SourcesPage } from "@/pages/sources"
+import { LivePage } from "@/pages/live"
+import { SettingsPage } from "@/pages/settings"
 import { VideoDetailPage } from "@/pages/video-detail"
 import { VideosPage } from "@/pages/videos"
-import { WordsPage } from "@/pages/words"
 
 export const router = createBrowserRouter([
   {
     element: <AppLayout />,
     children: [
       { path: "/", element: <DashboardPage /> },
-      { path: "/sources", element: <SourcesPage /> },
-      { path: "/rules", element: <RulesPage /> },
-      { path: "/words", element: <WordsPage /> },
-      { path: "/download-settings", element: <DownloadSettingsPage /> },
-      { path: "/jobs", element: <JobsPage /> },
+      { path: "/channels", element: <ChannelsPage /> },
+      { path: "/channels/:id", element: <ChannelPage /> },
+      { path: "/live", element: <LivePage /> },
+      { path: "/settings", element: <SettingsPage /> },
       { path: "/videos", element: <VideosPage /> },
       { path: "/videos/:id", element: <VideoDetailPage /> },
       { path: "*", element: <NotFound /> },

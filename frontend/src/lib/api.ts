@@ -40,6 +40,12 @@ export interface Channel {
   bytes: number
   include_words: string[]
   exclude_words: string[]
+  // Null: no cutoff. Compared with YouTube's approximate upload date.
+  date_after: string | null
+  // A yt-dlp format selector.
+  format: string
+  use_cookies: boolean
+  watch_lives: boolean
 }
 
 export interface Source {
@@ -57,19 +63,8 @@ export interface Source {
   other_channels: boolean
   enabled: boolean
   poll_interval_minutes: number
-  rule_id: number
   last_polled_at: string | null
   last_error: string | null
-}
-
-export interface Rule {
-  id: number
-  name: string
-  types: string[]
-  date_after: string | null
-  format: string
-  use_cookies: boolean
-  watch_lives: boolean
 }
 
 export interface Job {
@@ -77,6 +72,9 @@ export interface Job {
   kind: JobKind
   state: JobState
   video_id: string | null
+  // The video's title and channel. Null for a job without a video.
+  title: string | null
+  channel_id: string | null
   attempts: number
   miss_reason: MissReason | null
   scheduled_at: string | null
@@ -185,21 +183,22 @@ function get<T>(path: string, query: Query = {}): Promise<T> {
 
 export type Tab = "videos" | "shorts" | "streams" | "playlists"
 
+export type VideoTab = Exclude<Tab, "playlists">
+
 export interface SourceIn {
   url: string
-  tabs: Tab[]
-  rule_id: number
-  poll_interval_minutes: number
-  include_words: string[]
-  exclude_words: string[]
-  other_channels: boolean
+  tabs?: Tab[]
+  poll_interval_minutes?: number
+  include_words?: string[]
+  exclude_words?: string[]
+  other_channels?: boolean
+  archiving?: boolean
 }
 
 export type SourcePatch = Partial<
   Pick<
     Source,
     | "enabled"
-    | "rule_id"
     | "poll_interval_minutes"
     | "include_words"
     | "exclude_words"
@@ -231,7 +230,46 @@ export interface TitlePreview {
   titles: { video_id: string; title: string; kept: boolean }[]
 }
 
-export type RuleIn = Omit<Rule, "id">
+export interface ScanEntry {
+  video_id: string
+  title: string
+}
+
+export interface ChannelScan {
+  // The channel URL without a tab.
+  url: string
+  channel_id: string
+  handle: string | null
+  name: string
+  // The first page of each tab. Null for a tab the channel lacks.
+  tabs: Record<VideoTab, ScanEntry[] | null>
+  playlists: { id: string; title: string; url: string }[]
+  suggestions: TitleWord[]
+}
+
+export interface TitleKept {
+  title: string
+  kept: boolean
+}
+
+export interface ChannelSettings {
+  date_after: string | null
+  format: string
+  use_cookies: boolean
+  watch_lives: boolean
+}
+
+export interface ChannelIn extends TitleWords, ChannelSettings {
+  url: string
+  channel_id: string
+  handle: string | null
+  name: string
+  tabs: VideoTab[]
+  all_playlists: boolean
+  playlists: { url: string; title: string }[]
+}
+
+export type ChannelPatch = Partial<TitleWords & ChannelSettings>
 
 export interface DownloadSettingsIn {
   max_concurrent: number
@@ -250,14 +288,13 @@ export const mutations = {
     request<Source>("PATCH", `/api/sources/${id}`, body),
   pollSource: (id: number) => request<Source>("POST", `/api/sources/${id}/poll`),
   deleteSource: (id: number) => request<void>("DELETE", `/api/sources/${id}`),
-  updateChannel: (id: string, body: Partial<TitleWords>) =>
+  createChannel: (body: ChannelIn) =>
+    request<Channel & { sources: Source[] }>("POST", "/api/channels", body),
+  updateChannel: (id: string, body: ChannelPatch) =>
     request<Channel>("PATCH", `/api/channels/${encodeURIComponent(id)}`, body),
   replaceDownloadSettings: (body: DownloadSettingsIn) =>
     request<DownloadSettings>("PUT", "/api/download-settings", body),
   replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
-  createRule: (body: RuleIn) => request<Rule>("POST", "/api/rules", body),
-  replaceRule: (id: number, body: RuleIn) => request<Rule>("PUT", `/api/rules/${id}`, body),
-  deleteRule: (id: number) => request<void>("DELETE", `/api/rules/${id}`),
 }
 
 export const api = {
@@ -266,7 +303,6 @@ export const api = {
   statsDaily: (days: number) => get<DailyStat[]>("/api/stats/daily", { days }),
   channels: () => get<Channel[]>("/api/channels"),
   sources: () => get<Source[]>("/api/sources"),
-  rules: () => get<Rule[]>("/api/rules"),
   globalWords: () => get<TitleWords>("/api/words"),
   downloadSettings: () => get<DownloadSettings>("/api/download-settings"),
   // A POST that writes nothing: it lists live through yt-dlp, which can answer 502 or 504.
@@ -276,7 +312,12 @@ export const api = {
   // A POST that writes nothing: the word lists ride in the body.
   titlePreview: (id: number, body: TitleWords) =>
     request<TitlePreview>("POST", `/api/sources/${id}/title-preview`, body),
-  jobs: (query: { kind?: JobKind; state?: JobState; limit?: number }) =>
+  // A POST that writes nothing: it lists the channel live through yt-dlp, which can answer 502 or 504.
+  channelScan: (url: string) => request<ChannelScan>("POST", "/api/channel-scan", { url }),
+  // A POST that writes nothing: titles that are not stored, such as a scan's.
+  titlesPreview: (body: TitleWords & { titles: string[]; channel_id?: string }) =>
+    request<TitleKept[]>("POST", "/api/title-preview", body),
+  jobs: (query: { kind?: JobKind; state?: JobState; channel_id?: string; limit?: number }) =>
     get<Job[]>("/api/jobs", query),
   videos: (query: {
     channel_id?: string
