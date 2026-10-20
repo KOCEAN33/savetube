@@ -2,6 +2,7 @@
 role has CREATEDB. Each run creates and drops its own database, savetube_test."""
 
 import os
+from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
@@ -11,7 +12,16 @@ from fastapi.testclient import TestClient
 from savetube.config import Settings
 from savetube.db import make_engine, make_sessionmaker
 from savetube.db.migrate import migrate
-from savetube.db.models import Channel, Job, JobKind, JobState, Video, VideoState
+from savetube.db.models import (
+    Channel,
+    Job,
+    JobKind,
+    JobState,
+    Source,
+    Video,
+    VideoSource,
+    VideoState,
+)
 from savetube.layout import VideoType
 from savetube.pipeline import store
 from savetube.web.app import create_app
@@ -174,3 +184,171 @@ def test_api_reports_only_stored_videos(settings):
         assert client.get("/api/videos", params={"q": "a_"}).json()["total"] == 1
         assert client.get("/api/videos/v2").json()["type"] == "lives"
         assert client.get("/api/videos/nope").status_code == 404
+
+
+def _sql(settings, *statements):
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.begin() as c:
+        for s in statements:
+            c.execute(sa.text(s))
+    engine.dispose()
+
+
+TAB_LISTING = {
+    "channel_id": "UC1",
+    "channel": "Chan",
+    "uploader_id": "@chan",
+    "entries": [
+        {"id": "new", "title": "New", "timestamp": 1789948800},  # 2026-09-21
+        {"id": "upcoming", "title": "Soon", "live_status": "is_upcoming"},
+        {"id": "old", "title": "Old", "timestamp": 1735689600},  # 2025-01-01
+        {"id": "undated", "title": "Undated"},
+        {"id": "past_live", "title": "Was live", "live_status": "was_live"},
+        {"id": "done", "title": "Done"},
+        {"id": "gave_up", "title": "Failed thrice"},
+        {"id": "retry", "title": "Failed once"},
+        {"id": "queued", "title": "Queued"},
+    ],
+}
+
+
+@pytest.mark.anyio
+async def test_poll_queues_unstored_videos_once(settings):
+    from savetube.poll import due_sources, poll_source
+
+    _sql(
+        settings,
+        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives, max_concurrent)"
+        " VALUES (1, 'r', '{videos}', 'b', false, false, 1)",
+        "UPDATE rule SET date_after = '2026-01-01'",
+        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@chan/videos', 'tab', 1, true, 360),"
+        " (2, 'https://www.youtube.com/playlist?list=PL1', 'playlist', 1, true, 360),"
+        " (3, 'https://www.youtube.com/@off/videos', 'tab', 1, false, 360)",
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC0', 'Zero', 'Zero [UC0]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('done', 'UC0', 'videos', 'd', 'complete'), ('gave_up', 'UC0', 'videos', 'g', 'failed'),"
+        " ('retry', 'UC0', 'videos', 'r', 'failed'), ('queued', 'UC0', 'videos', 'q', 'pending')",
+        "INSERT INTO job (kind, state, video_id, attempts) VALUES"
+        " ('archive', 'failed', 'gave_up', 1), ('archive', 'failed', 'gave_up', 1),"
+        " ('archive', 'failed', 'gave_up', 1), ('archive', 'failed', 'retry', 1),"
+        " ('archive', 'queued', 'queued', 0)",
+    )
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        assert await due_sources(session, datetime.now(UTC)) == [1, 2]
+
+    deferred = []
+
+    async def enqueue(job_id):
+        deferred.append(job_id)
+        return 1000 + job_id
+
+    await poll_source(sessionmaker, 1, settings, lister=lambda url, c: TAB_LISTING, enqueue=enqueue)
+
+    async with sessionmaker() as session:
+        jobs = {
+            j.video_id: j for j in await session.scalars(sa.select(Job).where(Job.id.in_(deferred)))
+        }
+        # `past_live` is a live, which the rule's types leave out.
+        assert sorted(jobs) == ["new", "retry", "undated"]
+        assert all(j.queue_job_id == 1000 + j.id for j in jobs.values())
+        assert (await session.get(Video, "new")).state is VideoState.PENDING
+        assert (await session.get(Video, "new")).channel_id == "UC1"
+        assert await session.get(Video, "upcoming") is None
+        assert (await session.get(Channel, "UC1")).dir_name == "Chan [UC1]"
+        source = await session.get(Source, 1)
+        assert source.channel_id == "UC1"
+        assert source.last_polled_at is not None and source.last_error is None
+        linked = set(
+            await session.scalars(sa.select(VideoSource.video_id).where(VideoSource.source_id == 1))
+        )
+        assert linked == {"new", "undated", "done", "gave_up", "retry", "queued"}
+        assert await due_sources(session, datetime.now(UTC)) == [2]
+
+    # A second poll of the same listing finds every video queued or done.
+    deferred.clear()
+    async with sessionmaker() as session:
+        await session.execute(sa.update(Source).values(last_polled_at=None))
+        await session.commit()
+    await poll_source(sessionmaker, 1, settings, lister=lambda url, c: TAB_LISTING, enqueue=enqueue)
+    assert deferred == []
+
+    async def broken_enqueue(job_id):
+        raise RuntimeError("queue down")
+
+    playlist = {
+        "channel_id": "UC1",
+        "channel": "Chan",
+        "entries": [
+            {"id": "other", "title": "Other", "channel_id": "UC2", "channel": "Two"},
+            {"id": "private", "title": "[Private video]"},
+        ],
+    }
+    await poll_source(
+        sessionmaker, 2, settings, lister=lambda url, c: playlist, enqueue=broken_enqueue
+    )
+    async with sessionmaker() as session:
+        assert (await session.get(Channel, "UC2")).dir_name == "Two [UC2]"
+        assert (await session.get(Source, 2)).channel_id is None
+        assert await session.get(Video, "private") is None
+        job = await session.scalar(sa.select(Job).where(Job.video_id == "other"))
+        assert job.state is JobState.FAILED and "queue down" in job.log_tail
+
+    def fails(url, cookiefile):
+        raise RuntimeError("HTTP Error 429")
+
+    await poll_source(sessionmaker, 2, settings, lister=fails, enqueue=enqueue)
+    async with sessionmaker() as session:
+        assert (await session.get(Source, 2)).last_error == "RuntimeError: HTTP Error 429"
+    await engine.dispose()
+
+
+def test_api_writes_sources_and_rules(settings):
+    app = create_app(settings)
+    app.dependency_overrides[current_user] = lambda: User(sub="u")
+    rule = {"name": "all", "types": ["videos", "shorts"], "date_after": "2026-01-01"}
+    with TestClient(app, headers={"X-Requested-With": "savetube"}) as client:
+        assert client.post("/api/rules", json=rule).status_code == 201
+        assert client.post("/api/rules", json=rule).status_code == 409
+        rule_id = client.get("/api/rules").json()[0]["id"]
+        replaced = client.put(f"/api/rules/{rule_id}", json=rule | {"use_cookies": True})
+        assert replaced.json()["use_cookies"] is True
+        assert replaced.json()["date_after"] == "2026-01-01"
+
+        body = {
+            "url": "https://www.youtube.com/@chan",
+            "tabs": ["videos", "shorts"],
+            "rule_id": rule_id,
+        }
+        created = client.post("/api/sources", json=body)
+        assert created.status_code == 201
+        assert [s["url"] for s in created.json()] == [
+            "https://www.youtube.com/@chan/videos",
+            "https://www.youtube.com/@chan/shorts",
+        ]
+        assert client.post("/api/sources", json=body | {"tabs": ["shorts"]}).status_code == 409
+        assert client.post("/api/sources", json=body | {"tabs": []}).status_code == 422
+        assert client.post("/api/sources", json=body | {"rule_id": 999}).status_code == 422
+
+        source_id = created.json()[0]["id"]
+        patched = client.patch(f"/api/sources/{source_id}", json={"enabled": False})
+        assert patched.json()["enabled"] is False
+        assert patched.json()["poll_interval_minutes"] == 360
+        assert client.post(f"/api/sources/{source_id}/poll").status_code == 202
+
+        assert client.delete(f"/api/rules/{rule_id}").status_code == 409
+        for s in created.json():
+            assert client.delete(f"/api/sources/{s['id']}").status_code == 204
+        assert client.delete(f"/api/rules/{rule_id}").status_code == 204
+        assert client.get("/api/sources").json() == []
+
+
+def test_api_refuses_a_write_without_the_csrf_header(settings):
+    app = create_app(settings)
+    app.dependency_overrides[current_user] = lambda: User(sub="u")
+    with TestClient(app) as client:
+        response = client.post("/api/rules", json={"name": "x", "types": ["videos"]})
+        assert response.status_code == 403
+        assert client.get("/api/rules").json() == []

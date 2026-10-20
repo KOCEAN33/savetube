@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +18,10 @@ from savetube.db.models import (
     VideoState,
 )
 from savetube.layout import VideoType
+from savetube.sources import InvalidSourceUrl, Tab
+from savetube.sources import parse as parse_source_url
 from savetube.web.auth import CurrentUser, User, current_user
+from savetube.ytdl import DEFAULT_FORMAT
 
 
 async def get_session(request: Request):
@@ -28,7 +31,21 @@ async def get_session(request: Request):
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 
-router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
+CSRF_HEADER = "X-Requested-With"
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def require_csrf_header(request: Request) -> None:
+    """A cross-origin page cannot send a custom header without a CORS preflight,
+    which this app never answers. SameSite=lax alone still lets a sibling
+    subdomain POST with the session cookie."""
+    if request.method not in _SAFE_METHODS and CSRF_HEADER.lower() not in request.headers:
+        raise HTTPException(status_code=403, detail=f"missing {CSRF_HEADER} header")
+
+
+router = APIRouter(
+    prefix="/api", dependencies=[Depends(current_user), Depends(require_csrf_header)]
+)
 
 
 class _Out(BaseModel):
@@ -215,11 +232,144 @@ async def sources(session: Session) -> list[SourceOut]:
     ]
 
 
+class SourceIn(BaseModel):
+    url: str
+    # For a bare channel URL: one source per tab.
+    tabs: list[Tab] = []
+    rule_id: int
+    poll_interval_minutes: Annotated[int, Field(ge=10, le=7 * 24 * 60)] = 360
+    enabled: bool = True
+
+
+class SourcePatch(BaseModel):
+    enabled: bool | None = None
+    rule_id: int | None = None
+    poll_interval_minutes: Annotated[int | None, Field(ge=10, le=7 * 24 * 60)] = None
+
+
+async def _source(session: AsyncSession, source_id: int) -> Source:
+    source = await session.get(Source, source_id)
+    if source is None:
+        raise HTTPException(status_code=404)
+    return source
+
+
+async def _check_rule(session: AsyncSession, rule_id: int) -> None:
+    if await session.get(Rule, rule_id) is None:
+        raise HTTPException(status_code=422, detail=f"no rule {rule_id}")
+
+
+@router.post("/sources", status_code=201)
+async def create_sources(session: Session, body: SourceIn) -> list[SourceOut]:
+    try:
+        parsed = parse_source_url(body.url, body.tabs)
+    except InvalidSourceUrl as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    await _check_rule(session, body.rule_id)
+    urls = [p.url for p in parsed]
+    taken = list(await session.scalars(select(Source.url).where(Source.url.in_(urls))))
+    if taken:
+        raise HTTPException(status_code=409, detail=f"already a source: {', '.join(taken)}")
+    created = [
+        Source(
+            url=p.url,
+            kind=p.kind,
+            rule_id=body.rule_id,
+            poll_interval_minutes=body.poll_interval_minutes,
+            enabled=body.enabled,
+        )
+        for p in parsed
+    ]
+    session.add_all(created)
+    await session.commit()
+    return [SourceOut.model_validate(s) for s in created]
+
+
+@router.patch("/sources/{source_id}")
+async def update_source(session: Session, source_id: int, body: SourcePatch) -> SourceOut:
+    source = await _source(session, source_id)
+    if body.rule_id is not None:
+        await _check_rule(session, body.rule_id)
+    for field, value in body.model_dump(exclude_none=True).items():
+        setattr(source, field, value)
+    await session.commit()
+    return SourceOut.model_validate(source)
+
+
+@router.post("/sources/{source_id}/poll", status_code=202)
+async def poll_now(session: Session, source_id: int) -> SourceOut:
+    """The scheduler polls a never-polled source on its next tick."""
+    source = await _source(session, source_id)
+    source.last_polled_at = None
+    await session.commit()
+    return SourceOut.model_validate(source)
+
+
+@router.delete("/sources/{source_id}", status_code=204)
+async def delete_source(session: Session, source_id: int) -> None:
+    """Stored videos and their files stay. Only the source's references go."""
+    await session.delete(await _source(session, source_id))
+    await session.commit()
+
+
 @router.get("/rules")
 async def rules(session: Session) -> list[RuleOut]:
     return [
         RuleOut.model_validate(r) for r in await session.scalars(select(Rule).order_by(Rule.id))
     ]
+
+
+class RuleIn(BaseModel):
+    name: Annotated[str, Field(min_length=1, max_length=100)]
+    types: Annotated[list[VideoType], Field(min_length=1)]
+    date_after: date | None = None
+    format: Annotated[str, Field(min_length=1)] = DEFAULT_FORMAT
+    use_cookies: bool = False
+    watch_lives: bool = False
+    max_concurrent: Annotated[int, Field(ge=1, le=10)] = 1
+
+
+async def _rule_name_free(session: AsyncSession, name: str, rule_id: int | None = None) -> None:
+    q = select(Rule.id).where(Rule.name == name)
+    if rule_id is not None:
+        q = q.where(Rule.id != rule_id)
+    if await session.scalar(q) is not None:
+        raise HTTPException(status_code=409, detail=f"a rule named {name!r} exists")
+
+
+@router.post("/rules", status_code=201)
+async def create_rule(session: Session, body: RuleIn) -> RuleOut:
+    await _rule_name_free(session, body.name)
+    rule = Rule(**body.model_dump())
+    session.add(rule)
+    await session.commit()
+    return RuleOut.model_validate(rule)
+
+
+@router.put("/rules/{rule_id}")
+async def replace_rule(session: Session, rule_id: int, body: RuleIn) -> RuleOut:
+    rule = await session.get(Rule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404)
+    await _rule_name_free(session, body.name, rule_id)
+    for field, value in body.model_dump().items():
+        setattr(rule, field, value)
+    await session.commit()
+    return RuleOut.model_validate(rule)
+
+
+@router.delete("/rules/{rule_id}", status_code=204)
+async def delete_rule(session: Session, rule_id: int) -> None:
+    rule = await session.get(Rule, rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404)
+    used = await session.scalar(
+        select(func.count()).select_from(Source).where(Source.rule_id == rule_id)
+    )
+    if used:
+        raise HTTPException(status_code=409, detail=f"{used} sources use this rule")
+    await session.delete(rule)
+    await session.commit()
 
 
 @router.get("/jobs")
