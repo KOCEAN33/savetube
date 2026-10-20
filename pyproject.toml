@@ -1,0 +1,52 @@
+[project]
+name = "savetube"
+version = "0.1.0"
+description = "Self-hosted YouTube archiver and live recorder built on yt-dlp"
+authors = [
+    { name = "kocean33", email = "dev@xanny.us" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "alembic>=1.20.0",
+    "authlib>=1.9.1",
+    "bgutil-ytdlp-pot-provider>=2.0.2",
+    "fastapi>=0.150.0",
+    "httpx2>=2.15.1",
+    "itsdangerous>=2.2.0",
+    "lightkube>=1.0.1",
+    "procrastinate>=3.10.0",
+    "prometheus-client>=0.26.0",
+    "psycopg[binary,pool]>=3.3.6",
+    "pydantic-settings>=2.16.0",
+    "sqlalchemy[asyncio]>=2.1.5",
+    "uvicorn[standard]>=0.54.0",
+    "yt-dlp[default]>=2026.8.19",
+]
+
+[project.scripts]
+savetube = "savetube:main"
+
+[build-system]
+requires = ["uv_build>=0.13.2,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pyyaml>=6.0.3",
+    "ruff>=0.17.1",
+]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["src/savetube/migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+
+[tool.pytest]
+testpaths = ["tests"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
