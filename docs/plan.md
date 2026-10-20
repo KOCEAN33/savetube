@@ -1,6 +1,6 @@
 # savetube plan
 
-Draft for archiving chosen YouTube channels and playlists, recording lives from their first second, and managing both from one web UI. Not built.
+Draft for archiving chosen YouTube channels and playlists, recording lives from their first second, and managing both from one web UI. The scaffold exists: web with login and read API, schema, storage pipeline, image. Live detection and source polling are not built.
 
 ## Requirements
 
@@ -68,11 +68,15 @@ One image, three roles, plus a recorder Job per live.
 | `worker` | Deployment | archive downloads from the Postgres queue |
 | recorder | Job per live | `--live-from-start` on one video, then post-processing |
 
-- A recorder runs as its own Job so a rollout of `web`, `scheduler`, or `worker` never cuts a recording. The scheduler needs a Role allowed to create and list Jobs in its namespace.
+- A recorder runs as its own Job so a rollout of `web`, `scheduler`, or `worker` never cuts a recording. The scheduler needs a Role allowed to get CronJobs and to create and list Jobs in its namespace.
+- The recorder's pod spec is a suspended CronJob, `savetube-recorder`. The scheduler copies its `jobTemplate` into a Job named `savetube-recorder-<job id>`, the way `kubectl create job --from=cronjob/...` does, with an ownerReference to the CronJob so Argo CD shows the Job as a child instead of pruning it. The image, sidecar and volumes stay in the manifests, and a video id never enters a name, because it holds upper case and `_`.
+- `savetube migrate` runs as an init container of `scheduler`, the one single-replica role, so two migrations never race. It installs procrastinate's schema on an empty database, then runs alembic. Autogenerate skips `procrastinate_*` tables. A procrastinate upgrade that adds SQL migrations needs an alembic revision applying them.
 - A recorder that dies retries through the Job's `backoffLimit`. The retry restarts from the first segment while the DVR window lasts.
 - Every pod that runs yt-dlp carries the bgutil provider as a native sidecar bound to `127.0.0.1:4416`.
-- Backend: Python with FastAPI. The API, scheduler, worker, and recorder share one package.
+- Backend: Python 3.14 with FastAPI, SQLAlchemy 2 async on psycopg 3, alembic. uv manages the project and `uv.lock`. The API, scheduler, worker, and recorder share one package and one CLI, `savetube <role>`.
 - Queue: `procrastinate`, a Python job queue on Postgres. No Redis.
+- The database address is PgBouncer in transaction mode. psycopg never prepares statements (`prepare_threshold=None`), and the worker polls every 5 s with `listen_notify` off, because a LISTEN does not survive the pooler.
+- Every role serves Prometheus metrics on port 9090, apart from the HTTP port.
 
 ### Embedding yt-dlp
 
@@ -142,6 +146,8 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 - Downloads land in `.incoming/<job id>/` on the same dataset, so the final move is a rename and a half-written file never appears in the tree.
 - Titles pass through yt-dlp's filename sanitising and a length cap, because a title can exceed the 255-byte name limit in UTF-8.
 - Format: `bv*+ba/b`, merged to `mkv`, which holds any codec pair YouTube serves.
+- Files inside a video directory are named `<video id>.<ext>`, so only directory names carry a title and need the byte cap.
+- yt-dlp's `.tmp` fragments directory is deleted before the rename. The cookie copy lives in a private temporary directory outside `.incoming/`, so it never moves into the tree.
 
 ### Live detection
 
@@ -150,6 +156,16 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 - An upcoming stream gets a recorder Job a few minutes before `scheduledStartTime`, running with `--wait-for-video` and `--live-from-start`.
 - A stream with no waiting room appears in neither feed in time. The scheduler also polls each watched channel's `/live` page through yt-dlp extraction, about once a minute, for watched channels only.
 - WebSub push needs a public HTTPS callback, which the tailnet-only cluster lacks. Not used.
+
+### Login
+
+- The backend is the OpenID Connect client against Zitadel at `https://auth.hiriri.com`: authorization code with PKCE (S256). The browser holds only a signed session cookie with `sub`, name, email and `groups`. No token reaches the frontend.
+- A client secret is optional. Unset means a public client, a Zitadel Web application with authentication method `None`.
+- Zitadel project `savetube`, application `savetube`, role `savetube-admin`. A project of its own, because savetube writes `tank/youtube` and an `internal` grant must not pass its login (homelab-platform `docs/zitadel-oidc-setup.md`).
+- `SAVETUBE_OIDC_REQUIRED_GROUP` checks the flat `groups` claim the `groupsClaim` Action writes, read from the userinfo endpoint. A user without the group gets 403 and no session.
+- Redirect URI `https://savetube.lab.hiriri.com/auth/callback`. Post Logout URI `https://savetube.lab.hiriri.com/`. Logout is a POST that clears the session and sends the browser to `end_session` with `client_id`.
+- Redirect URIs and the cookie's Secure flag come from `SAVETUBE_PUBLIC_URL`. Uvicorn runs with proxy headers off, so no forwarded header is trusted.
+- `/api/*` answers 401 without a session. `/healthz`, the static bundle, and the metrics port need none.
 
 ### Cookies and account
 
@@ -169,8 +185,10 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 This section moves to homelab-workloads before the repository goes public.
 
 - Build: the in-cluster ARC runner pushes the image to a new Harbor project, like lrr-reader.
-- Deployment: `homelab-workloads/savetube/appset.yaml`, Kustomize shape.
-- Database: a `Database` object, a `managed.roles` entry, and ExternalSecret `savetube-db` on the shared Cluster (homelab-platform `docs/specs/10-postgres.md`). Development uses `postgres-dev`.
+- Deployment: the Helm chart `charts/savetube/` in this repository, because the scheduler depends on names the chart renders: the CronJob, the `recorder` container, the env variables. `homelab-workloads/savetube/` holds only `appset.yaml` and `envs/<env>.yaml`, and the Application is multi-source: the chart from this repository, the values through a `$values` ref to homelab-workloads.
+- The chart takes every secret as an existing Secret: the database URL, the session key, the optional OIDC client secret, the cookie file. The ExternalSecrets live in homelab-workloads.
+- `savetube-db` in the app namespace holds the whole libpq URL under `url`, templated from the vault password. A base64 password holds `/` and `+`, so the template escapes it with `urlquery`, or the URL splits at the `/`.
+- Database: a `Database` object, a `managed.roles` entry, and ExternalSecret `savetube-db` on the shared Cluster (homelab-platform `docs/specs/10-postgres.md`). Development and the DB-gated tests use `pg-dev.lab.hiriri.com:5432` on `postgres-dev`, role `savetube` with CREATEDB, as saveweb does (`.env.sample`). The tests create and drop their own database, `savetube_test`.
 - UI: `savetube.lab.hiriri.com` through the Gateway, tailnet and LAN only. Never Cloudflare Tunnel, because its terms forbid proxying video (proxmox-talos-lab `docs/specs/50-applications.md`).
 - Storage: a `pve_tank_datasets` entry with `talos: rw`, an `owner` uid matching the pod, `recordsize: 1M`. The static PV copies homelab-services `manifest/lanraragi/volumes.yaml`.
 - `tank/video` cannot hold this. Samba is its one writer, and a dataset reaches the cluster only as its own virtiofs mapping (proxmox-talos-lab `docs/specs/20-storage.md`).
@@ -187,12 +205,11 @@ This section moves to homelab-workloads before the repository goes public.
 - A read-only Samba mount of `tank/youtube` for watching on a PC. Samba stays a reader, so the dataset keeps one writer.
 - Live chat capture during a live, not only replay. Needs a separate library. Not surveyed.
 - Offsite backup: none of the current tiers can carry this size.
-- UI login: tailnet only, or Zitadel OIDC on top.
 
 ## Build order
 
 1. Check `tank` free space and decide the dataset's snapshot template.
-2. Create the Harbor project and the ARC build. Prove an image with Python, Deno, ffmpeg, yt-dlp and the bgutil plugin runs one from-start capture of a public live in the cluster through `YoutubeDL`.
+2. Create the Harbor project and the ARC build. The image builds and downloads a public video under `compose.yaml` on OrbStack. Prove an image with Python, Deno, ffmpeg, yt-dlp and the bgutil plugin runs one from-start capture of a public live in the cluster through `YoutubeDL`.
 3. Prove a members-only download and a members-only live with the chosen account's cookies.
 4. Build the recorder Job and the scheduler's live detection, with Discord notifications. Live recording is the requirement nothing else covers.
 5. Build the archive worker, the queue, and the tree layout.
