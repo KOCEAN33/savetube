@@ -97,3 +97,14 @@ imagePullSecrets:
   {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end -}}
+
+{{/* GET /healthz on the process's asyncio loop: a stuck loop fails it. */}}
+{{- define "savetube.livenessProbe" -}}
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: health
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  failureThreshold: 3
+{{- end }}

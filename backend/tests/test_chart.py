@@ -142,6 +142,19 @@ def test_scheduler_is_a_single_migrating_replica():
     assert init["migrate"]["args"] == ["migrate"]
 
 
+def test_worker_and_scheduler_carry_a_liveness_probe_on_the_health_port():
+    """The probe reaches the server each process runs on its asyncio loop."""
+    w = workloads(render())
+    for role in ("worker", "scheduler"):
+        (c,) = [c for c in pod_spec(w[role])["containers"] if c["name"] == role]
+        ports = {p["name"]: p["containerPort"] for p in c["ports"]}
+        assert ports["health"] == Settings.model_fields["health_port"].default, role
+        probe = c["livenessProbe"]
+        assert probe["httpGet"] == {"path": "/healthz", "port": "health"}, role
+        assert (probe["periodSeconds"], probe["failureThreshold"]) == (10, 3), role
+        assert probe["initialDelaySeconds"] <= 15, role
+
+
 # Contract with Settings: every variable the chart sets is one the code reads,
 # and the scheduler looks for the CronJob the chart actually renders.
 def test_chart_env_names_are_settings_fields():

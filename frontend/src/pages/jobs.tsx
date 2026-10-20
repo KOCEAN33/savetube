@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api, type Job, type JobKind, type JobState, type MissReason } from "@/lib/api"
-import { formatDateTime } from "@/lib/format"
+import { formatClock, formatDateTime } from "@/lib/format"
 
 const LIMIT = 200
 const ALL = "all"
@@ -113,6 +113,7 @@ export function JobsPage() {
                     <TableHead>State</TableHead>
                     <TableHead>Video</TableHead>
                     <TableHead className="text-right">Attempts</TableHead>
+                    <TableHead>Scheduled start</TableHead>
                     <TableHead>Created</TableHead>
                     <TableHead>Started</TableHead>
                     <TableHead>Finished</TableHead>
@@ -125,6 +126,11 @@ export function JobsPage() {
                       <TableCell>{j.kind === "record" ? "live recording" : "archive"}</TableCell>
                       <TableCell>
                         <Badge variant={stateVariant(j.state)}>{j.state}</Badge>
+                        {j.state === "queued" && j.deferred_until && (
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            waits until {formatClock(j.deferred_until)}
+                          </span>
+                        )}
                         {j.miss_reason && (
                           <span className="ml-2 text-xs text-muted-foreground">
                             {MISS_REASON_LABEL[j.miss_reason]}
@@ -141,6 +147,7 @@ export function JobsPage() {
                         )}
                       </TableCell>
                       <TableCell className="text-right">{j.attempts}</TableCell>
+                      <TableCell>{formatDateTime(j.scheduled_at)}</TableCell>
                       <TableCell>{formatDateTime(j.created_at)}</TableCell>
                       <TableCell>{formatDateTime(j.started_at)}</TableCell>
                       <TableCell>{formatDateTime(j.finished_at)}</TableCell>

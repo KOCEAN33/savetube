@@ -2,7 +2,7 @@
 
 ## Goal
 
-Follow `docs/plan.md` § Build order. savetube runs in production on the homelab cluster, but only its scaffold exists.
+Ship the archive features built on `develop` (channel playlists, title words, download limits, stalled-job reclaim, liveness) to production, then review live recording with the user before building the recorder path.
 
 ## Current progress
 
@@ -18,20 +18,32 @@ Follow `docs/plan.md` § Build order. savetube runs in production on the homelab
 - Zitadel: project `savetube`, Web application with PKCE (auth method `None`), grant type Authorization Code, client ID `395908165327192123` in `envs/prod.yaml`.
 - Postgres: the production role and `Database` `savetube` on Cluster `postgres` (homelab-platform `manifest/postgres/`). 1Password items `savetube-db` and `savetube-session`, each one field (`password`, `secret`).
 - Storage: `tank/youtube` (proxmox-talos-lab inventory), mounted rw at `/var/mnt/youtube`, root owned by 1000.
-- Not built: live detection, source polling, write API, Discord notifications, job-state metrics, cancel, the `missed` reconciliation, ServiceMonitor, canary CronJob. `scheduler.py` samples storage only.
+- Built and checked locally end to end: the Rules and Sources pages create and edit rules and sources, the scheduler polls due sources, the worker downloads into the tree. The production rollout of this is unchecked.
+- Live detection runs in the scheduler and queues `record` jobs. A check against real channels found two live and two upcoming streams on NASA and none on VESPERBELL. Nothing records them yet.
+- Not built: recorder Job creation, Discord notifications, job-state metrics, cancel, a manual retry, the `missed` reconciliation, ServiceMonitor, canary CronJob.
+- Built on `develop` and checked locally against real VESPERBELL listings, in commits `6a1047e`-`14ce9c3`: channel playlists, title words at global, channel and source level, listing before downloading, download limits, stalled-job reclaim, `/healthz` with livenessProbe. The design is in `docs/plan.md` sections Channel playlists, Title words, Listing before downloading, Download limits. Migrations `0002`, `0003` and `0004` are not applied in production.
+- `develop` is pushed. Pull request #4 (`develop` to main) is open, and the user merges it. No CI runs on a pull request, because `image.yml` triggers only on a push to main.
+- The user's decisions behind the design, which the plan states as rules: word lists merge by union with no per-source opt-out, a global include word restricts every source on purpose, words apply to live detection too, children of a "track all" source are disabled and never deleted, health is Kubernetes' job and job ownership stays in the Postgres lease, limits are global only and the rate limit is per download, a download running at the window end finishes.
 
 ## What worked
 
-- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first.
+
+- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first. URL-quote the password, and point `sslrootcert` at `~/.postgresql/postgres-dev-ca.crt`. No `.env` is needed.
 - `SAVETUBE_ENV_FILE=<file> docker compose up` points the stack at another env file, without touching `.env`.
 - Chart tests render with `helm template` and feed the rendered CronJob into the real `recorder_job()`.
 - Off the home LAN, the Talos API answers only on the tailnet: `talosctl --talosconfig talos/generated/talosconfig -e talos-pve1.taila166d5.ts.net -n 192.168.33.20`. `make restore` refreshes that talosconfig. Ansible reaches pve1 with `ARGS='-e ansible_host=100.69.133.35'`.
+
+- Local end-to-end check: a throwaway database `savetube_e2e` on pg-dev, `SAVETUBE_ARCHIVE_ROOT` under `/tmp`, `SAVETUBE_STATIC_DIR=frontend/dist`, and a uvicorn script that sets `app.dependency_overrides[current_user]` to skip login. Run `savetube scheduler` and `savetube worker` beside it, each with its own `SAVETUBE_METRICS_PORT` and `SAVETUBE_HEALTH_PORT`, because both default to 9090 and 8081. Set the rule format to `wa[ext=m4a]/wa` on this Mac.
+- Rate limit check: `du -sk` of `.incoming/<job id>/` twice, 20 s apart. A limit of 50,000 bytes/s measured 39 KiB/s.
+- Screenshots without the browser extension: Playwright through `uvx --with playwright python -I <script>` with `channel="chrome"`, which uses the installed Chrome.
+- Off the home LAN, `kubectl --context homelab-tailnet` reaches the cluster. The postgres-dev CA comes from Secret `postgres-dev-ca` in `postgres-dev`.
 
 ## What did not work
 
 - respx cannot mock Authlib or Starlette's TestClient, because both use `httpx2`. `tests/test_auth.py` `FakeIssuer` patches `httpx2.AsyncHTTPTransport` instead.
 - Without `relationship()`, SQLAlchemy does not order inserts by FK, so `tests/test_db.py` flushes parents first.
 - `make talos-config` connects to the node's LAN address only, so it fails off the home LAN. A single new document goes in with `talosctl patch mc --mode no-reboot` over the tailnet, after a `--dry-run` that shows the diff.
+- This Mac has no ffmpeg, so a local download that merges video and audio fails. A single-file format such as `wa[ext=m4a]/wa` works. YouTube serves no combined format for some videos, so `worst` fails too.
 - `make tank ARGS='--check'` fails at the SMART report: check mode skips `smartctl`, and `from_json` gets empty output.
 
 ## Open questions
@@ -46,8 +58,16 @@ Follow `docs/plan.md` § Build order. savetube runs in production on the homelab
 
 ## Next steps
 
-1. Log in through a browser at `https://savetube.lab.hiriri.com` as a user holding `savetube-admin`.
-2. Continue with `docs/plan.md` § Build order.
+1. After the user merges #4, watch the `image.yml` run, the release tag, and the Argo CD rollout in `savetube-prod`. Check that the scheduler's `migrate` init container applied `0002`-`0004`.
+2. Log in through a browser at `https://savetube.lab.hiriri.com` as a user holding `savetube-admin`, add a source, start its downloads, and watch the first archive job in production. Check the worker and scheduler livenessProbes stay green.
+3. Follow-ups:
+   - `JobOut` omits `log_tail`, so the reclaim reason "worker stopped during the download" shows only in the database.
+   - A new child's `last_polled_at` is backdated to spread polls, so the UI shows a "Last sync" time for a playlist never polled.
+   - The UI cannot edit a source's poll interval.
+   - Narrowing words does not cancel a queued job whose video another source also lists.
+   - A word change does not cancel a running download, and turning `archiving` off cancels nothing.
+   - The title preview returns every listed title with no pagination.
+4. Review live recording with the user before building the recorder path.
 
 ## Suggested skills
 

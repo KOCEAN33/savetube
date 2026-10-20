@@ -36,6 +36,15 @@ export function formatDateTime(iso: string | null | undefined): string {
   return new Date(iso).toLocaleString()
 }
 
+/** Local time of day, with the date when it is not today: "02:00" or "10/23/2026, 02:00". */
+export function formatClock(iso: string): string {
+  const d = new Date(iso)
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  return d.toDateString() === new Date().toDateString()
+    ? time
+    : `${d.toLocaleDateString()}, ${time}`
+}
+
 /** Local calendar day `daysAgo` days before today, as YYYY-MM-DD. */
 export function isoDay(daysAgo = 0): string {
   const d = new Date()

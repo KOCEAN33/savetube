@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     oidc_required_group: str | None = None
 
     metrics_port: int = 9090
+    # GET /healthz of the worker and the scheduler, served by their asyncio loop.
+    health_port: int = 8081
 
     namespace: str = "default"
     recorder_cronjob: str = "savetube-recorder"

@@ -30,6 +30,9 @@ spec:
           ports:
             - name: metrics
               containerPort: 9090
+            - name: health
+              containerPort: 8081
+          {{- include "savetube.livenessProbe" . | nindent 10 }}
           env:
             {{- include "savetube.archiveEnv" . | nindent 12 }}
           securityContext:

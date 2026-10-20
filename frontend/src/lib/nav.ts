@@ -1,9 +1,11 @@
 import {
   CircleDotIcon,
   FilmIcon,
+  GaugeIcon,
   LayoutDashboardIcon,
   ListFilterIcon,
   RssIcon,
+  TypeIcon,
   type LucideIcon,
 } from "lucide-react"
 
@@ -17,6 +19,8 @@ export const navItems: NavItem[] = [
   { title: "Dashboard", url: "/", icon: LayoutDashboardIcon },
   { title: "Channels and sources", url: "/sources", icon: RssIcon },
   { title: "Rules", url: "/rules", icon: ListFilterIcon },
+  { title: "Title words", url: "/words", icon: TypeIcon },
+  { title: "Download settings", url: "/download-settings", icon: GaugeIcon },
   { title: "Jobs and live recordings", url: "/jobs", icon: CircleDotIcon },
   { title: "Videos", url: "/videos", icon: FilmIcon },
 ]
