@@ -6,6 +6,9 @@ image:
 
 imagePullSecrets: []
 
+# Old ReplicaSets each Deployment keeps for rollback.
+revisionHistoryLimit: 3
+
 # The PO token provider runs as a native sidecar beside every yt-dlp container.
 # Keep its tag equal to the bgutil-ytdlp-pot-provider plugin version in uv.lock.
 potProvider:
