@@ -113,6 +113,7 @@ export function JobsPage() {
                     <TableHead>State</TableHead>
                     <TableHead>Video</TableHead>
                     <TableHead className="text-right">Attempts</TableHead>
+                    <TableHead>Scheduled start</TableHead>
                     <TableHead>Created</TableHead>
                     <TableHead>Started</TableHead>
                     <TableHead>Finished</TableHead>
@@ -141,6 +142,7 @@ export function JobsPage() {
                         )}
                       </TableCell>
                       <TableCell className="text-right">{j.attempts}</TableCell>
+                      <TableCell>{formatDateTime(j.scheduled_at)}</TableCell>
                       <TableCell>{formatDateTime(j.created_at)}</TableCell>
                       <TableCell>{formatDateTime(j.started_at)}</TableCell>
                       <TableCell>{formatDateTime(j.finished_at)}</TableCell>

@@ -70,6 +70,7 @@ export interface Job {
   video_id: string | null
   attempts: number
   miss_reason: MissReason | null
+  scheduled_at: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null

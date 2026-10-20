@@ -223,7 +223,7 @@ export function RulesPage() {
           <SheetHeader>
             <SheetTitle>{editing ? `Edit ${editing.name}` : "New rule"}</SheetTitle>
             <SheetDescription>
-              A source archives the types its rule keeps. Live watching is not built yet.
+              A source archives the types its rule keeps. Watching lives queues a recording for each upcoming or live stream on the channel. Nothing records it yet.
             </SheetDescription>
           </SheetHeader>
           {editing !== undefined && (
