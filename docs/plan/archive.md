@@ -49,8 +49,8 @@
 | `POST /api/sources/{id}/title-preview` | `{include_words, exclude_words}`, the source's own lists being edited | `{total, kept, titles: [{video_id, title, kept}]}` from the source's `listing_entry` rows, matched with the stored global and channel lists merged in |
 | `GET /api/words` | | the global `{include_words, exclude_words}` |
 | `PUT /api/words` | `{include_words, exclude_words}` | the global lists |
-| `GET /api/channels` | | each channel also carries `include_words`, `exclude_words` |
-| `PATCH /api/channels/{id}` | `{include_words?, exclude_words?}` | the channel |
+| `GET /api/channels` | | each channel also carries `include_words`, `exclude_words`, `date_after`, `format`, `use_cookies`, `watch_lives` |
+| `PATCH /api/channels/{id}` | `{include_words?, exclude_words?, date_after?, format?, use_cookies?, watch_lives?}` | the channel |
 
 - Word lists are trimmed, empty strings dropped, and duplicates removed after casefolding, keeping the first form.
 

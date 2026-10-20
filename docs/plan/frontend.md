@@ -13,7 +13,7 @@
 
 One modal takes a channel from URL to downloading. No setting needs to exist first.
 
-1. The user pastes a channel URL. A first scan lists the first page of the Videos, Shorts and Live tabs and the channel's playlists. It does not list the whole channel.
+1. The user pastes a channel URL. A first scan lists the first 30 entries of the Videos, Shorts and Live tabs and the channel's playlists. It does not list the whole channel.
 2. The user picks what to archive: each tab, all or some playlists, and whether to record lives.
 3. The user adds include and exclude title words. The scanned titles show which ones the words keep and which they filter out, updated as the words change. Word suggestions come from the scanned titles.
 4. The user sets the date cutoff, quality and cookie use, and saves. Saving creates the channel and its sources with `archiving` on, so downloads start on the next scheduler tick.
@@ -24,7 +24,7 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 | --- | --- | --- |
 | `POST /api/channel-scan` | `{url}`, a channel URL | channel id, handle and name, the first-page entries `{video_id, title}` of each tab, and the playlists `{id, title, url}`. Listed live through yt-dlp, 502 on a yt-dlp error, 504 after 120 s |
 | `POST /api/title-preview` | `{channel_id?, titles, include_words, exclude_words}` | each title with `kept`, matched with the stored global lists and, when `channel_id` names a stored channel, its lists merged in |
-| `POST /api/channels` | the scan's channel URL, chosen tabs, chosen playlists or all playlists, `watch_lives`, words, `date_after`, `format`, `use_cookies` | the channel with its sources |
+| `POST /api/channels` | the scan's channel URL, `channel_id`, `handle` and `name`, chosen tabs, chosen playlists or all playlists, `watch_lives`, words, `date_after`, `format`, `use_cookies` | the channel with its sources |
 
 ## Statistics
 
