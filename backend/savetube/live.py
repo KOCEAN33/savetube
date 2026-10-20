@@ -1,7 +1,8 @@
 """Live detection for watched channels: the RSS feed finds new and upcoming
 video ids, and the channel's `/live` page finds a stream with no waiting room.
 
-A detection is a queued `record` job. Nothing starts a recorder yet.
+A detection is a queued `record` job, made only for a title that passes the
+words of a source watching the channel. Nothing starts a recorder yet.
 """
 
 import asyncio
@@ -15,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from yt_dlp.utils import DownloadError
 
+from savetube import words
 from savetube.db.models import Job, JobKind, Rule, Source, SourceKind, Video, VideoState
 from savetube.layout import VideoType
 from savetube.pipeline import get_or_create_channel
@@ -23,11 +25,25 @@ log = logging.getLogger(__name__)
 
 FetchFeed = Callable[[str], str]
 Probe = Callable[[str], dict[str, Any]]
+# Per scheduler process: a probed id and what the probe found, None when it
+# failed. The words are applied on every tick, so a word change needs no probe.
+Seen = dict[str, dict[str, Any] | None]
 
 _YT = "{http://www.youtube.com/xml/schemas/2015}"
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _DETECTED = frozenset({"is_upcoming", "is_live"})
 _NOT_LIVE = "is not currently live"
+# What `_record` and the words read. A full info dict holds every format.
+_KEPT = (
+    "id",
+    "title",
+    "channel_id",
+    "channel",
+    "uploader",
+    "uploader_id",
+    "live_status",
+    "release_timestamp",
+)
 
 
 def parse_feed(xml: str) -> list[str]:
@@ -35,20 +51,36 @@ def parse_feed(xml: str) -> list[str]:
     return [vid for e in root.iter(f"{_ATOM}entry") if (vid := e.findtext(f"{_YT}videoId"))]
 
 
-async def watched_channels(session: AsyncSession) -> list[str]:
-    q = (
-        select(Source.channel_id)
-        .join(Rule, Rule.id == Source.rule_id)
-        .where(
-            Source.enabled,
-            Source.kind == SourceKind.TAB,
-            Source.channel_id.is_not(None),
-            Rule.watch_lives,
-        )
-        .distinct()
-        .order_by(Source.channel_id)
+def _watching(q):
+    return q.join(Rule, Rule.id == Source.rule_id).where(
+        Source.enabled,
+        Source.kind == SourceKind.TAB,
+        Source.channel_id.is_not(None),
+        Rule.watch_lives,
     )
+
+
+async def watched_channels(session: AsyncSession) -> list[str]:
+    q = _watching(select(Source.channel_id)).distinct().order_by(Source.channel_id)
     return list(await session.scalars(q))
+
+
+async def _wanted(session: AsyncSession, channel_id: str, title: str) -> bool:
+    """Whether the title passes the effective words of a source watching the
+    channel. Watching `streams` tabs, when there are any, decide alone."""
+    rows = (
+        await session.execute(
+            _watching(select(Source.url, Source.include_words, Source.exclude_words)).where(
+                Source.channel_id == channel_id
+            )
+        )
+    ).all()
+    streams = [r for r in rows if r.url.endswith("/streams")]
+    for r in streams or rows:
+        lists = await words.effective(session, channel_id, (r.include_words, r.exclude_words))
+        if words.matches(title, *lists):
+            return True
+    return False
 
 
 async def _record(session: AsyncSession, info: dict[str, Any]) -> Job | None:
@@ -98,7 +130,7 @@ async def check_channel(
     probe: Probe,
     probe_live: Probe,
     list_streams: Probe,
-    seen: set[str],
+    seen: Seen,
 ) -> list[int]:
     """Probe unseen ids from the feed and the Live tab, and the `/live` page;
     return new record job ids.
@@ -115,15 +147,17 @@ async def check_channel(
     ]
     found: list[dict[str, Any]] = []
     for video_id in dict.fromkeys(candidates):
-        if video_id in seen:
-            continue
-        seen.add(video_id)
-        try:
-            found.append(await asyncio.to_thread(probe, video_id))
-        except DownloadError as e:
-            # A members-only or private video stays unreadable, so it is not
-            # probed again until the scheduler restarts.
-            log.warning("probe of %s failed: %s", video_id, e)
+        if video_id not in seen:
+            try:
+                info = await asyncio.to_thread(probe, video_id)
+                seen[video_id] = {k: info.get(k) for k in _KEPT}
+            except DownloadError as e:
+                # A members-only or private video stays unreadable, so it is not
+                # probed again until the scheduler restarts.
+                log.warning("probe of %s failed: %s", video_id, e)
+                seen[video_id] = None
+        if seen[video_id] is not None:
+            found.append(seen[video_id])
     try:
         found.append(await asyncio.to_thread(probe_live, channel_id))
     except DownloadError as e:
@@ -133,6 +167,8 @@ async def check_channel(
     created: list[int] = []
     async with sessionmaker() as session:
         for info in found:
+            if not await _wanted(session, channel_id, info.get("title") or ""):
+                continue
             job = await _record(session, info)
             if job is not None:
                 created.append(job.id)

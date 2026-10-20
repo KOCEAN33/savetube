@@ -1,5 +1,6 @@
-"""Source URLs: a channel tab or a playlist, in one canonical form each, so the
-unique `source.url` catches a second add of the same source."""
+"""Source URLs: a channel tab, a channel's playlists, or a playlist, in one
+canonical form each, so the unique `source.url` catches a second add of the
+same source."""
 
 import enum
 import re
@@ -19,6 +20,8 @@ class Tab(enum.StrEnum):
     SHORTS = "shorts"
     # YouTube's path for the Live tab: current, upcoming and past streams.
     STREAMS = "streams"
+    # Not a video tab: the channel's playlists, each polled as a child source.
+    PLAYLISTS = "playlists"
 
 
 class InvalidSourceUrl(ValueError):
@@ -61,6 +64,9 @@ def parse(url: str, tabs: list[Tab] | None = None) -> list[SourceUrl]:
     if not tabs:
         raise InvalidSourceUrl("a channel URL needs at least one tab")
     return [
-        SourceUrl(f"https://www.youtube.com/{base}/{t.value}", SourceKind.TAB)
+        SourceUrl(
+            f"https://www.youtube.com/{base}/{t.value}",
+            SourceKind.PLAYLISTS if t is Tab.PLAYLISTS else SourceKind.TAB,
+        )
         for t in dict.fromkeys(tabs)
     ]

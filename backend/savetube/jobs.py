@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import multiprocessing
 import shutil
 import tempfile
@@ -10,17 +11,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import Job, JobState, Video, VideoState
+from savetube.limits import admit
 from savetube.pipeline import from_shorts_tab, prepare_incoming, rule_for, store
 from savetube.ytdl import DEFAULT_FORMAT, build_params, copy_cookies, download, video_url
+
+log = logging.getLogger(__name__)
 
 LOG_TAIL_CHARS = 4000
 
 Runner = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+# Puts a new queue job for the `job` row, due at the given time, and returns
+# the queue's job id.
+Defer = Callable[[int, datetime], Awaitable[int]]
 
 
 class DownloadFailed(Exception):
@@ -71,15 +78,53 @@ async def _set_video_state(session: AsyncSession, video_id: str, state: VideoSta
         video.state = state
 
 
-async def run(job_id: int, settings: Settings, *, live: bool, runner: Runner) -> None:
-    sessionmaker = default_sessionmaker()
+async def _defer(
+    sessionmaker: async_sessionmaker, job_id: int, at: datetime, defer: Defer | None
+) -> None:
+    async with sessionmaker() as session:
+        job = await session.get(Job, job_id)
+        try:
+            if defer is None:
+                raise RuntimeError("no queue to defer the job to")
+            job.queue_job_id = await defer(job_id, at)
+        except Exception as e:
+            # A queued row with no queue job would block its video for good.
+            log.exception("defer of job %s failed", job_id)
+            job.state = JobState.FAILED
+            job.finished_at = datetime.now(UTC)
+            job.log_tail = f"defer failed: {type(e).__name__}: {e}"[-LOG_TAIL_CHARS:]
+        await session.commit()
+
+
+async def run(
+    job_id: int,
+    settings: Settings,
+    *,
+    live: bool,
+    runner: Runner,
+    defer: Defer | None = None,
+    sessionmaker: async_sessionmaker | None = None,
+) -> None:
+    """Run one job. An archive job outside the download window, or with no free
+    slot, is deferred instead and stays queued. A recording ignores the limits."""
+    sessionmaker = sessionmaker or default_sessionmaker()
+    ratelimit = None
     async with sessionmaker() as session:
         job = await session.get(Job, job_id)
         if job is None or job.video_id is None:
             raise LookupError(f"job {job_id} has no video")
+        if not live:
+            wait, limits = await admit(session, datetime.now(UTC))
+            if wait is not None:
+                job.deferred_until = wait
+                await session.commit()
+                await _defer(sessionmaker, job_id, wait, defer)
+                return
+            ratelimit = limits.rate_limit_bytes
         video_id = job.video_id
         rule = await rule_for(session, video_id)
         shorts = await from_shorts_tab(session, video_id)
+        job.deferred_until = None
         job.state = JobState.RUNNING
         job.attempts += 1
         job.started_at = datetime.now(UTC)
@@ -102,6 +147,7 @@ async def run(job_id: int, settings: Settings, *, live: bool, runner: Runner) ->
                 format=rule.format if rule else DEFAULT_FORMAT,
                 cookiefile=cookiefile,
                 live=live,
+                ratelimit=ratelimit,
             )
             info = await runner(video_url(video_id), params)
 

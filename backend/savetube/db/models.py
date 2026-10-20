@@ -1,16 +1,19 @@
 import enum
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     MetaData,
     String,
     Text,
+    false,
     func,
+    true,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -21,6 +24,7 @@ from savetube.layout import VideoType
 class SourceKind(enum.StrEnum):
     TAB = "tab"
     PLAYLIST = "playlist"
+    PLAYLISTS = "playlists"
 
 
 class VideoState(enum.StrEnum):
@@ -83,7 +87,44 @@ class Channel(Base):
     name: Mapped[str]
     # Fixed at first add. A later rename on YouTube changes `name` only.
     dir_name: Mapped[str] = mapped_column(unique=True)
+    include_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    exclude_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GlobalWords(Base):
+    """The one row of title words every source merges in."""
+
+    __tablename__ = "global_words"
+    __table_args__ = (CheckConstraint("id = 1", name="single_row"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1, autoincrement=False)
+    include_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    exclude_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+
+
+class DownloadSettings(Base):
+    """The one row of archive download limits. Recordings ignore them."""
+
+    __tablename__ = "download_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="single_row"),
+        CheckConstraint("max_concurrent BETWEEN 1 AND 10", name="max_concurrent"),
+        CheckConstraint("rate_limit_bytes > 0", name="rate_limit_bytes"),
+        CheckConstraint(
+            "(window_start IS NULL AND window_end IS NULL)"
+            " OR (window_start IS NOT NULL AND window_end IS NOT NULL"
+            " AND window_start <> window_end)",
+            name="window",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1, autoincrement=False)
+    max_concurrent: Mapped[int] = mapped_column(default=1, server_default="1")
+    rate_limit_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    # Local times in savetube.limits.TIMEZONE. Both set or both null.
+    window_start: Mapped[time | None]
+    window_end: Mapped[time | None]
 
 
 class Rule(Base):
@@ -96,7 +137,6 @@ class Rule(Base):
     format: Mapped[str] = mapped_column(default="bv*+ba/b")
     use_cookies: Mapped[bool] = mapped_column(default=False)
     watch_lives: Mapped[bool] = mapped_column(default=False)
-    max_concurrent: Mapped[int] = mapped_column(default=1)
 
 
 class Source(Base):
@@ -110,8 +150,34 @@ class Source(Base):
     enabled: Mapped[bool] = mapped_column(default=True)
     poll_interval_minutes: Mapped[int] = mapped_column(default=360)
     rule_id: Mapped[int] = mapped_column(ForeignKey("rule.id"))
+    # Merged with the global, channel and parent lists (savetube.words.effective).
+    include_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    exclude_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    # Off: a playlist source archives only its own channel's uploads.
+    other_channels: Mapped[bool] = mapped_column(default=False, server_default=false())
+    # The `playlists` source that created this playlist source.
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("source.id", ondelete="CASCADE"))
+    # On a `playlists` source: child URLs the user deleted, never created again.
+    ignored_urls: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    # Off: polls record the listing but create no videos and no archive jobs.
+    # The server default is on for rows from before the flag existed.
+    archiving: Mapped[bool] = mapped_column(default=False, server_default=true())
     last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ListingEntry(Base):
+    """A video the source's last listing showed, before any filter."""
+
+    __tablename__ = "listing_entry"
+
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("source.id", ondelete="CASCADE"), primary_key=True
+    )
+    video_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # No foreign key: a playlist lists uploads of channels that are never stored.
+    channel_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(Text)
 
 
 class Video(Base):
@@ -162,6 +228,9 @@ class Job(Base):
     # A recording's announced start, from the waiting room. Null for a stream
     # found already live, and for an archive.
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When a deferred archive job is due again: the window's next start, or a
+    # retry for a free slot.
+    deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

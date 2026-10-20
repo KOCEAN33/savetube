@@ -48,3 +48,13 @@ def test_list_parameter_makes_a_playlist():
 def test_rejects(url, message):
     with pytest.raises(InvalidSourceUrl, match=message):
         parse(url)
+
+
+def test_playlists_tab_makes_a_playlists_source():
+    assert parse(f"https://www.youtube.com/channel/{UC}/playlists") == [
+        SourceUrl(f"https://www.youtube.com/channel/{UC}/playlists", SourceKind.PLAYLISTS)
+    ]
+    assert parse("https://www.youtube.com/@NASA", [Tab.VIDEOS, Tab.PLAYLISTS]) == [
+        SourceUrl("https://www.youtube.com/@NASA/videos", SourceKind.TAB),
+        SourceUrl("https://www.youtube.com/@NASA/playlists", SourceKind.PLAYLISTS),
+    ]

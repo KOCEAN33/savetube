@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
-from savetube.live import check_channel, watched_channels
+from savetube.live import Seen, check_channel, watched_channels
 from savetube.poll import due_sources, poll_source
 from savetube.storage import disk_usage
 from savetube.ytdl import fetch_feed, list_entries, list_streams, probe_live, probe_video
@@ -36,20 +36,25 @@ async def sample_storage(settings: Settings) -> None:
 
 
 async def poll_sources(settings: Settings) -> None:
-    from savetube.queue import archive
+    from savetube.queue import app, archive
 
     async def enqueue(job_id: int) -> int:
         return await archive.defer_async(job_id=job_id)
+
+    async def cancel(queue_job_id: int) -> bool:
+        return await app.job_manager.cancel_job_by_id_async(queue_job_id)
 
     sessionmaker = default_sessionmaker()
     async with sessionmaker() as session:
         due = await due_sources(session, datetime.now(UTC))
     # One at a time: every listing counts against YouTube's request limits.
     for source_id in due:
-        await poll_source(sessionmaker, source_id, settings, lister=list_entries, enqueue=enqueue)
+        await poll_source(
+            sessionmaker, source_id, settings, lister=list_entries, enqueue=enqueue, cancel=cancel
+        )
 
 
-async def detect_lives(seen: set[str]) -> None:
+async def detect_lives(seen: Seen) -> None:
     sessionmaker = default_sessionmaker()
     async with sessionmaker() as session:
         channels = await watched_channels(session)
@@ -89,5 +94,5 @@ async def run(settings: Settings) -> None:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(_every("storage sample", lambda: sample_storage(settings)))
             tg.create_task(_every("source poll", lambda: poll_sources(settings)))
-            seen: set[str] = set()
+            seen: Seen = {}
             tg.create_task(_every("live detection", lambda: detect_lives(seen)))

@@ -63,7 +63,9 @@ web:
 
 worker:
   replicas: 1
-  concurrency: 1
+  # Hard ceiling on archive downloads per worker pod. The UI's download
+  # settings (max_concurrent, 1-10) decide below it.
+  concurrency: 10
   resources: {}
 
 scheduler:

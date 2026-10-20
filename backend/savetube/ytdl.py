@@ -44,6 +44,7 @@ def build_params(
     cookiefile: Path | None = None,
     live: bool = False,
     progress_hook: Callable[[dict[str, Any]], None] | None = None,
+    ratelimit: int | None = None,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {
         "format": format,
@@ -69,6 +70,9 @@ def build_params(
         params["cookiefile"] = str(cookiefile)
     if progress_hook is not None:
         params["progress_hooks"] = [progress_hook]
+    if ratelimit is not None:
+        # Bytes per second, per download.
+        params["ratelimit"] = ratelimit
     return params
 
 
