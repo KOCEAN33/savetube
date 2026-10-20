@@ -25,7 +25,8 @@ Build the agreed archive features: channel playlists, the title word rule, and t
 
 ## What worked
 
-- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first.
+
+- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first. URL-quote the password, and point `sslrootcert` at the postgres-dev CA.
 - `SAVETUBE_ENV_FILE=<file> docker compose up` points the stack at another env file, without touching `.env`.
 - Chart tests render with `helm template` and feed the rendered CronJob into the real `recorder_job()`.
 - Off the home LAN, the Talos API answers only on the tailnet: `talosctl --talosconfig talos/generated/talosconfig -e talos-pve1.taila166d5.ts.net -n 192.168.33.20`. `make restore` refreshes that talosconfig. Ansible reaches pve1 with `ARGS='-e ansible_host=100.69.133.35'`.
@@ -54,11 +55,12 @@ Build the agreed archive features: channel playlists, the title word rule, and t
 ## Next steps
 
 1. Log in through a browser at `https://savetube.lab.hiriri.com` as a user holding `savetube-admin`, add a source, and watch the first archive job in production.
-2. Build the agreed archive features test-first with the `tdd` skill. The example channel is `https://www.youtube.com/channel/UCPd0Z22gF43dUidPYEQO5-w` (VESPERBELL).
+2. Build the three open tasks below in parallel. Split each into a backend worker and a frontend worker, or give each task its own git worktree. Agree the API shape before the split, so both sides build against it. Work test-first with the `tdd` skill. The example channel is `https://www.youtube.com/channel/UCPd0Z22gF43dUidPYEQO5-w` (VESPERBELL): 217 videos, 161 shorts, 93 past streams, 23 playlists.
    - Channel playlists offer two modes: track all of them, including ones added later, or pick some.
    - Whether a playlist source also downloads videos from other channels is a per-source option.
    - The title rule is an include word list and an exclude word list, matched case-insensitively. Example: the Live tab with include `歌枠` keeps `【歌枠】ちょっと疲れちゃってるんだと思うよ【VESPERBELL ヨミ】` and skips `【ゲリラ(豪雨)】私魔女のキキ(危機)…`.
-3. Tag word suggestions need examples the user confirms before the first test.
+   - Tag word suggestions help fill the include and exclude lists from words that recur in titles across channels. A first idea: take the text inside `【】`, `[]`, `()`, `「」` and `#hashtags`, and rank by how many videos of a channel carry it. The algorithm and its examples need the user's confirmation before the first test.
+3. Follow-ups from earlier work: an archive job stays `running` when its worker pod dies; there is no manual retry; `rule.max_concurrent` is not enforced; a source's poll interval is set only when it is added.
 
 ## Suggested skills
 
