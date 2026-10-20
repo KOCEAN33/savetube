@@ -1,0 +1,152 @@
+export type VideoType = "videos" | "shorts" | "lives" | "members"
+export type JobKind = "archive" | "record"
+export type JobState =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "missed"
+  | "cancelled"
+export type MissReason = "dvr_off" | "ended_before_detection" | "recorder_failed"
+
+export interface Me {
+  sub: string
+  name: string | null
+  email: string | null
+  groups: string[]
+}
+
+export interface StatsSummary {
+  total_bytes: number
+  video_count: number
+  duration_seconds: number
+  free_bytes: number | null
+  by_type: { type: VideoType; bytes: number; count: number }[]
+  by_channel: { channel_id: string; name: string; bytes: number; count: number }[]
+}
+
+export interface DailyStat {
+  day: string
+  bytes: number
+  count: number
+}
+
+export interface Channel {
+  id: string
+  handle: string | null
+  name: string
+  dir_name: string
+  video_count: number
+  bytes: number
+}
+
+export interface Source {
+  id: number
+  url: string
+  kind: "tab" | "playlist"
+  channel_id: string | null
+  enabled: boolean
+  poll_interval_minutes: number
+  rule_id: number
+  last_polled_at: string | null
+  last_error: string | null
+}
+
+export interface Rule {
+  id: number
+  name: string
+  types: string[]
+  date_after: string | null
+  format: string
+  use_cookies: boolean
+  watch_lives: boolean
+  max_concurrent: number
+}
+
+export interface Job {
+  id: number
+  kind: JobKind
+  state: JobState
+  video_id: string | null
+  attempts: number
+  miss_reason: MissReason | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface Video {
+  id: string
+  channel_id: string
+  type: string
+  title: string
+  upload_date: string | null
+  duration: number | null
+  size_bytes: number | null
+  state: string
+  completed_at: string | null
+}
+
+export interface VideoDetail extends Video {
+  info: Record<string, unknown>
+}
+
+export interface VideoPage {
+  total: number
+  items: Video[]
+}
+
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
+export function loginUrl(): string {
+  const next = window.location.pathname + window.location.search
+  return `/auth/login?next=${encodeURIComponent(next)}`
+}
+
+type Query = Record<string, string | number | undefined>
+
+async function get<T>(path: string, query: Query = {}): Promise<T> {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== "") params.set(key, String(value))
+  }
+  const qs = params.toString()
+  const res = await fetch(qs ? `${path}?${qs}` : path, {
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  })
+  if (res.status === 401) {
+    window.location.assign(loginUrl())
+    throw new ApiError(401, "Not signed in")
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status, `${res.status} ${res.statusText} for ${path}`)
+  }
+  return (await res.json()) as T
+}
+
+export const api = {
+  me: () => get<Me>("/api/me"),
+  statsSummary: () => get<StatsSummary>("/api/stats/summary"),
+  statsDaily: (days: number) => get<DailyStat[]>("/api/stats/daily", { days }),
+  channels: () => get<Channel[]>("/api/channels"),
+  sources: () => get<Source[]>("/api/sources"),
+  rules: () => get<Rule[]>("/api/rules"),
+  jobs: (query: { kind?: JobKind; state?: JobState; limit?: number }) =>
+    get<Job[]>("/api/jobs", query),
+  videos: (query: {
+    channel_id?: string
+    type?: string
+    q?: string
+    limit?: number
+    offset?: number
+  }) => get<VideoPage>("/api/videos", query),
+  video: (id: string) => get<VideoDetail>(`/api/videos/${encodeURIComponent(id)}`),
+}
