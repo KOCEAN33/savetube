@@ -4,6 +4,7 @@ The backend is the OIDC client. The browser holds only a signed session cookie
 with the user's claims. No token reaches the frontend.
 """
 
+import logging
 from typing import Annotated
 from urllib.parse import urlencode
 
@@ -18,6 +19,8 @@ from savetube.config import Settings
 SCOPE = "openid profile email"
 SESSION_USER = "user"
 SESSION_NEXT = "next"
+
+log = logging.getLogger(__name__)
 
 
 class User(BaseModel):
@@ -86,6 +89,12 @@ def install(app: FastAPI, settings: Settings) -> None:
         userinfo = await client.userinfo(token=token)
         groups = userinfo.get("groups") or claims.get("groups") or []
         if settings.oidc_required_group and settings.oidc_required_group not in groups:
+            log.warning(
+                "login refused: sub=%s lacks %s, groups=%s",
+                claims.get("sub"),
+                settings.oidc_required_group,
+                groups,
+            )
             request.session.clear()
             return PlainTextResponse("forbidden: missing required group", status_code=403)
         next_path = _safe_next(request.session.get(SESSION_NEXT))
