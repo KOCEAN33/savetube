@@ -55,7 +55,8 @@ async def from_shorts_tab(session: AsyncSession, video_id: str) -> bool:
     return await session.scalar(q) is not None
 
 
-async def _channel(session: AsyncSession, info: dict[str, Any]) -> Channel:
+async def get_or_create_channel(session: AsyncSession, info: dict[str, Any]) -> Channel:
+    """`info` is a video's info dict, or a flat listing with the same channel keys."""
     channel_id = info["channel_id"]
     channel = await session.get(Channel, channel_id)
     if channel is None:
@@ -80,7 +81,7 @@ async def store(
     from_shorts_tab: bool = False,
 ) -> Video:
     """Move the download into the tree and record it. The caller commits."""
-    channel = await _channel(session, info)
+    channel = await get_or_create_channel(session, info)
     video_type = classify(info, from_shorts_tab=from_shorts_tab)
     rel = video_dir(channel.dir_name, video_type, info)
     final = archive_root / rel

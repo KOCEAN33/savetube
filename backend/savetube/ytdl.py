@@ -71,6 +71,24 @@ def build_params(
     return params
 
 
+def list_entries(url: str, cookiefile: Path | None = None) -> dict[str, Any]:
+    """A channel tab or playlist with flat entries: ids, titles, no per-video request.
+
+    `approximate_date` turns "3 weeks ago" into an entry `timestamp`, which the
+    rule's date cutoff reads.
+    """
+    params: dict[str, Any] = {
+        "extract_flat": "in_playlist",
+        "extractor_args": {"youtubetab": {"approximate_date": [""]}},
+        "quiet": True,
+        "sleep_interval_requests": _SLEEP["sleep_interval_requests"],
+    }
+    if cookiefile is not None:
+        params["cookiefile"] = str(cookiefile)
+    with yt_dlp.YoutubeDL(params) as ydl:
+        return ydl.sanitize_info(ydl.extract_info(url, download=False))
+
+
 def download(url: str, params: dict[str, Any]) -> dict[str, Any]:
     """Download one video and return its sanitised info dict."""
     with yt_dlp.YoutubeDL(params) as ydl:
