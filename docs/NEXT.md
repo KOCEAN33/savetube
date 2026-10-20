@@ -26,7 +26,7 @@ Build the agreed archive features: channel playlists, the title word rule, and t
 ## What worked
 
 
-- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first. URL-quote the password, and point `sslrootcert` at the postgres-dev CA.
+- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first. URL-quote the password, and point `sslrootcert` at `~/.postgresql/postgres-dev-ca.crt`. No `.env` is needed.
 - `SAVETUBE_ENV_FILE=<file> docker compose up` points the stack at another env file, without touching `.env`.
 - Chart tests render with `helm template` and feed the rendered CronJob into the real `recorder_job()`.
 - Off the home LAN, the Talos API answers only on the tailnet: `talosctl --talosconfig talos/generated/talosconfig -e talos-pve1.taila166d5.ts.net -n 192.168.33.20`. `make restore` refreshes that talosconfig. Ansible reaches pve1 with `ARGS='-e ansible_host=100.69.133.35'`.
