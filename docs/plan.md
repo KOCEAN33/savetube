@@ -1,6 +1,6 @@
 # savetube plan
 
-Draft for archiving chosen YouTube channels and playlists, recording lives from their first second, and managing both from one web UI. The scaffold exists: web with login and read API, schema, storage pipeline, image. Live detection and source polling are not built.
+Draft for archiving chosen YouTube channels and playlists, recording lives from their first second, and managing both from one web UI. Built: web with login, the UI and API for sources and rules, source polling, the archive worker, the storage pipeline, the image. Live detection and recording are not built.
 
 ## Requirements
 
@@ -148,6 +148,17 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 - Format: `bv*+ba/b`, merged to `mkv`, which holds any codec pair YouTube serves.
 - Files inside a video directory are named `<video id>.<ext>`, so only directory names carry a title and need the byte cap.
 - yt-dlp's `.tmp` fragments directory is deleted before the rename. The cookie copy lives in a private temporary directory outside `.incoming/`, so it never moves into the tree.
+
+### Source polling
+
+- A source is one channel tab (`videos`, `shorts`, `streams`) or one playlist, stored as a canonical URL. Adding a bare channel URL creates one source per chosen tab.
+- The scheduler lists a due source with yt-dlp's flat extraction: ids and titles, no request per video. Listing a channel with a few thousand videos takes minutes, because every page request sleeps 0.75 s.
+- A tab's entries carry no `channel_id`, so the poll takes it from the listing. Playlist entries carry their own, and a private or deleted entry without one is skipped.
+- Every listed video gets a `video_source` link. A video not yet stored gets a `pending` `video` row and an archive job, unless a job for it is queued or running, or three archive jobs for it have failed.
+- `is_live`, `is_upcoming` and `post_live` entries are left to live detection.
+- The rule's date cutoff reads the entry's approximate timestamp ("3 weeks ago"), so it is only as exact as YouTube's relative date. A video uploaded a day before the cutoff can pass.
+- A failed archive job deletes its `.incoming/<job id>/`, because the retry is a new job with a new directory.
+- Every write to `/api/*` needs an `X-Requested-With` header. A cross-origin page cannot send it without a CORS preflight, and SameSite=lax still sends the cookie on a POST from a sibling `hiriri.com` subdomain.
 
 ### Live detection
 

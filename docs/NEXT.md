@@ -2,7 +2,7 @@
 
 ## Goal
 
-Follow `docs/plan.md` § Build order. savetube runs in production on the homelab cluster, but only its scaffold exists.
+Build live detection, then review live recording with the user before building the recorder path. Archiving existing videos works end to end from the UI.
 
 ## Current progress
 
@@ -18,7 +18,9 @@ Follow `docs/plan.md` § Build order. savetube runs in production on the homelab
 - Zitadel: project `savetube`, Web application with PKCE (auth method `None`), grant type Authorization Code, client ID `395908165327192123` in `envs/prod.yaml`.
 - Postgres: the production role and `Database` `savetube` on Cluster `postgres` (homelab-platform `manifest/postgres/`). 1Password items `savetube-db` and `savetube-session`, each one field (`password`, `secret`).
 - Storage: `tank/youtube` (proxmox-talos-lab inventory), mounted rw at `/var/mnt/youtube`, root owned by 1000.
-- Not built: live detection, source polling, write API, Discord notifications, job-state metrics, cancel, the `missed` reconciliation, ServiceMonitor, canary CronJob. `scheduler.py` samples storage only.
+- Built and checked locally end to end: the Rules and Sources pages create and edit rules and sources, the scheduler polls due sources, the worker downloads into the tree. The production rollout of this is unchecked.
+- Not built: live detection, recorder Job creation, Discord notifications, job-state metrics, cancel, a manual retry, the `missed` reconciliation, ServiceMonitor, canary CronJob. `rule.max_concurrent` is stored but nothing enforces it.
+- An archive job whose worker pod dies stays `running`, and no poll queues its video again. A worker rollout during a download causes this.
 
 ## What worked
 
@@ -27,11 +29,15 @@ Follow `docs/plan.md` § Build order. savetube runs in production on the homelab
 - Chart tests render with `helm template` and feed the rendered CronJob into the real `recorder_job()`.
 - Off the home LAN, the Talos API answers only on the tailnet: `talosctl --talosconfig talos/generated/talosconfig -e talos-pve1.taila166d5.ts.net -n 192.168.33.20`. `make restore` refreshes that talosconfig. Ansible reaches pve1 with `ARGS='-e ansible_host=100.69.133.35'`.
 
+- Local end-to-end check: a throwaway database on pg-dev, `SAVETUBE_ARCHIVE_ROOT` under `/tmp`, `SAVETUBE_STATIC_DIR=frontend/dist`, and a uvicorn script that sets `app.dependency_overrides[current_user]` to skip login. Run `savetube scheduler` and `savetube worker` beside it, the worker with `SAVETUBE_METRICS_PORT=9091`.
+- Off the home LAN, `kubectl --context homelab-tailnet` reaches the cluster. The postgres-dev CA comes from Secret `postgres-dev-ca` in `postgres-dev`.
+
 ## What did not work
 
 - respx cannot mock Authlib or Starlette's TestClient, because both use `httpx2`. `tests/test_auth.py` `FakeIssuer` patches `httpx2.AsyncHTTPTransport` instead.
 - Without `relationship()`, SQLAlchemy does not order inserts by FK, so `tests/test_db.py` flushes parents first.
 - `make talos-config` connects to the node's LAN address only, so it fails off the home LAN. A single new document goes in with `talosctl patch mc --mode no-reboot` over the tailnet, after a `--dry-run` that shows the diff.
+- This Mac has no ffmpeg, so a local download that merges video and audio fails. A single-file format such as `wa[ext=m4a]/wa` works. YouTube serves no combined format for some videos, so `worst` fails too.
 - `make tank ARGS='--check'` fails at the SMART report: check mode skips `smartctl`, and `from_json` gets empty output.
 
 ## Open questions
@@ -46,8 +52,8 @@ Follow `docs/plan.md` § Build order. savetube runs in production on the homelab
 
 ## Next steps
 
-1. Log in through a browser at `https://savetube.lab.hiriri.com` as a user holding `savetube-admin`.
-2. Continue with `docs/plan.md` § Build order.
+1. Log in through a browser at `https://savetube.lab.hiriri.com` as a user holding `savetube-admin`, add a source, and watch the first archive job in production.
+2. Build live detection (`docs/plan.md` § Live detection).
 
 ## Suggested skills
 
