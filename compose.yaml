@@ -1,0 +1,56 @@
+# The cluster's shape on one machine (OrbStack or Docker): the image built from
+# this checkout, the database from .env (the shared dev server), the archive in
+# ./archive-dev. `docker compose up --build`.
+#
+# SAVETUBE_ENV_FILE points the stack at another env file than .env.
+
+x-app: &app
+  build: .
+  image: savetube:dev
+  env_file: ${SAVETUBE_ENV_FILE:-.env}
+  read_only: true
+  tmpfs: [/tmp]
+  volumes:
+    - ./archive-dev:/archive
+    # The DSN's sslrootcert is an absolute host path, so the CA directory sits
+    # at the same path inside the container.
+    - ${HOME}/.postgresql:${HOME}/.postgresql:ro
+  environment:
+    SAVETUBE_ARCHIVE_ROOT: /archive
+
+services:
+  migrate:
+    <<: *app
+    command: [migrate]
+
+  web:
+    <<: *app
+    command: [web]
+    ports:
+      - 127.0.0.1:8000:8000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Each yt-dlp container shares a network namespace with its own provider, as
+  # the native sidecar does in a pod, so the provider stays on 127.0.0.1.
+  worker-pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
+    command: [--host, 127.0.0.1]
+
+  worker:
+    <<: *app
+    command: [worker]
+    network_mode: service:worker-pot
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      worker-pot:
+        condition: service_started
+
+  scheduler:
+    <<: *app
+    command: [scheduler]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully

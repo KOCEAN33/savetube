@@ -1,0 +1,100 @@
+{{- $name := printf "%s-scheduler" (include "savetube.fullname" .) -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+---
+# Recorder Jobs are made from the CronJob template at runtime (src/savetube/k8s.py).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler
+spec:
+  # One scheduler, and Recreate so a rollout never runs two: it is also the only
+  # role that migrates, so two migrations never race.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "savetube.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: scheduler
+  template:
+    metadata:
+      labels:
+        {{- include "savetube.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: scheduler
+    spec:
+      serviceAccountName: {{ $name }}
+      {{- include "savetube.podCommon" . | nindent 6 }}
+      initContainers:
+        - name: migrate
+          image: {{ include "savetube.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          env:
+            {{- include "savetube.dbEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "savetube.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+        {{- include "savetube.potProvider" . | nindent 8 }}
+      containers:
+        - name: scheduler
+          image: {{ include "savetube.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["scheduler"]
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            {{- include "savetube.archiveEnv" . | nindent 12 }}
+            - name: SAVETUBE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: SAVETUBE_RECORDER_CRONJOB
+              value: {{ include "savetube.fullname" . }}-recorder
+          securityContext:
+            {{- include "savetube.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            {{- include "savetube.archiveMounts" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.scheduler.resources | nindent 12 }}
+      volumes:
+        {{- include "savetube.archiveVolumes" . | nindent 8 }}

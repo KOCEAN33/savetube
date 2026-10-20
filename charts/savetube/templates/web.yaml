@@ -1,0 +1,89 @@
+{{- $name := printf "%s-web" (include "savetube.fullname" .) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels:
+      {{- include "savetube.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "savetube.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      {{- include "savetube.podCommon" . | nindent 6 }}
+      containers:
+        - name: web
+          image: {{ include "savetube.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["web"]
+          ports:
+            - name: http
+              containerPort: 8000
+            - name: metrics
+              containerPort: 9090
+          env:
+            {{- include "savetube.dbEnv" . | nindent 12 }}
+            - name: SAVETUBE_PUBLIC_URL
+              value: {{ required "publicUrl is required" .Values.publicUrl | quote }}
+            - name: SAVETUBE_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: SAVETUBE_OIDC_CLIENT_ID
+              value: {{ required "oidc.clientId is required" .Values.oidc.clientId | quote }}
+            {{- with .Values.oidc.requiredGroup }}
+            - name: SAVETUBE_OIDC_REQUIRED_GROUP
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.oidc.clientSecret.existingSecret }}
+            - name: SAVETUBE_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.oidc.clientSecret.existingSecret }}
+                  key: {{ .Values.oidc.clientSecret.key }}
+            {{- end }}
+            - name: SAVETUBE_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.session.existingSecret }}
+                  key: {{ .Values.session.key }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          securityContext:
+            {{- include "savetube.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  selector:
+    {{- include "savetube.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+    - name: metrics
+      port: 9090
+      targetPort: metrics

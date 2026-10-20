@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "savetube.fullname" . }}-worker
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "savetube.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "savetube.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      automountServiceAccountToken: false
+      {{- include "savetube.podCommon" . | nindent 6 }}
+      initContainers:
+        {{- include "savetube.potProvider" . | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "savetube.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["worker", "--concurrency", {{ .Values.worker.concurrency | quote }}]
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            {{- include "savetube.archiveEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "savetube.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            {{- include "savetube.archiveMounts" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      volumes:
+        {{- include "savetube.archiveVolumes" . | nindent 8 }}

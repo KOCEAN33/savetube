@@ -1,0 +1,6 @@
+apiVersion: v2
+name: savetube
+description: Self-hosted YouTube archiver and live recorder built on yt-dlp
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

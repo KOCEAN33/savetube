@@ -1,0 +1,48 @@
+# Never runs on its own schedule. The scheduler copies jobTemplate into one Job
+# per live, `kubectl create job --from=cronjob/...` style (src/savetube/k8s.py),
+# so the image and pod spec here follow every upgrade.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "savetube.fullname" . }}-recorder
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+    app.kubernetes.io/component: recorder
+spec:
+  schedule: "0 0 31 2 *"
+  suspend: true
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "savetube.labels" . | nindent 8 }}
+        app.kubernetes.io/component: recorder
+    spec:
+      backoffLimit: {{ .Values.recorder.backoffLimit }}
+      ttlSecondsAfterFinished: {{ .Values.recorder.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            {{- include "savetube.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: recorder
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          {{- include "savetube.podCommon" . | nindent 10 }}
+          initContainers:
+            {{- include "savetube.potProvider" . | nindent 12 }}
+          containers:
+            - name: recorder
+              image: {{ include "savetube.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              # Replaced with `record --job-id <id>` on each Job.
+              args: ["record"]
+              env:
+                {{- include "savetube.archiveEnv" . | nindent 16 }}
+              securityContext:
+                {{- include "savetube.containerSecurityContext" . | nindent 16 }}
+              volumeMounts:
+                {{- include "savetube.archiveMounts" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.recorder.resources | nindent 16 }}
+          volumes:
+            {{- include "savetube.archiveVolumes" . | nindent 12 }}
