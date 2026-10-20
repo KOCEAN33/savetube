@@ -1,6 +1,7 @@
 """yt-dlp embedded as a library. One YoutubeDL instance per download, never shared."""
 
 import shutil
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -87,6 +88,51 @@ def list_entries(url: str, cookiefile: Path | None = None) -> dict[str, Any]:
         params["cookiefile"] = str(cookiefile)
     with yt_dlp.YoutubeDL(params) as ydl:
         return ydl.sanitize_info(ydl.extract_info(url, download=False))
+
+
+def list_streams(channel_id: str) -> dict[str, Any]:
+    """The first page of the channel's Live tab: upcoming, live and past streams."""
+    params = {
+        "extract_flat": "in_playlist",
+        "playlistend": 10,
+        "quiet": True,
+        "sleep_interval_requests": _SLEEP["sleep_interval_requests"],
+    }
+    with yt_dlp.YoutubeDL(params) as ydl:
+        return ydl.sanitize_info(
+            ydl.extract_info(
+                f"https://www.youtube.com/channel/{channel_id}/streams", download=False
+            )
+        )
+
+
+def fetch_feed(channel_id: str) -> str:
+    """The channel's RSS feed: its 15 newest uploads and scheduled streams."""
+    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    with urllib.request.urlopen(url, timeout=30) as r:
+        return r.read().decode()
+
+
+def _probe(url: str) -> dict[str, Any]:
+    params = {
+        "quiet": True,
+        # An upcoming stream has no formats yet. Without this, yt-dlp raises
+        # "This live event will begin in ..." instead of returning
+        # `release_timestamp`.
+        "ignore_no_formats_error": True,
+        "sleep_interval_requests": _SLEEP["sleep_interval_requests"],
+    }
+    with yt_dlp.YoutubeDL(params) as ydl:
+        return ydl.sanitize_info(ydl.extract_info(url, download=False))
+
+
+def probe_video(video_id: str) -> dict[str, Any]:
+    return _probe(video_url(video_id))
+
+
+def probe_live(channel_id: str) -> dict[str, Any]:
+    """The stream live on the channel now. Raises "is not currently live" otherwise."""
+    return _probe(f"https://www.youtube.com/channel/{channel_id}/live")
 
 
 def download(url: str, params: dict[str, Any]) -> dict[str, Any]:

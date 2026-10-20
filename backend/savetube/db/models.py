@@ -159,6 +159,9 @@ class Job(Base):
     # The Kubernetes Job of a recording, or the procrastinate job of an archive.
     k8s_job_name: Mapped[str | None]
     queue_job_id: Mapped[int | None] = mapped_column(BigInteger)
+    # A recording's announced start, from the waiting room. Null for a stream
+    # found already live, and for an archive.
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

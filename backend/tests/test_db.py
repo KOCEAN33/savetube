@@ -352,3 +352,286 @@ def test_api_refuses_a_write_without_the_csrf_header(settings):
         response = client.post("/api/rules", json={"name": "x", "types": ["videos"]})
         assert response.status_code == 403
         assert client.get("/api/rules").json() == []
+
+
+NASA = "UCLA_DiR1FfKNvjuUpBHmylQ"
+UPCOMING = {
+    "id": "pAKqJxuxDgk",
+    "title": "Artemis Acceleration (Oct. 23, 2026)",
+    "channel_id": NASA,
+    "channel": "NASA",
+    "live_status": "is_upcoming",
+    "release_timestamp": 1792778400,
+}
+LIVE_NOW = {
+    "id": "M3HKLzjvKPc",
+    "title": "Live Video from the International Space Station (Official NASA Stream)",
+    "channel_id": NASA,
+    "channel": "NASA",
+    "live_status": "is_live",
+    "release_timestamp": 1785417281,
+}
+
+
+def _feed(*ids):
+    entries = "".join(f"<entry><yt:videoId>{i}</yt:videoId></entry>" for i in ids)
+    return (
+        '<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"'
+        f' xmlns="http://www.w3.org/2005/Atom">{entries}</feed>'
+    )
+
+
+def _not_live(channel_id):
+    from yt_dlp.utils import DownloadError
+
+    raise DownloadError("ERROR: [youtube:tab] @NASAGoddard: The channel is not currently live")
+
+
+def _no_streams(channel_id):
+    return {"entries": []}
+
+
+async def _record_jobs(sessionmaker):
+    async with sessionmaker() as session:
+        return list(await session.scalars(sa.select(Job).where(Job.kind == JobKind.RECORD)))
+
+
+@pytest.mark.anyio
+async def test_upcoming_stream_in_feed_gets_one_record_job_at_its_start(settings):
+    from savetube.live import check_channel
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    probes = {UPCOMING["id"]: UPCOMING}
+    for _ in range(2):
+        await check_channel(
+            sessionmaker,
+            NASA,
+            fetch_feed=lambda c: _feed(UPCOMING["id"]),
+            probe=probes.__getitem__,
+            probe_live=_not_live,
+            list_streams=_no_streams,
+            seen=set(),
+        )
+    jobs = await _record_jobs(sessionmaker)
+    assert [(j.video_id, j.state) for j in jobs] == [("pAKqJxuxDgk", JobState.QUEUED)]
+    assert jobs[0].scheduled_at == datetime(2026, 10, 23, 18, 0, tzinfo=UTC)
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_stream_found_live_gets_a_record_job_without_a_start(settings):
+    from savetube.live import check_channel
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    created = await check_channel(
+        sessionmaker,
+        NASA,
+        fetch_feed=lambda c: _feed(),
+        probe=lambda v: pytest.fail("nothing in the feed to probe"),
+        probe_live=lambda c: LIVE_NOW,
+        list_streams=_no_streams,
+        seen=set(),
+    )
+    jobs = await _record_jobs(sessionmaker)
+    assert [(j.video_id, j.state, j.scheduled_at) for j in jobs] == [
+        ("M3HKLzjvKPc", JobState.QUEUED, None)
+    ]
+    assert created == [jobs[0].id]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_uploads_and_finished_streams_get_no_record_job(settings):
+    from savetube.live import check_channel
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    probes = {
+        "upload": {**UPCOMING, "id": "upload", "live_status": "not_live"},
+        "ended": {**UPCOMING, "id": "ended", "live_status": "was_live"},
+    }
+    created = await check_channel(
+        sessionmaker,
+        NASA,
+        fetch_feed=lambda c: _feed("upload", "ended"),
+        probe=probes.__getitem__,
+        probe_live=_not_live,
+        list_streams=_no_streams,
+        seen=set(),
+    )
+    assert created == []
+    assert await _record_jobs(sessionmaker) == []
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_probed_id_is_not_probed_again(settings):
+    from savetube.live import check_channel
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    calls = []
+
+    def probe(video_id):
+        calls.append(video_id)
+        return {**UPCOMING, "id": video_id, "live_status": "not_live"}
+
+    seen = set()
+    for _ in range(2):
+        await check_channel(
+            sessionmaker,
+            NASA,
+            fetch_feed=lambda c: _feed("a", "b"),
+            probe=probe,
+            probe_live=_not_live,
+            list_streams=_no_streams,
+            seen=seen,
+        )
+    assert sorted(calls) == ["a", "b"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_watched_channels_are_enabled_tabs_whose_rule_watches_lives(settings):
+    from savetube.live import watched_channels
+
+    _sql(
+        settings,
+        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives, max_concurrent)"
+        " VALUES (1, 'watch', '{lives}', 'b', false, true, 1),"
+        "        (2, 'quiet', '{lives}', 'b', false, false, 1)",
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        " ('UC1', 'a', 'a'), ('UC2', 'b', 'b'), ('UC3', 'c', 'c')",
+        "INSERT INTO source (url, kind, channel_id, rule_id, enabled, poll_interval_minutes)"
+        " VALUES ('https://www.youtube.com/@a/streams', 'tab', 'UC1', 1, true, 360),"
+        "        ('https://www.youtube.com/@a/videos', 'tab', 'UC1', 1, true, 360),"
+        "        ('https://www.youtube.com/@b/streams', 'tab', 'UC2', 2, true, 360),"
+        "        ('https://www.youtube.com/@c/streams', 'tab', 'UC3', 1, false, 360),"
+        "        ('https://www.youtube.com/playlist?list=PL1', 'playlist', NULL, 1, true, 360)",
+    )
+    engine = make_engine(settings.sqlalchemy_url)
+    async with make_sessionmaker(engine)() as session:
+        assert await watched_channels(session) == ["UC1"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_detected_live_is_archived_once_it_ends(settings):
+    """Until a recorder exists, the VOD is the only copy of a detected live."""
+    from savetube.poll import poll_source
+
+    _sql(
+        settings,
+        "INSERT INTO rule (id, name, types, format, use_cookies, watch_lives, max_concurrent)"
+        " VALUES (1, 'r', '{lives}', 'b', false, true, 1)",
+        "INSERT INTO source (id, url, kind, rule_id, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@VESPERBELL/streams', 'tab', 1, true, 360)",
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        " ('UCPd0Z22gF43dUidPYEQO5-w', 'VESPERBELL', 'VESPERBELL [UCPd0Z22gF43dUidPYEQO5-w]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('B_eFxgIWdXo', 'UCPd0Z22gF43dUidPYEQO5-w', 'lives', 't', 'pending')",
+        "INSERT INTO job (kind, state, video_id, attempts) VALUES"
+        " ('record', 'queued', 'B_eFxgIWdXo', 0)",
+    )
+    listing = {
+        "channel_id": "UCPd0Z22gF43dUidPYEQO5-w",
+        "channel": "VESPERBELL",
+        "entries": [
+            {
+                "id": "B_eFxgIWdXo",
+                "title": "【歌枠】ちょっと疲れちゃってるんだと思うよ【VESPERBELL ヨミ】",
+                "live_status": "was_live",
+            }
+        ],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def enqueue(job_id):
+        return job_id
+
+    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, enqueue=enqueue)
+    async with sessionmaker() as session:
+        kinds = sorted(
+            await session.scalars(sa.select(Job.kind).where(Job.video_id == "B_eFxgIWdXo"))
+        )
+    assert kinds == [JobKind.ARCHIVE, JobKind.RECORD]
+    await engine.dispose()
+
+
+def test_api_lists_a_recording_with_its_scheduled_start(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'a', 'a')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('pAKqJxuxDgk', 'UC1', 'lives', 't', 'pending')",
+        "INSERT INTO job (kind, state, video_id, attempts, scheduled_at) VALUES"
+        " ('record', 'queued', 'pAKqJxuxDgk', 0, '2026-10-23T18:00:00Z')",
+    )
+    app = create_app(settings)
+    app.dependency_overrides[current_user] = lambda: User(sub="u")
+    with TestClient(app) as client:
+        [job] = client.get("/api/jobs", params={"kind": "record"}).json()
+    assert job.get("scheduled_at") == "2026-10-23T18:00:00Z"
+
+
+@pytest.mark.anyio
+async def test_one_unreadable_feed_video_does_not_stop_detection(settings):
+    from yt_dlp.utils import DownloadError
+
+    from savetube.live import check_channel
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    def probe(video_id):
+        if video_id == "members":
+            raise DownloadError("ERROR: [youtube] members: Join this channel to get access")
+        return UPCOMING
+
+    await check_channel(
+        sessionmaker,
+        NASA,
+        fetch_feed=lambda c: _feed("members", UPCOMING["id"]),
+        probe=probe,
+        probe_live=lambda c: LIVE_NOW,
+        list_streams=_no_streams,
+        seen=set(),
+    )
+    assert sorted(j.video_id for j in await _record_jobs(sessionmaker)) == [
+        "M3HKLzjvKPc",
+        "pAKqJxuxDgk",
+    ]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_upcoming_stream_pushed_out_of_the_feed_is_found_on_the_live_tab(settings):
+    """NASA's feed held 15 newer uploads, and pAKqJxuxDgk was only on the Live tab."""
+    from savetube.live import check_channel
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    streams = {
+        "channel_id": NASA,
+        "entries": [
+            {"id": "pAKqJxuxDgk", "live_status": "is_upcoming"},
+            {"id": "past", "live_status": "was_live"},
+        ],
+    }
+    await check_channel(
+        sessionmaker,
+        NASA,
+        fetch_feed=lambda c: _feed(),
+        probe={UPCOMING["id"]: UPCOMING}.__getitem__,
+        probe_live=_not_live,
+        list_streams=lambda c: streams,
+        seen=set(),
+    )
+    jobs = await _record_jobs(sessionmaker)
+    assert [(j.video_id, j.scheduled_at) for j in jobs] == [
+        ("pAKqJxuxDgk", datetime(2026, 10, 23, 18, 0, tzinfo=UTC))
+    ]
+    await engine.dispose()

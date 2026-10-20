@@ -118,8 +118,12 @@ async def sync(
 
     active = set(
         await session.scalars(
+            # A record job does not count: until a recorder exists, the VOD is
+            # the only copy of a detected live.
             select(Job.video_id).where(
-                Job.video_id.in_(ids), Job.state.in_([JobState.QUEUED, JobState.RUNNING])
+                Job.video_id.in_(ids),
+                Job.kind == JobKind.ARCHIVE,
+                Job.state.in_([JobState.QUEUED, JobState.RUNNING]),
             )
         )
     )

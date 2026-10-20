@@ -119,6 +119,7 @@ class JobOut(_Out):
     video_id: str | None
     attempts: int
     miss_reason: str | None
+    scheduled_at: datetime | None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
