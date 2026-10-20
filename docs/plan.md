@@ -190,11 +190,11 @@ This section moves to homelab-workloads before the repository goes public.
 - `savetube-db` in the app namespace holds the whole libpq URL under `url`, templated from the vault password. A base64 password holds `/` and `+`, so the template escapes it with `urlquery`, or the URL splits at the `/`.
 - Database: a `Database` object, a `managed.roles` entry, and ExternalSecret `savetube-db` on the shared Cluster (homelab-platform `docs/specs/10-postgres.md`). Development and the DB-gated tests use `pg-dev.lab.hiriri.com:5432` on `postgres-dev`, role `savetube` with CREATEDB, as saveweb does (`.env.sample`). The tests create and drop their own database, `savetube_test`.
 - UI: `savetube.lab.hiriri.com` through the Gateway, tailnet and LAN only. Never Cloudflare Tunnel, because its terms forbid proxying video (proxmox-talos-lab `docs/specs/50-applications.md`).
-- Storage: a `pve_tank_datasets` entry with `talos: rw`, an `owner` uid matching the pod, `recordsize: 1M`. The static PV copies homelab-services `manifest/lanraragi/volumes.yaml`.
+- Storage: `tank/youtube` is a proxmox-talos-lab `pve_tank_datasets` entry with `talos: rw`, `owner: 1000` (the pod uid), `recordsize: 1M`. Talos mounts it at `/var/mnt/youtube`, and the static PV `savetube-archive` lives in homelab-workloads `savetube/manifests/prod/volumes.yaml`.
 - `tank/video` cannot hold this. Samba is its one writer, and a dataset reaches the cluster only as its own virtiofs mapping (proxmox-talos-lab `docs/specs/20-storage.md`).
-- The application writes `tank/youtube` directly, so no SMB trash covers it. A deleted channel or an unarchived live cannot be fetched again, which argues for the `tight` snapshot template.
+- The application writes `tank/youtube` directly, so no SMB trash covers it. A deleted channel or an unarchived live cannot be fetched again, so the dataset uses the `tight` snapshot template.
 - A new virtiofs device needs a full stop and start of the Talos VM. The whole cluster goes down for that window.
-- Size per hour of 1080p60 is a few GB and 4K is several times that. Free space on `tank` was not checked: pve1 did not answer SSH during this survey.
+- Size per hour of 1080p60 is a few GB and 4K is several times that. `tank` had 19.2T free when the dataset was created.
 
 ## Unsettled
 
@@ -208,11 +208,8 @@ This section moves to homelab-workloads before the repository goes public.
 
 ## Build order
 
-1. Check `tank` free space and decide the dataset's snapshot template.
-2. Push the first image to GHCR. The image builds and downloads a public video under `compose.yaml` on OrbStack. Prove an image with Python, Deno, ffmpeg, yt-dlp and the bgutil plugin runs one from-start capture of a public live in the cluster through `YoutubeDL`.
-3. Prove a members-only download and a members-only live with the chosen account's cookies.
-4. Build the recorder Job and the scheduler's live detection, with Discord notifications. Live recording is the requirement nothing else covers.
-5. Build the archive worker, the queue, and the tree layout.
-6. Build the UI from `dashboard-01`: statistics, sources and rules, jobs, the video browser.
-7. Add `tank/youtube` to the lab inventory, stop and start the Talos VM, then add the static PV.
-8. Ask for permission to add the role and `Database` to the shared Cluster `postgres`, then deploy through homelab-workloads.
+1. Prove an image with Python, Deno, ffmpeg, yt-dlp and the bgutil plugin runs one from-start capture of a public live in the cluster through `YoutubeDL`.
+2. Prove a members-only download and a members-only live with the chosen account's cookies.
+3. Build the recorder Job and the scheduler's live detection, with Discord notifications. Live recording is the requirement nothing else covers.
+4. Build the archive worker, the queue, and the tree layout.
+5. Build the UI from `dashboard-01`: statistics, sources and rules, jobs, the video browser.
