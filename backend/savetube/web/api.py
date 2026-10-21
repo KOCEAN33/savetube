@@ -28,7 +28,7 @@ from savetube.db.models import (
     VideoSource,
     VideoState,
 )
-from savetube.jobs import BLOCKED_LOG, NO_MEMBER, SHUTDOWN_LOG, STALLED_LOG
+from savetube.jobs import BLOCKED_LOG, NETWORK_LOG, NO_MEMBER, SHUTDOWN_LOG, STALLED_LOG
 from savetube.layout import VideoType
 from savetube.limits import TIMEZONE
 from savetube.logs import emit
@@ -36,7 +36,14 @@ from savetube.pipeline import get_or_create_channel
 from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
 from savetube.web.auth import CurrentUser, User, current_user
-from savetube.ytdl import DEFAULT_FORMAT, avatar_url, list_entries, members_only, youtube_block
+from savetube.ytdl import (
+    DEFAULT_FORMAT,
+    avatar_url,
+    list_entries,
+    members_only,
+    network_error,
+    youtube_block,
+)
 
 log = logging.getLogger(__name__)
 
@@ -145,15 +152,6 @@ class SourceOut(_Out):
 _YTDLP_NOISE = re.compile(
     r"^(?:\w+Error:\s*)?(?:ERROR:\s*)?(?:\[download\]\s*Got error:\s*)?(?:\[\w+\]\s*[\w-]+:\s*)?"
 )
-# Lowercase parts that all appear in a transient network failure.
-_NETWORK_MARKERS = (
-    ("timed out",),
-    ("bytes read", "more expected"),
-    ("network is unreachable",),
-    ("failed to establish a new connection",),
-    ("connection reset",),
-    ("connection refused",),
-)
 _REASON_CHARS = 120
 
 
@@ -173,8 +171,8 @@ def job_reason(log_tail: str | None) -> str | None:
     if "integrity check failed" in text:
         check = text.split("integrity check failed:", 1)[-1].split()
         return f"integrity check failed: {check[0]}" if check else "integrity check failed"
-    if any(all(part in text for part in group) for group in _NETWORK_MARKERS):
-        return "network error"
+    if log_tail.startswith(NETWORK_LOG) or network_error(log_tail):
+        return NETWORK_LOG
     # yt-dlp puts a carriage return before its retry line, so lines do not split it.
     flat = " ".join(log_tail.split())
     line = _YTDLP_NOISE.sub("", flat) or flat

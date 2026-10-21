@@ -104,6 +104,13 @@ def test_a_youtube_block_is_the_bot_check_or_429(message, block):
         ("ERROR: [download] Got error: [Errno 54] Connection reset by peer", True),
         ("ERROR: Remote end closed connection without response", True),
         ("ERROR: IncompleteRead(1024 bytes read, 2048 more expected)", True),
+        (
+            "ERROR: [download] Got error: HTTPSConnection(host='x', port=443):"
+            " Failed to establish a new connection: [Errno 101] Network is unreachable",
+            True,
+        ),
+        ("ERROR: [download] Got error: [Errno 61] Connection refused", True),
+        ("ERROR: [download] Got error: The read operation timed out", True),
         ("ERROR: unable to download video data: HTTP Error 403: Forbidden", False),
         ("ERROR: [youtube] v1: Requested format is not available", False),
         ("ERROR: 4392287 bytes read", False),

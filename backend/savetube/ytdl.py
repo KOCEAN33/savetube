@@ -43,10 +43,14 @@ BLOCK_MARKERS = (("confirm you", "not a bot"), ("http error 429",))
 # is a body cut short.
 NETWORK_MARKERS = (
     ("read timed out",),
+    ("read operation timed out",),
     ("bytes read", "more expected"),
     ("connection reset",),
+    ("connection refused",),
     ("remote end closed",),
     ("incompleteread",),
+    ("network is unreachable",),
+    ("failed to establish a new connection",),
 )
 # YouTube's text for a members-only video the account may not watch, in both
 # forms: "Join this channel to get access to members-only content like this
