@@ -6,6 +6,31 @@
 - `/metrics` exposes job counts by state and the last successful cookie check. Alert rules cover failed recorder Jobs and an expired cookie.
 - A daily canary Job runs a short from-start capture of a known 24/7 public stream. It catches a yt-dlp break before a real live does.
 
+## Logging
+
+- The reader is the operator, through `kubectl logs` and k9s. Loki holds the same lines for 30 days (homelab-platform `docs/specs/20-observability.md`).
+- Logs show what downloads now, how far it is, and why work waits or fails. Metrics and the UI hold history and totals.
+- Every line is logfmt on stderr, such as `ts=2026-10-21T11:44:58+09:00 level=info event=job.start job=230 video=Kd9PnKbqdE4`.
+- Logfmt reads as plain text in a terminal. Alloy reads `level=` from a logfmt line as the Loki level, and LogQL `| logfmt` makes each field a filter.
+- `ts` is in Asia/Seoul, the zone of the download window.
+- A savetube line names its event as `event=<noun>.<verb>`. A library line carries `logger=` and `msg=`.
+- A line about a job carries `job` and `video`. A line that starts or ends a job, or reports a live, also carries `channel` and `title`. A poll line carries `source` and `url`.
+- INFO is one line per state change: a poll, a dispatch, a change in why work waits, a job start, progress, end or failure, a live detection, a settings change.
+- WARNING is a failure savetube handles itself, such as a failed poll, a failed attempt before the third, or a reclaimed job.
+- ERROR needs the operator: a third failed archive attempt, any failed recording, or an unexpected exception.
+- Only an unexpected exception logs a traceback. An expected failure is one line with `reason=`.
+- DEBUG holds loop ticks that change nothing, yt-dlp's screen output, and the access log.
+- `SAVETUBE_LOG_LEVEL` sets the level, and the default is `INFO`. The chart sets it from `logLevel`.
+- Libraries log at WARNING and above. At `DEBUG` they log at INFO and above. Alembic logs at INFO, so the migrate container shows each revision it applies.
+- The uvicorn access log is off below `DEBUG`. The probes hit `/healthz` every few seconds, and the API logs its own writes.
+- yt-dlp logs through `savetube.ytdlp`. Its warnings stay WARNING. Its errors log at DEBUG, because the caller logs the same text as `reason=`.
+- The download child process configures its own logging and builds its own hooks, because `spawn` pickles its arguments.
+- A download logs `download.progress` at most once a minute, with percent, bytes, speed and ETA of the current stream. A time interval bounds both the delay and the volume of progress lines for any file size or rate limit.
+- The progress hook fires only when bytes arrive. A download with no progress line for several minutes, and no `download.merge`, is stalled.
+- A live recording has no total, so its progress line shows bytes, fragments and elapsed time.
+- The scheduler logs `dispatch.waiting` when the reason work waits changes: no free slot, or the window opens at a later time. It logs `queue.summary` every 10 minutes while a job waits or runs.
+- `poll.done` counts the listed entries, the queued jobs, and each skip reason: words, members-only without cookies, another channel, date, live, private.
+
 ## Homelab deployment
 
 This section moves to homelab-workloads before the repository goes public.

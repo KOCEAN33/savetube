@@ -18,4 +18,10 @@ async def enqueue(job_id: int) -> int:
 # Retries belong to the `job` row and the scheduler, so a failure is final here.
 @app.task(name="archive", queue=ARCHIVE_QUEUE, retry=False)
 async def archive(job_id: int) -> None:
-    await jobs.run(job_id, get_settings(), live=False, runner=jobs.in_child)
+    try:
+        await jobs.run(job_id, get_settings(), live=False, runner=jobs.in_child)
+    except Exception as e:
+        # The job row and the `job.failed` line hold it. Raising would make
+        # procrastinate log a second error with the same traceback.
+        if not jobs.recorded(e):
+            raise

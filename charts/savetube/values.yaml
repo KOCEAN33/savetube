@@ -17,6 +17,9 @@ potProvider:
     tag: "2.0.2"
   resources: {}
 
+# SAVETUBE_LOG_LEVEL of every role: debug, info, warning or error.
+logLevel: info
+
 # The browser-facing origin. Redirect URIs and the cookie's Secure flag come from it.
 publicUrl: ""
 

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CheckIcon } from "lucide-react"
 import { useNavigate } from "react-router"
 
+import { ChannelAvatar } from "@/components/channel-avatar"
 import { CookiesField, DateCutoffField, QualityField } from "@/components/channel-fields"
 import { ErrorBox } from "@/components/query-state"
 import { SuggestionChips, TitlesPreview, WordListEditor } from "@/components/source-words"
@@ -123,7 +124,8 @@ function ScanStep({
       {run.isError && <ErrorBox error={run.error} />}
       {scan && !run.isPending && (
         <div className="flex flex-col gap-3 rounded-lg border p-4">
-          <div className="flex flex-wrap items-baseline gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <ChannelAvatar name={scan.name} url={scan.avatar_url} size="lg" />
             <span className="text-base font-medium">{scan.name}</span>
             {scan.handle && <span className="text-muted-foreground">{scan.handle}</span>}
             <span className="font-mono text-xs text-muted-foreground">{scan.channel_id}</span>
@@ -404,6 +406,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
       channel_id: scan.channel_id,
       handle: scan.handle,
       name: scan.name,
+      avatar_url: scan.avatar_url,
       tabs: choice.tabs,
       all_playlists: choice.playlists === "all",
       playlists:

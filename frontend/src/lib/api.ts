@@ -46,6 +46,8 @@ export interface Channel {
   format: string
   use_cookies: boolean
   watch_lives: boolean
+  // The profile picture YouTube serves. Null until a scan or a tab poll finds it.
+  avatar_url: string | null
 }
 
 export interface Source {
@@ -83,6 +85,20 @@ export interface Job {
   finished_at: string | null
   // A queued archive job waiting for the download window or a free slot.
   deferred_until: string | null
+  // A running download's current stream, updated every few seconds.
+  progress: JobProgress | null
+}
+
+export interface JobProgress {
+  format: string | null
+  // Null when YouTube gives no size.
+  pct: number | null
+  done: number | null
+  total: number | null
+  // Bytes per second.
+  speed: number | null
+  // Seconds.
+  eta: number | null
 }
 
 export interface Video {
@@ -120,7 +136,8 @@ export function loginUrl(): string {
   return `/auth/login?next=${encodeURIComponent(next)}`
 }
 
-type Query = Record<string, string | number | undefined>
+// An array repeats the parameter, once per value.
+type Query = Record<string, string | number | string[] | undefined>
 
 // Parallel requests that all get 401 must start one login, not one each: every
 // /auth/login rewrites the session cookie with a new state and PKCE verifier,
@@ -175,7 +192,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 function get<T>(path: string, query: Query = {}): Promise<T> {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined && value !== "") params.set(key, String(value))
+    if (Array.isArray(value)) for (const v of value) params.append(key, v)
+    else if (value !== undefined && value !== "") params.set(key, String(value))
   }
   const qs = params.toString()
   return request<T>("GET", qs ? `${path}?${qs}` : path)
@@ -241,6 +259,7 @@ export interface ChannelScan {
   channel_id: string
   handle: string | null
   name: string
+  avatar_url: string | null
   // The first page of each tab. Null for a tab the channel lacks.
   tabs: Record<VideoTab, ScanEntry[] | null>
   playlists: { id: string; title: string; url: string }[]
@@ -264,6 +283,7 @@ export interface ChannelIn extends TitleWords, ChannelSettings {
   channel_id: string
   handle: string | null
   name: string
+  avatar_url: string | null
   tabs: VideoTab[]
   all_playlists: boolean
   playlists: { url: string; title: string }[]
@@ -317,11 +337,15 @@ export const api = {
   // A POST that writes nothing: titles that are not stored, such as a scan's.
   titlesPreview: (body: TitleWords & { titles: string[]; channel_id?: string }) =>
     request<TitleKept[]>("POST", "/api/title-preview", body),
-  jobs: (query: { kind?: JobKind; state?: JobState; channel_id?: string; limit?: number }) =>
+  jobs: (query: { kind?: JobKind; state?: JobState[]; channel_id?: string; limit?: number }) =>
     get<Job[]>("/api/jobs", query),
   videos: (query: {
+    // The uploader.
     channel_id?: string
+    // The uploader, or a channel whose sources list the video.
+    listed_by?: string
     type?: string
+    state?: string
     q?: string
     limit?: number
     offset?: number

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
 from savetube.config import Settings
+from savetube.logs import emit
 
 SCOPE = "openid profile email"
 SESSION_USER = "user"
@@ -82,7 +83,7 @@ def install(app: FastAPI, settings: Settings) -> None:
         try:
             token = await client.authorize_access_token(request)
         except OAuthError as e:
-            log.warning("login failed: %s: %s", e.error, e.description)
+            emit(log, logging.WARNING, "auth.failed", error=e.error, description=e.description)
             return PlainTextResponse(f"login failed: {e.error}", status_code=400)
         claims = token["userinfo"]
         # Zitadel's flat `groups` claim comes from an Action on the userinfo
@@ -90,14 +91,22 @@ def install(app: FastAPI, settings: Settings) -> None:
         userinfo = await client.userinfo(token=token)
         groups = userinfo.get("groups") or claims.get("groups") or []
         if settings.oidc_required_group and settings.oidc_required_group not in groups:
-            log.warning(
-                "login refused: sub=%s lacks %s, groups=%s",
-                claims.get("sub"),
-                settings.oidc_required_group,
-                groups,
+            emit(
+                log,
+                logging.WARNING,
+                "auth.refused",
+                sub=claims.get("sub"),
+                lacks=settings.oidc_required_group,
+                groups=",".join(groups),
             )
             request.session.clear()
             return PlainTextResponse("forbidden: missing required group", status_code=403)
+        emit(
+            log,
+            logging.INFO,
+            "auth.login",
+            user=userinfo.get("email") or claims.get("email") or claims["sub"],
+        )
         next_path = _safe_next(request.session.get(SESSION_NEXT))
         request.session.clear()
         request.session[SESSION_USER] = User(

@@ -235,3 +235,16 @@ def test_httproute_writes_gateway_defaults_out():
 
 def test_no_httproute_unless_enabled():
     assert [d for d in render() if d["kind"] == "HTTPRoute"] == []
+
+
+def test_every_savetube_container_takes_the_log_level():
+    docs = render({**VALUES, "logLevel": "debug"})
+    for role, obj in workloads(docs).items():
+        spec = pod_spec(obj)
+        for c in spec["containers"] + spec.get("initContainers", []):
+            if c["image"] != IMAGE:
+                continue
+            env = {e["name"]: e.get("value") for e in c.get("env", [])}
+            assert env.get("SAVETUBE_LOG_LEVEL") == "debug", f"{role}/{c['name']}"
+    web = pod_spec(workloads(render())["web"])["containers"][0]
+    assert {e["name"]: e.get("value") for e in web["env"]}["SAVETUBE_LOG_LEVEL"] == "info"

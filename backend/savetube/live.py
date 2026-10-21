@@ -7,6 +7,7 @@ words of a source watching the channel. Nothing starts a recorder yet.
 
 import asyncio
 import logging
+import urllib.error
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -16,9 +17,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from yt_dlp.utils import DownloadError
 
-from savetube import words
+from savetube import logs, words
 from savetube.db.models import Channel, Job, JobKind, Source, SourceKind, Video, VideoState
 from savetube.layout import VideoType
+from savetube.limits import TIMEZONE
+from savetube.logs import emit
 from savetube.pipeline import get_or_create_channel
 
 log = logging.getLogger(__name__)
@@ -33,6 +36,8 @@ _YT = "{http://www.youtube.com/xml/schemas/2015}"
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _DETECTED = frozenset({"is_upcoming", "is_live"})
 _NOT_LIVE = "is not currently live"
+# Videos whose title the words skip, logged once per process.
+_skip_logged: set[str] = set()
 # What `_record` and the words read. A full info dict holds every format.
 _KEPT = (
     "id",
@@ -137,6 +142,7 @@ async def check_channel(
     `seen` lives in the scheduler process, so a restart probes each feed's
     ids once more. The record job, not `seen`, keeps detections unique.
     """
+    name = await _channel_name(sessionmaker, channel_id)
     candidates = parse_feed(await asyncio.to_thread(fetch_feed, channel_id))
     # The feed holds the 15 newest uploads, so a busy channel pushes a waiting
     # room out of it. The Live tab lists it until the stream ends.
@@ -153,7 +159,14 @@ async def check_channel(
             except DownloadError as e:
                 # A members-only or private video stays unreadable, so it is not
                 # probed again until the scheduler restarts.
-                log.warning("probe of %s failed: %s", video_id, e)
+                emit(
+                    log,
+                    logging.WARNING,
+                    "live.probe_failed",
+                    video=video_id,
+                    channel=name,
+                    reason=logs.cut(str(e)),
+                )
                 seen[video_id] = None
         if seen[video_id] is not None:
             found.append(seen[video_id])
@@ -164,13 +177,78 @@ async def check_channel(
             raise
 
     created: list[int] = []
+    lines = []
     async with sessionmaker() as session:
         for info in found:
             if not await _wanted(session, channel_id, info.get("title") or ""):
+                if info.get("live_status") in _DETECTED and info["id"] not in _skip_logged:
+                    _skip_logged.add(info["id"])
+                    emit(
+                        log,
+                        logging.INFO,
+                        "live.skipped",
+                        video=info["id"],
+                        channel=name,
+                        title=logs.cut(info.get("title"), 80),
+                        reason="words",
+                    )
                 continue
             job = await _record(session, info)
             if job is not None:
                 created.append(job.id)
-                log.info("live detected: %s (%s)", info["id"], info["live_status"])
+                start = job.scheduled_at
+                lines.append(
+                    dict(
+                        job=job.id,
+                        video=info["id"],
+                        channel=name,
+                        status=info["live_status"],
+                        starts=start.astimezone(TIMEZONE).isoformat() if start else None,
+                        title=logs.cut(info.get("title"), 80),
+                    )
+                )
         await session.commit()
+    for fields in lines:
+        emit(log, logging.INFO, "live.found", **fields)
+    emit(
+        log,
+        logging.DEBUG,
+        "live.check",
+        channel=name,
+        candidates=len(dict.fromkeys(candidates)),
+        new=len(created),
+    )
     return created
+
+
+async def _channel_name(sessionmaker: async_sessionmaker, channel_id: str) -> str:
+    async with sessionmaker() as session:
+        channel = await session.get(Channel, channel_id)
+    return channel.name if channel is not None else channel_id
+
+
+# A YouTube or network failure. The next tick tries again.
+_EXPECTED = (DownloadError, urllib.error.URLError, TimeoutError, ConnectionError)
+
+
+async def check_logged(
+    sessionmaker: async_sessionmaker, channel_id: str, **checks: Any
+) -> list[int]:
+    """`check_channel`, with a failure logged as `live.check_failed`. An expected
+    failure is one WARNING line. Anything else is an ERROR with its traceback."""
+    name = await _channel_name(sessionmaker, channel_id)
+    # yt-dlp's own lines during the probes carry the channel too.
+    with logs.context(channel=name):
+        try:
+            return await check_channel(sessionmaker, channel_id, **checks)
+        except Exception as e:
+            expected = isinstance(e, _EXPECTED)
+            emit(
+                log,
+                logging.WARNING if expected else logging.ERROR,
+                "live.check_failed",
+                channel=name,
+                reason=logs.cut(f"{type(e).__name__}: {e}"),
+                exc_info=not expected,
+            )
+            return []

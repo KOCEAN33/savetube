@@ -4,21 +4,30 @@ import logging
 
 from prometheus_client import start_http_server
 
+from savetube import logs
 from savetube.config import get_settings
+
+log = logging.getLogger("savetube.cli")
 
 
 def _web(args: argparse.Namespace) -> None:
     import uvicorn
 
-    start_http_server(get_settings().metrics_port)
+    settings = get_settings()
+    start_http_server(settings.metrics_port)
+    logs.emit(log, logging.INFO, "web.start", port=args.port)
     # proxy_headers off: redirect URIs come from SAVETUBE_PUBLIC_URL, so no
-    # forwarded header is trusted.
+    # forwarded header is trusted. log_config None keeps the logfmt handler.
+    # The probes hit /healthz every few seconds, and the API logs its own
+    # writes, so the access log is for DEBUG only.
     uvicorn.run(
         "savetube.web.app:create_app",
         factory=True,
         host="0.0.0.0",
         port=args.port,
         proxy_headers=False,
+        log_config=None,
+        access_log=settings.log_level == "DEBUG",
     )
 
 
@@ -43,6 +52,9 @@ def _worker(args: argparse.Namespace) -> None:
     start_http_server(settings.metrics_port)
 
     async def main() -> None:
+        logs.emit(
+            log, logging.INFO, "worker.start", concurrency=args.concurrency, queue=ARCHIVE_QUEUE
+        )
         async with await health.serve(settings.health_port), app.open_async():
             # PgBouncer in transaction mode cannot hold a LISTEN, so the worker polls.
             await app.run_worker_async(
@@ -61,7 +73,13 @@ def _record(args: argparse.Namespace) -> None:
     from savetube import jobs
 
     # A recorder is already one process in its own pod, so no child process.
-    asyncio.run(jobs.run(args.job_id, get_settings(), live=True, runner=jobs.in_process))
+    try:
+        asyncio.run(jobs.run(args.job_id, get_settings(), live=True, runner=jobs.in_process))
+    except Exception as e:
+        if not jobs.recorded(e):
+            logs.emit(log, logging.ERROR, "record.failed", job=args.job_id, exc_info=True)
+        # A failed exit, so the Kubernetes Job retries through its backoffLimit.
+        raise SystemExit(1) from None
 
 
 def _migrate(args: argparse.Namespace) -> None:
@@ -95,5 +113,5 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logs.configure(get_settings().log_level)
     args.func(args)

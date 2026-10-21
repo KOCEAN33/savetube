@@ -6,7 +6,10 @@ import asyncio
 import logging
 import random
 import tempfile
+import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,8 +17,9 @@ from typing import Any
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
+from yt_dlp.utils import DownloadError
 
-from savetube import words
+from savetube import logs, words
 from savetube.config import Settings
 from savetube.db.models import (
     Channel,
@@ -30,10 +34,11 @@ from savetube.db.models import (
     VideoState,
 )
 from savetube.layout import VideoType, classify
+from savetube.logs import emit, human_duration
 from savetube.pipeline import get_or_create_channel
 from savetube.sources import InvalidSourceUrl
 from savetube.sources import parse as parse_source_url
-from savetube.ytdl import copy_cookies
+from savetube.ytdl import avatar_url, copy_cookies
 
 log = logging.getLogger(__name__)
 
@@ -67,48 +72,78 @@ async def due_sources(session: AsyncSession, now: datetime) -> list[int]:
     return list(await session.scalars(q))
 
 
-def _wanted(
+# Why a listed entry does not pass, named as `poll.done` counts it.
+SKIPS = ("words", "members", "other", "date", "live", "private")
+
+
+def _skip(
     entry: dict[str, Any],
     source: Source,
     channel: Channel | None,
     lists: words.Lists,
-) -> bool:
+) -> str | None:
+    """None when the entry passes, else the reason it does not."""
     if entry.get("live_status") in _UNFINISHED_LIVE:
-        return False
+        return "live"
     if not words.matches(entry.get("title") or "", *lists):
-        return False
+        return "words"
     # Without cookies a members-only download fails every attempt.
     if classify(entry) is VideoType.MEMBERS and not (channel is not None and channel.use_cookies):
-        return False
+        return "members"
     if (
         source.kind is SourceKind.PLAYLIST
         and not source.other_channels
         and entry["channel_id"] != source.channel_id
     ):
-        return False
+        return "other"
     # The flat timestamp comes from "3 weeks ago", so the cutoff is as coarse
     # as YouTube's relative date. An entry without one passes.
     ts = entry.get("timestamp")
     if channel is not None and channel.date_after and ts is not None:
-        return datetime.fromtimestamp(ts, UTC).date() >= channel.date_after
-    return True
+        if datetime.fromtimestamp(ts, UTC).date() < channel.date_after:
+            return "date"
+    return None
 
 
-async def sync(
-    session: AsyncSession, source: Source, listing: dict[str, Any]
-) -> tuple[list[int], list[int]]:
-    """Record the listing. Return the ids of new archive jobs, and of queued archive
-    jobs whose video no longer passes. The caller commits, then queues and cancels."""
+@dataclass
+class Synced:
+    """What one poll did, for `poll.done`."""
+
+    # New archive jobs, and queued archive jobs whose video no longer passes,
+    # each with its video id and skip reason.
+    job_ids: list[int] = field(default_factory=list)
+    drops: list[tuple[int, str, str]] = field(default_factory=list)
+    listed: int = 0
+    passed: int = 0
+    stored: int = 0
+    in_flight: int = 0
+    gave_up: int = 0
+    skips: Counter[str] = field(default_factory=Counter)
+    titles: dict[str, str] = field(default_factory=dict)
+    # Set when the poll queued nothing on purpose: "archiving_off", "no_owner",
+    # "playlists".
+    mode: str | None = None
+    playlists: int = 0
+    added: int = 0
+    disabled: list[Source] = field(default_factory=list)
+
+
+async def sync(session: AsyncSession, source: Source, listing: dict[str, Any]) -> Synced:
+    """Record the listing. Return the new archive jobs, and the queued archive
+    jobs whose video no longer passes. The caller commits, then cancels."""
     parent = await session.get(Source, source.parent_id) if source.parent_id else None
     if parent is not None:
         # A child keeps its parent's channel, whatever the listing says.
         source.channel_id = parent.channel_id
     elif listing.get("channel_id"):
-        await get_or_create_channel(session, listing)
+        channel = await get_or_create_channel(session, listing)
         source.channel_id = listing["channel_id"]
+        # A tab listing carries the channel's own thumbnails. A playlist's are
+        # the playlist's.
+        if source.kind is SourceKind.TAB and (avatar := avatar_url(listing)):
+            channel.avatar_url = avatar
     if source.kind is SourceKind.PLAYLISTS:
-        await _add_playlists(session, source, listing)
-        return [], []
+        return await _add_playlists(session, source, listing)
     if source.kind is SourceKind.PLAYLIST and listing.get("title"):
         source.title = listing["title"]
 
@@ -119,9 +154,10 @@ async def sync(
     for e in listing.get("entries") or []:
         if e.get("id"):
             listed[e["id"]] = {**e, "channel_id": e.get("channel_id") or tab_channel}
+    result = Synced(listed=len(listed))
     if not listed:
         # Keeps the last titles for suggestions and the preview.
-        return [], []
+        return result
     await _replace_listing(session, source.id, listed)
     ids = list(listed)
     videos = {v.id: v for v in await session.scalars(select(Video).where(Video.id.in_(ids)))}
@@ -129,11 +165,13 @@ async def sync(
     if source.kind is SourceKind.PLAYLIST and not source.other_channels and not source.channel_id:
         source.last_error = NO_OWNER
         await _link(session, source.id, list(videos))
-        return [], []
+        result.mode = "no_owner"
+        return result
     if not source.archiving:
         # Listing first: the user sets words against the preview before any download.
         await _link(session, source.id, list(videos))
-        return [], []
+        result.mode = "archiving_off"
+        return result
 
     own = [(parent.include_words, parent.exclude_words)] if parent is not None else []
     own.append((source.include_words, source.exclude_words))
@@ -146,12 +184,18 @@ async def sync(
     # The source's channel holds the date cutoff, also for another channel's
     # video in its playlist.
     channel = await session.get(Channel, source.channel_id) if source.channel_id else None
-    # A private or deleted video in a playlist lists with no channel.
-    entries = {
-        vid: e
-        for vid, e in listed.items()
-        if e["channel_id"] and _wanted(e, source, channel, lists[e["channel_id"]])
-    }
+    entries: dict[str, dict[str, Any]] = {}
+    skipped: dict[str, str] = {}
+    for vid, e in listed.items():
+        # A private or deleted video in a playlist lists with no channel.
+        reason = _skip(e, source, channel, lists[e["channel_id"]]) if e["channel_id"] else "private"
+        if reason is None:
+            entries[vid] = e
+        else:
+            skipped[vid] = reason
+    result.passed = len(entries)
+    result.skips = Counter(skipped.values())
+    result.titles = {vid: e.get("title") or "" for vid, e in listed.items()}
 
     new_channels = {e["channel_id"]: e for vid, e in entries.items() if vid not in videos}
     new_channels.pop(source.channel_id, None)
@@ -199,16 +243,24 @@ async def sync(
             )
         ).all()
     )
-    jobs = [
-        Job(kind=JobKind.ARCHIVE, video_id=vid)
-        for vid in wanted
-        if videos[vid].state is not VideoState.COMPLETE
-        and vid not in active
-        and failures.get(vid, 0) < MAX_ARCHIVE_ATTEMPTS
-    ]
+    jobs = []
+    for vid in wanted:
+        if videos[vid].state is VideoState.COMPLETE:
+            result.stored += 1
+        elif vid in active:
+            result.in_flight += 1
+        elif failures.get(vid, 0) >= MAX_ARCHIVE_ATTEMPTS:
+            result.gave_up += 1
+        else:
+            jobs.append(Job(kind=JobKind.ARCHIVE, video_id=vid))
     session.add_all(jobs)
     await session.flush()
-    return [j.id for j in jobs], await _droppable(session, source.id, set(ids) - entries.keys())
+    result.job_ids = [j.id for j in jobs]
+    result.drops = [
+        (job_id, vid, skipped[vid])
+        for job_id, vid in await _droppable(session, source.id, set(skipped))
+    ]
+    return result
 
 
 async def _link(session: AsyncSession, source_id: int, video_ids: list[str]) -> None:
@@ -225,21 +277,22 @@ async def _link(session: AsyncSession, source_id: int, video_ids: list[str]) -> 
     await session.flush()
 
 
-async def _droppable(session: AsyncSession, source_id: int, skipped: set[str]) -> list[int]:
+async def _droppable(
+    session: AsyncSession, source_id: int, skipped: set[str]
+) -> list[tuple[int, str]]:
     """Queued archive jobs of videos this source's filters now skip. A video that
     another source lists is left alone: that source may still want it, and
     cancelling would race its next poll."""
     elsewhere = select(VideoSource.video_id).where(VideoSource.source_id != source_id)
-    return list(
-        await session.scalars(
-            select(Job.id).where(
-                Job.video_id.in_(skipped),
-                Job.video_id.not_in(elsewhere),
-                Job.kind == JobKind.ARCHIVE,
-                Job.state == JobState.QUEUED,
-            )
+    rows = await session.execute(
+        select(Job.id, Job.video_id).where(
+            Job.video_id.in_(skipped),
+            Job.video_id.not_in(elsewhere),
+            Job.kind == JobKind.ARCHIVE,
+            Job.state == JobState.QUEUED,
         )
     )
+    return [(r.id, r.video_id) for r in rows]
 
 
 async def _replace_listing(
@@ -261,7 +314,7 @@ async def _replace_listing(
     )
 
 
-async def _add_playlists(session: AsyncSession, parent: Source, listing: dict[str, Any]) -> None:
+async def _add_playlists(session: AsyncSession, parent: Source, listing: dict[str, Any]) -> Synced:
     """A child playlist source per listed playlist that is not a source yet. A
     disabled child is still a source, so it is never created again. A child
     whose playlist left the listing is disabled."""
@@ -274,18 +327,21 @@ async def _add_playlists(session: AsyncSession, parent: Source, listing: dict[st
         if parsed.kind is SourceKind.PLAYLIST:
             titles.setdefault(parsed.url, e.get("title"))
     urls = list(titles)
+    result = Synced(mode="playlists", playlists=len(urls))
     if not urls:
         # An empty listing proves nothing about the channel's playlists.
-        return
+        return result
     for child in await session.scalars(select(Source).where(Source.parent_id == parent.id)):
         if child.url in titles:
             child.title = titles[child.url] or child.title
         elif child.enabled:
             child.enabled = False
             child.last_error = UNLISTED
+            result.disabled.append(child)
     taken = set(await session.scalars(select(Source.url).where(Source.url.in_(urls))))
     now = datetime.now(UTC)
     interval = timedelta(minutes=parent.poll_interval_minutes)
+    result.added = len(set(urls) - taken)
     session.add_all(
         Source(
             url=url,
@@ -303,9 +359,23 @@ async def _add_playlists(session: AsyncSession, parent: Source, listing: dict[st
         if url not in taken
     )
     await session.flush()
+    return result
 
 
 async def poll_source(
+    sessionmaker: async_sessionmaker,
+    source_id: int,
+    settings: Settings,
+    *,
+    lister: Lister,
+    cancel: Cancel,
+) -> None:
+    # yt-dlp's own lines during the listing carry the source too.
+    with logs.context(source=source_id):
+        await _poll_source(sessionmaker, source_id, settings, lister=lister, cancel=cancel)
+
+
+async def _poll_source(
     sessionmaker: async_sessionmaker,
     source_id: int,
     settings: Settings,
@@ -319,8 +389,18 @@ async def poll_source(
             return
         channel = await session.get(Channel, source.channel_id) if source.channel_id else None
         url, use_cookies = source.url, channel is not None and channel.use_cookies
+        emit(
+            log,
+            logging.INFO,
+            "poll.start",
+            source=source_id,
+            url=url,
+            kind=source.kind.value,
+            channel=channel.name if channel is not None else None,
+        )
 
     now = datetime.now(UTC)
+    started = time.monotonic()
     try:
         with tempfile.TemporaryDirectory(prefix="savetube-") as private:
             cookiefile = None
@@ -335,10 +415,20 @@ async def poll_source(
             source = await session.get(Source, source_id)
             source.last_polled_at = now
             source.last_error = None
-            job_ids, drop_ids = await sync(session, source, listing)
+            synced = await sync(session, source, listing)
             await session.commit()
     except Exception as e:
-        log.exception("poll of source %s failed", source_id)
+        expected = isinstance(e, DownloadError)
+        emit(
+            log,
+            logging.WARNING if expected else logging.ERROR,
+            "poll.failed",
+            source=source_id,
+            url=url,
+            reason=logs.cut(f"{type(e).__name__}: {e}"),
+            took=human_duration(time.monotonic() - started),
+            exc_info=not expected,
+        )
         async with sessionmaker() as session:
             source = await session.get(Source, source_id)
             source.last_polled_at = now
@@ -347,23 +437,104 @@ async def poll_source(
         return
 
     # The scheduler's dispatcher puts the new jobs on the queue.
-    log.info("source %s: %d new archive jobs", source_id, len(job_ids))
-    for job_id in drop_ids:
-        await _cancel_job(sessionmaker, job_id, cancel)
+    cancelled = 0
+    for job_id, video_id, reason in synced.drops:
+        cancelled += await _cancel_job(
+            sessionmaker,
+            job_id,
+            cancel,
+            video=video_id,
+            title=synced.titles.get(video_id),
+            source=source_id,
+            reason=reason,
+        )
+    _log_done(source_id, url, synced, cancelled, time.monotonic() - started)
 
 
-async def _cancel_job(sessionmaker: async_sessionmaker, job_id: int, cancel: Cancel) -> None:
+def _log_done(source_id: int, url: str, synced: Synced, cancelled: int, took: float) -> None:
+    if synced.mode == "playlists":
+        for child in synced.disabled:
+            emit(
+                log,
+                logging.WARNING,
+                "playlist.unlisted",
+                source=child.id,
+                parent=source_id,
+                title=child.title,
+            )
+        emit(
+            log,
+            logging.INFO,
+            "poll.done",
+            source=source_id,
+            playlists=synced.playlists,
+            added=synced.added,
+            disabled=len(synced.disabled),
+            took=human_duration(took),
+        )
+        return
+    if synced.mode == "no_owner":
+        emit(log, logging.WARNING, "poll.no_owner", source=source_id, url=url, reason=NO_OWNER)
+    if synced.mode is not None:
+        emit(
+            log,
+            logging.INFO,
+            "poll.done",
+            source=source_id,
+            listed=synced.listed,
+            archiving="off" if synced.mode == "archiving_off" else None,
+            took=human_duration(took),
+        )
+        return
+    emit(
+        log,
+        logging.INFO,
+        "poll.done",
+        source=source_id,
+        listed=synced.listed,
+        passed=synced.passed,
+        queued=len(synced.job_ids),
+        stored=synced.stored,
+        in_flight=synced.in_flight,
+        gave_up=synced.gave_up,
+        cancelled=cancelled,
+        **{f"skip_{reason}": synced.skips[reason] for reason in SKIPS},
+        took=human_duration(took),
+    )
+
+
+async def _cancel_job(
+    sessionmaker: async_sessionmaker,
+    job_id: int,
+    cancel: Cancel,
+    *,
+    video: str,
+    title: str | None,
+    source: int,
+    reason: str,
+) -> bool:
     async with sessionmaker() as session:
         job = await session.get(Job, job_id)
         if job.state is not JobState.QUEUED:
-            return
+            return False
         if job.queue_job_id is not None:
             try:
                 if not await cancel(job.queue_job_id):
-                    return  # a worker took it first
+                    return False  # a worker took it first
             except Exception:
-                log.exception("cancel of job %s failed", job_id)
-                return
+                emit(log, logging.ERROR, "job.cancel_failed", job=job_id, exc_info=True)
+                return False
         job.state = JobState.CANCELLED
         job.finished_at = datetime.now(UTC)
         await session.commit()
+    emit(
+        log,
+        logging.INFO,
+        "job.cancelled",
+        job=job_id,
+        video=video,
+        title=logs.cut(title, 80),
+        source=source,
+        reason=reason,
+    )
+    return True

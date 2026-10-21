@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # GET /healthz of the worker and the scheduler, served by their asyncio loop.
     health_port: int = 8081
 
+    # DEBUG, INFO, WARNING or ERROR, any case (docs/plan/operations.md, Logging).
+    log_level: str = "INFO"
+
     namespace: str = "default"
     recorder_cronjob: str = "savetube-recorder"
 
@@ -47,6 +50,13 @@ class Settings(BaseSettings):
         if not v.get_secret_value().startswith(_SCHEMES):
             raise ValueError("SAVETUBE_DATABASE_URL must start with postgres:// or postgresql://")
         return v
+
+    @field_validator("log_level")
+    @classmethod
+    def _level(cls, v: str) -> str:
+        if v.upper() not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            raise ValueError("SAVETUBE_LOG_LEVEL must be DEBUG, INFO, WARNING or ERROR")
+        return v.upper()
 
     @property
     def sqlalchemy_url(self) -> str:

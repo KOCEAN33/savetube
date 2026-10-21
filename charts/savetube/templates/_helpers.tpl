@@ -42,7 +42,10 @@ capabilities:
     {{- toYaml .Values.potProvider.resources | nindent 4 }}
 {{- end -}}
 
+{{/* Env every savetube container carries. */}}
 {{- define "savetube.dbEnv" -}}
+- name: SAVETUBE_LOG_LEVEL
+  value: {{ .Values.logLevel | quote }}
 - name: SAVETUBE_DATABASE_URL
   valueFrom:
     secretKeyRef:

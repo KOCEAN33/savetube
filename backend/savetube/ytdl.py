@@ -7,10 +7,18 @@ from pathlib import Path
 from typing import Any
 
 import yt_dlp
+from yt_dlp.plugins import load_all_plugins
+from yt_dlp.postprocessor import PostProcessor
 
 from savetube.layout import OUTTMPL
+from savetube.logs import YtdlpLogger
 
 DEFAULT_FORMAT = "bv*+ba/b"
+
+# YoutubeDL loads plugins on first use, unlocked. Two threads creating the first
+# instances at once import the bgutil plugin twice, and yt-dlp prints the failed
+# registration as a raw traceback on stderr.
+load_all_plugins()
 
 # yt-dlp's `-t sleep` preset. The yt-dlp wiki puts the limits near 300
 # videos/hour as a guest and 2000/hour logged in.
@@ -43,9 +51,10 @@ def build_params(
     format: str = DEFAULT_FORMAT,
     cookiefile: Path | None = None,
     live: bool = False,
-    progress_hook: Callable[[dict[str, Any]], None] | None = None,
     ratelimit: int | None = None,
 ) -> dict[str, Any]:
+    """Picklable, because a download child gets them through `spawn`. The child
+    adds the logger and the hooks itself (`download`)."""
     params: dict[str, Any] = {
         "format": format,
         "merge_output_format": "mkv",
@@ -68,8 +77,6 @@ def build_params(
         del params["sleep_interval"], params["max_sleep_interval"]
     if cookiefile is not None:
         params["cookiefile"] = str(cookiefile)
-    if progress_hook is not None:
-        params["progress_hooks"] = [progress_hook]
     if ratelimit is not None:
         # Bytes per second, per download.
         params["ratelimit"] = ratelimit
@@ -89,6 +96,7 @@ def list_entries(
         "extract_flat": "in_playlist",
         "extractor_args": {"youtubetab": {"approximate_date": [""]}},
         "quiet": True,
+        "logger": YtdlpLogger(),
         "sleep_interval_requests": _SLEEP["sleep_interval_requests"],
     }
     if cookiefile is not None:
@@ -105,6 +113,7 @@ def list_streams(channel_id: str) -> dict[str, Any]:
         "extract_flat": "in_playlist",
         "playlistend": 10,
         "quiet": True,
+        "logger": YtdlpLogger(),
         "sleep_interval_requests": _SLEEP["sleep_interval_requests"],
     }
     with yt_dlp.YoutubeDL(params) as ydl:
@@ -125,6 +134,7 @@ def fetch_feed(channel_id: str) -> str:
 def _probe(url: str) -> dict[str, Any]:
     params = {
         "quiet": True,
+        "logger": YtdlpLogger(),
         # An upcoming stream has no formats yet. Without this, yt-dlp raises
         # "This live event will begin in ..." instead of returning
         # `release_timestamp`.
@@ -144,8 +154,37 @@ def probe_live(channel_id: str) -> dict[str, Any]:
     return _probe(f"https://www.youtube.com/channel/{channel_id}/live")
 
 
-def download(url: str, params: dict[str, Any]) -> dict[str, Any]:
-    """Download one video and return its sanitised info dict."""
+def avatar_url(listing: dict[str, Any]) -> str | None:
+    """The channel's profile picture from a tab listing's thumbnails: the square
+    one, else the uncropped original, which can be megabytes."""
+    thumbnails = listing.get("thumbnails") or []
+    square = [t for t in thumbnails if t.get("width") and t.get("width") == t.get("height")]
+    if square:
+        return min(square, key=lambda t: t["width"])["url"]
+    return next((t["url"] for t in thumbnails if t.get("id") == "avatar_uncropped"), None)
+
+
+class _BeforeDownload(PostProcessor):
+    def __init__(self, on_format: Callable[[dict[str, Any]], None]) -> None:
+        super().__init__()
+        self._on_format = on_format
+
+    def run(self, info: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+        self._on_format(info)
+        return [], info
+
+
+def download(
+    url: str,
+    params: dict[str, Any],
+    *,
+    on_format: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Download one video and return its sanitised info dict. `on_format` sees
+    the info dict once the format is chosen, before the download starts."""
+    params = {**params, "logger": YtdlpLogger()}
     with yt_dlp.YoutubeDL(params) as ydl:
+        if on_format is not None:
+            ydl.add_post_processor(_BeforeDownload(on_format), when="before_dl")
         info = ydl.extract_info(url, download=True)
         return ydl.sanitize_info(info)

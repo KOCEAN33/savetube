@@ -20,11 +20,25 @@ One modal takes a channel from URL to downloading. No setting needs to exist fir
 
 The channel page edits the same settings later: tabs, playlists, live recording, title words, date cutoff, quality, cookie use, poll interval, and pausing downloads (`archiving`).
 
+## Channel page
+
+- The channel list, the channel page header and the scan step of the add-channel modal show the channel's avatar. The browser loads it from YouTube's image host, and the first letter of the name stands in until it loads or while no avatar is stored.
+- "What to archive", "Title words" and "Download settings" fold under their title. Each starts folded, and the browser keeps each section's open state in `localStorage`, shared by every channel page.
+- "Downloads" shows the running archive download first: its title and the current stream's percent, downloaded and total bytes, speed and ETA. The queued jobs follow, oldest first, which is the order the dispatcher takes them. The 20 latest succeeded, failed and cancelled jobs come last.
+- The downloads refetch every 3 s while a download runs, and every 15 s otherwise. The worker writes progress every 5 s, so a faster refetch shows nothing new.
+- A download shows no progress while yt-dlp fetches the metadata, subtitles and chat replay, because the progress counts the media only.
+- "Stored videos" lists the channel's complete videos in one group per type (videos, shorts, lives, members), newest upload first, 12 at a time. Each card shows the thumbnail, title, upload date, duration and size, and links to the video page.
+- A video counts as the channel's when the channel uploaded it or one of its sources lists it. A collaboration on the channel's tab is stored under the uploader its info names, so the uploader alone misses it.
+- The channel list, the channel page header and "Stored videos" count complete videos by that rule. "Browse videos" and "Open in Videos" open the Videos page with `listed_by`, which applies the same rule.
+- Thumbnails load from `i.ytimg.com`, because the web pod does not mount the archive.
+
 | Method and path | Body | Returns |
 | --- | --- | --- |
-| `POST /api/channel-scan` | `{url}`, a channel URL | channel id, handle and name, the first-page entries `{video_id, title}` of each tab, and the playlists `{id, title, url}`. Listed live through yt-dlp, 502 on a yt-dlp error, 504 after 120 s |
+| `POST /api/channel-scan` | `{url}`, a channel URL | channel id, handle, name and `avatar_url`, the first-page entries `{video_id, title}` of each tab, and the playlists `{id, title, url}`. Listed live through yt-dlp, 502 on a yt-dlp error, 504 after 120 s |
 | `POST /api/title-preview` | `{channel_id?, titles, include_words, exclude_words}` | each title with `kept`, matched with the stored global lists and, when `channel_id` names a stored channel, its lists merged in |
-| `POST /api/channels` | the scan's channel URL, `channel_id`, `handle` and `name`, chosen tabs, chosen playlists or all playlists, `watch_lives`, words, `date_after`, `format`, `use_cookies` | the channel with its sources |
+| `POST /api/channels` | the scan's channel URL, `channel_id`, `handle`, `name` and `avatar_url`, chosen tabs, chosen playlists or all playlists, `watch_lives`, words, `date_after`, `format`, `use_cookies` | the channel with its sources |
+| `GET /api/jobs` | `kind`, `state` (repeat it for several states), `channel_id`, `limit` | jobs, newest first. `channel_id` matches the jobs of videos the channel uploaded or its sources list. A running download carries `progress` `{format, pct, done, total, speed, eta}`, and `pct` is null without a total |
+| `GET /api/videos` | `channel_id` (the uploader), `listed_by` (the uploader or a channel whose sources list the video), `type`, `state`, `q`, `limit`, `offset` | `{total, items}`, newest upload first |
 
 ## Statistics
 
