@@ -8,8 +8,8 @@ Ship what develop holds since `v0.7.0` when the user approves, then in-browser p
 
 - Running in `savetube-prod`: `v0.7.0`, chart `v0.7.0`, migrations `0001`-`0011`. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning).
 - The general cookie profile is `burner`, `max_concurrent` is 1. No bot check has returned since 18:39 KST on 2026-10-21.
-- Production still fails a download on every dropped googlevideo connection, because `v0.7.0` passes no `retries` to yt-dlp. As a library, yt-dlp then retries 0 times. Develop fixes it (PR #18). The user chose to clear follow-ups before deploying.
-- Develop holds, not deployed (PRs #17-#25):
+- Production still fails a download on every dropped googlevideo connection, because `v0.7.0` passes no `retries` to yt-dlp. As a library, yt-dlp then retries 0 times. Develop fixes it (PR #18). The follow-ups the user wanted cleared before the deploy are merged.
+- Develop holds, not deployed (PRs #17-#31):
   - yt-dlp retries: `retries` 10, `fragment_retries` 10, `extractor_retries` 3, `file_access_retries` 3. A local test server that stops halfway reproduces the production error without them.
   - Network interrupts count toward the cap of 5 only when a run added no bytes, so a download that moves on is retried until it ends.
   - Migration `0012` sets `failed` videos with a queued archive job back to `pending`, and the poll now does that when it queues.
@@ -17,7 +17,10 @@ Ship what develop holds since `v0.7.0` when the user approves, then in-browser p
   - Title-word narrowing cancels a queued job unless another archiving source still wants the video. A resumed run skips a finished chat replay. `job.progress` clears to SQL NULL.
   - UI: header pause refetch, `GET /api/jobs/counts`, the other-channels choice in the add-channel summary and before the first playlist, per-channel statistics by the channel list rule.
   - Image 1.22 GB to 1.17 GB, entry chunk 1,001 kB to 376 kB through route `lazy`. Route loading is not clicked through in a browser.
-  - Tests: each run creates and drops `savetube_test_<random>`, and the health test no longer leaks a transport.
+  - Tests: each run creates and drops `savetube_test_<unix seconds>_<hex>` and drops such databases older than 24 hours. The health test no longer leaks a transport.
+  - The worker ends a queue job the reclaim already failed without a procrastinate error.
+  - The channel page "Queued (N)" counts from `GET /api/jobs/counts`. The Home chart and recharts load lazily: dashboard chunk 382.75 kB to 57.30 kB.
+  - Home shows a "Sources waiting" card while a source has no channel: before its first poll, after a failed first poll, or disabled.
 - Verified in production on `v0.7.0`: resume from `.part` files after a deploy, and `size`, `probe`, `packets` on the resumed file.
   - Channel library layout (PR #25), the variant the user picked from a three-variant prototype: sidebar channel list with filter, channel header row, tabs with counts, Playlists through the new `source_id` filter on `GET /api/videos`, no global search. `docs/plan/frontend.md` holds the rules.
 - `savetube_proto` on pg-dev holds seeded demo data. `/tmp/savetube-library/serve.sh` serves a production build of a worktree against it, login skipped. Drop the database when no longer needed.
@@ -26,7 +29,8 @@ Ship what develop holds since `v0.7.0` when the user approves, then in-browser p
 ## What worked
 
 - DB tests: `bash /tmp/savetube-testdb/run-tests.sh <repo root> make check`. The script reads `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` and the password from `op read 'op://Homelab/savetube-dev-db/password'`, URL-quoted, with `sslrootcert` `~/.postgresql/postgres-dev-ca.crt`. It prints no secret. Parallel runs are safe.
-- Parallel agents: make the worktrees yourself with `git worktree add -b <branch> ../savetube-wt-<name> develop`, give each a file boundary, and merge one PR per worktree.
+- Parallel agents: make the worktrees yourself with `git worktree add -b <branch> ../savetube-wt-<name> develop`, give each a file boundary, and merge one PR per worktree. `gh pr merge --delete-branch` also removes the local worktree and branch.
+- `.claude/settings.local.json` allows `gh pr merge`, which the auto mode classifier otherwise blocks as "Merge Without Review". The user approved merging PRs into develop.
 - Production reads: `kubectl --context homelab-tailnet -n postgres exec postgres-2 -c postgres -- psql -d savetube -c "set default_transaction_read_only=on;" -c "<one query>"`. One query per call passes the permission classifier.
 - Local UI checks: Playwright through `uvx --with playwright python -I <script>` with `channel="chrome"`. Frontend uses pnpm.
 - yt-dlp with browser cookies on this Mac needs `--js-runtimes node`.
@@ -50,12 +54,11 @@ Ship what develop holds since `v0.7.0` when the user approves, then in-browser p
 1. Deploy develop when the user approves: merge develop into main, then check that 0012 ran, the 105 videos turned `pending`, and the worker logs yt-dlp "Retrying" lines instead of job errors.
 2. The user checks the dashboard Downloads card and the header pause switch in production.
 3. The user checks the channel library layout after the deploy.
-4. Sources whose first poll has not run show nowhere since the Channels page went away. Show them, for example in the sidebar or on Home.
+4. The user checks the "Sources waiting" card after the deploy. Its "Poll now" button is not clicked in any test.
 5. Follow-ups:
-   - The worker logs a procrastinate error when it finishes a queue job a reclaim already failed.
-   - The channel page "Queued (N)" still counts from a list capped at 500. Use `GET /api/jobs/counts?channel_id=`.
-   - A killed test run leaves its `savetube_test_<random>` database behind.
-   - The `/` route loads recharts on first paint. Lazy-load the chart.
+   - The channel page hides "Show more" once all 500 listed queued jobs show, even when more wait.
+   - `GET /api/sources` sends `last_error` raw. The Home card only cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
+   - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
    - ffmpeg is about 180-210 MB of the image. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
 6. In-browser playback, which the user approved: mount `tank/youtube` read-only in the web pod, serve media with HTTP Range, add a `<video>` element on the video page. Safari needs mp4 or WebM.
 7. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
