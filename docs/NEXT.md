@@ -2,14 +2,14 @@
 
 ## Goal
 
-Ship what develop holds since `v0.7.0`, then build the channel page redesign from the variant the user picks.
+Ship what develop holds since `v0.7.0` when the user approves, then in-browser playback.
 
 ## Current progress
 
 - Running in `savetube-prod`: `v0.7.0`, chart `v0.7.0`, migrations `0001`-`0011`. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning).
 - The general cookie profile is `burner`, `max_concurrent` is 1. No bot check has returned since 18:39 KST on 2026-10-21.
 - Production still fails a download on every dropped googlevideo connection, because `v0.7.0` passes no `retries` to yt-dlp. As a library, yt-dlp then retries 0 times. Develop fixes it (PR #18). The user chose to clear follow-ups before deploying.
-- Develop holds, not deployed (PRs #17-#23):
+- Develop holds, not deployed (PRs #17-#25):
   - yt-dlp retries: `retries` 10, `fragment_retries` 10, `extractor_retries` 3, `file_access_retries` 3. A local test server that stops halfway reproduces the production error without them.
   - Network interrupts count toward the cap of 5 only when a run added no bytes, so a download that moves on is retried until it ends.
   - Migration `0012` sets `failed` videos with a queued archive job back to `pending`, and the poll now does that when it queues.
@@ -19,7 +19,8 @@ Ship what develop holds since `v0.7.0`, then build the channel page redesign fro
   - Image 1.22 GB to 1.17 GB, entry chunk 1,001 kB to 376 kB through route `lazy`. Route loading is not clicked through in a browser.
   - Tests: each run creates and drops `savetube_test_<random>`, and the health test no longer leaks a transport.
 - Verified in production on `v0.7.0`: resume from `.part` files after a deploy, and `size`, `probe`, `packets` on the resumed file.
-- Channel page redesign prototype, uncommitted, in worktree `../savetube-wt-proto` (branch `prototype/channel-redesign`). `/tmp/savetube-proto/serve.sh` builds and serves it against database `savetube_proto` on pg-dev, login skipped, and prints the URL. `?variant=a|b|c` and ←/→ switch. The user's decisions: tabs Videos, Shorts, Live, Playlists, Downloads; Downloads holds the archive settings and job lists; Home shows running downloads; the sidebar lists channels below Home, Live, Videos, Settings and replaces the Channels page. The three variants differ on search: a header search bar, a sidebar filter with per-tab search, or a ⌘K palette.
+  - Channel library layout (PR #25), the variant the user picked from a three-variant prototype: sidebar channel list with filter, channel header row, tabs with counts, Playlists through the new `source_id` filter on `GET /api/videos`, no global search. `docs/plan/frontend.md` holds the rules.
+- `savetube_proto` on pg-dev holds seeded demo data. `/tmp/savetube-library/serve.sh` serves a production build of a worktree against it, login skipped. Drop the database when no longer needed.
 - CULUA is the one production channel.
 
 ## What worked
@@ -41,16 +42,15 @@ Ship what develop holds since `v0.7.0`, then build the channel page redesign fro
 
 ## Open questions
 
-- Which variant, or mix, of the channel page prototype the user picks.
-- Which tab holds members-only videos in the redesign. No tab shows them yet.
+- Members-only videos get a Members tab only while the channel has some. The user has not confirmed this.
 - Whether googlevideo still drops connections once yt-dlp retries in place.
 
 ## Next steps
 
 1. Deploy develop when the user approves: merge develop into main, then check that 0012 ran, the 105 videos turned `pending`, and the worker logs yt-dlp "Retrying" lines instead of job errors.
 2. The user checks the dashboard Downloads card and the header pause switch in production.
-3. The user picks a prototype variant. Rebuild the winner as real code with tests, delete the losing variants and the switcher, drop `savetube_proto`, remove `../savetube-wt-proto`, and update `docs/plan/frontend.md`.
-4. Add a `source_id` filter to `GET /api/videos`, so the Playlists tab shows stored videos instead of listing entries.
+3. The user checks the channel library layout after the deploy.
+4. Sources whose first poll has not run show nowhere since the Channels page went away. Show them, for example in the sidebar or on Home.
 5. Follow-ups:
    - The worker logs a procrastinate error when it finishes a queue job a reclaim already failed.
    - The channel page "Queued (N)" still counts from a list capped at 500. Use `GET /api/jobs/counts?channel_id=`.
@@ -63,7 +63,7 @@ Ship what develop holds since `v0.7.0`, then build the channel page redesign fro
 
 ## Suggested skills
 
-`tdd` for new seams, `prototype` cleanup after the pick, `gh-cli` for workflow runs.
+`tdd` for new seams, `gh-cli` for workflow runs.
 
 ## Pointers
 
