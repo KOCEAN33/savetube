@@ -88,11 +88,13 @@ FORMAT_GONE = "Requested format is not available"
 # A partial directory no queued or running job wants is deleted after this.
 ORPHAN_DAYS = 7
 BLOCKED_LOG = "blocked by YouTube"
-# The `log_tail` prefix of a run a network error interrupted.
+# The `log_tail` prefix of a run a network error interrupted, and of one that
+# added no bytes before it.
 NETWORK_LOG = "network error"
-# Network interruptions of one video since its last failed or succeeded
-# archive job. The next network error after these is a failure.
-MAX_NETWORK_INTERRUPTS = 5
+NETWORK_STALL_LOG = "network error, no progress"
+# Network interruptions in a row that added no bytes. A run that adds bytes
+# resets the count, so a download that moves on is retried until it ends.
+MAX_NETWORK_STALLS = 5
 PAUSED_LOG = "paused by user"
 # A running archive download reads the user's pause this often.
 PAUSE_POLL_SECONDS = 5
@@ -565,6 +567,7 @@ async def run(
     workdir = settings.incoming_root / str(job_id) if live else incoming_dir(settings, video_id)
     attempt_label = f"{attempt}/{limit}" if limit else str(attempt)
     started = time.monotonic()
+    started_bytes = dir_size(workdir) if workdir.exists() else 0
     with logs.context(job=job_id, video=video_id):
         emit(
             log,
@@ -708,15 +711,20 @@ async def run(
                 )
                 setattr(e, _RECORDED, True)
                 raise
+            present = dir_size(workdir) if workdir.exists() else 0
+            progressed = present > started_bytes
             if (
                 not live
                 and isinstance(e, DownloadFailed)
                 and network_error(str(e))
-                and await _network_interrupts(sessionmaker, video_id) < MAX_NETWORK_INTERRUPTS
+                and (
+                    progressed or await _network_stalls(sessionmaker, video_id) < MAX_NETWORK_STALLS
+                )
             ):
+                prefix = NETWORK_LOG if progressed else NETWORK_STALL_LOG
                 async with sessionmaker() as session:
                     job = await session.get(Job, job_id)
-                    await _interrupt(session, job, f"{NETWORK_LOG}: {e}"[:LOG_TAIL_CHARS])
+                    await _interrupt(session, job, f"{prefix}: {e}"[:LOG_TAIL_CHARS])
                     await session.commit()
                 emit(
                     log,
@@ -726,8 +734,9 @@ async def run(
                     video=video_id,
                     **described,
                     took=human_duration(time.monotonic() - started),
-                    present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
-                    reason=NETWORK_LOG,
+                    present=human_bytes(present),
+                    added=human_bytes(max(present - started_bytes, 0)),
+                    reason=prefix,
                 )
                 setattr(e, _RECORDED, True)
                 raise
@@ -826,14 +835,22 @@ async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFai
         )
 
 
-async def _network_interrupts(sessionmaker: async_sessionmaker, video_id: str) -> int:
-    """The video's network interruptions since its last failed or succeeded
-    archive job. Ordered by `finished_at`, because a failed job keeps the id
-    it had before its interrupted rows."""
+async def _network_stalls(sessionmaker: async_sessionmaker, video_id: str) -> int:
+    """The video's network interruptions that added no bytes, since its last
+    failed or succeeded archive job or network interruption that added bytes.
+    Ordered by `finished_at`, because a failed job keeps the id it had before
+    its interrupted rows."""
     archive = (Job.video_id == video_id) & (Job.kind == JobKind.ARCHIVE)
     last_end = (
         select(func.max(Job.finished_at))
-        .where(archive, Job.state.in_([JobState.FAILED, JobState.SUCCEEDED]))
+        .where(
+            archive,
+            Job.state.in_([JobState.FAILED, JobState.SUCCEEDED])
+            | (
+                (Job.state == JobState.INTERRUPTED)
+                & Job.log_tail.startswith(f"{NETWORK_LOG}: ", autoescape=True)
+            ),
+        )
         .scalar_subquery()
     )
     async with sessionmaker() as session:
@@ -843,7 +860,7 @@ async def _network_interrupts(sessionmaker: async_sessionmaker, video_id: str) -
             .where(
                 archive,
                 Job.state == JobState.INTERRUPTED,
-                Job.log_tail.startswith(f"{NETWORK_LOG}: ", autoescape=True),
+                Job.log_tail.startswith(f"{NETWORK_STALL_LOG}: ", autoescape=True),
                 (Job.finished_at > last_end) | last_end.is_(None),
             )
         )

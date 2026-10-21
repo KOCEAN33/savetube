@@ -3590,22 +3590,25 @@ READ_TIMEOUT = (
 )
 
 
-def _network_step(message=READ_TIMEOUT):
+def _network_step(message=READ_TIMEOUT, progress=True):
     async def step(params, report):
         from savetube.jobs import DownloadFailed
 
-        _part(params)
+        if progress:
+            _part(params)
         await report({"event": "format", "format_id": "251"})
         raise DownloadFailed(message)
 
     return step
 
 
-def _network_rows(count, minutes_ago=10):
-    """`count` earlier network interruptions of v1's archive job."""
+def _network_rows(count, minutes_ago=10, progress=False):
+    """`count` earlier network interruptions of v1's archive job, each with or
+    without bytes added."""
+    prefix = "network error" if progress else "network error, no progress"
     return [
         "INSERT INTO job (kind, state, video_id, attempts, log_tail, finished_at) VALUES"
-        f" ('archive', 'interrupted', 'v1', 1, 'network error: x',"
+        f" ('archive', 'interrupted', 'v1', 1, '{prefix}: x',"
         f" now() - interval '{minutes_ago + i} minutes')"
         for i in range(count)
     ]
@@ -3624,6 +3627,9 @@ def _network_rows(count, minutes_ago=10):
             "INSERT INTO job (kind, state, video_id, attempts, log_tail, finished_at) VALUES"
             " ('archive', 'failed', 'v1', 1, 'x', now() - interval '30 minutes')",
         ],
+        # A run that added bytes resets the count, however many came before.
+        _network_rows(5),
+        _network_rows(10, progress=True),
     ],
 )
 async def test_a_network_error_interrupts_the_archive_job_and_keeps_the_parts(
@@ -3651,7 +3657,27 @@ async def test_a_network_error_interrupts_the_archive_job_and_keeps_the_parts(
 
 
 @pytest.mark.anyio
-async def test_a_sixth_network_error_in_a_row_fails_the_job(settings, caplog):
+@pytest.mark.parametrize(
+    "earlier",
+    [
+        _network_rows(4),
+        # Stalls after the last run that added bytes still count.
+        [*_network_rows(4), *_network_rows(1, minutes_ago=60, progress=True)],
+    ],
+)
+async def test_a_network_error_with_no_bytes_added_is_marked_as_a_stall(settings, earlier):
+    _job_rows(
+        settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)", *earlier
+    )
+    known = set(_job_ids(settings))
+    jobs, _ = await _run_steps(settings, _Steps(_network_step(progress=False)))
+    [history] = [j for j in jobs.values() if j.id not in known]
+    assert history.log_tail == f"network error, no progress: {READ_TIMEOUT}"
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.QUEUED, 0)
+
+
+@pytest.mark.anyio
+async def test_a_sixth_network_stall_in_a_row_fails_the_job(settings, caplog):
     import logging
 
     _job_rows(
@@ -3659,10 +3685,11 @@ async def test_a_sixth_network_error_in_a_row_fails_the_job(settings, caplog):
         "UPDATE channel SET format = 'wa'",
         "SELECT setval('job_id_seq', 200)",
         *_network_rows(5),
+        *_network_rows(3, minutes_ago=60, progress=True),
     )
     known = set(_job_ids(settings))
     with caplog.at_level(logging.INFO, logger="savetube"):
-        jobs, video = await _run_steps(settings, _Steps(_network_step()))
+        jobs, video = await _run_steps(settings, _Steps(_network_step(progress=False)))
     assert set(jobs) == known
     assert (jobs[1].state, jobs[1].attempts) == (JobState.FAILED, 1)
     assert jobs[1].log_tail == READ_TIMEOUT
