@@ -1,10 +1,13 @@
 """Runs against a real Postgres. SAVETUBE_TEST_DATABASE_URL is an admin URL whose
-role has CREATEDB. Each run creates and drops its own database, savetube_test_<random>,
-so concurrent runs against one server do not collide."""
+role has CREATEDB. Each run creates and drops its own database,
+savetube_test_<unix seconds>_<hex>, so concurrent runs against one server do not collide.
+Setup also drops databases of that pattern older than 24 hours, which killed runs leave behind."""
 
 import asyncio
 import os
+import re
 import secrets
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -34,7 +37,9 @@ from savetube.web.app import create_app
 from savetube.web.auth import User, current_user
 
 ADMIN_URL = os.environ.get("SAVETUBE_TEST_DATABASE_URL", "")
-TEST_DB = f"savetube_test_{secrets.token_hex(6)}"
+TEST_DB = f"savetube_test_{int(time.time())}_{secrets.token_hex(6)}"
+TEST_DB_RE = re.compile(r"savetube_test_(\d+)_[0-9a-f]+")
+STALE_AFTER_S = 24 * 3600
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
 
@@ -44,6 +49,13 @@ def test_dsn():
     admin = Settings(database_url=ADMIN_URL)
     engine = sa.create_engine(admin.sqlalchemy_url, isolation_level="AUTOCOMMIT")
     with engine.connect() as c:
+        query = r"SELECT datname FROM pg_database WHERE datname LIKE 'savetube\_test\_%'"
+        names = c.execute(sa.text(query)).scalars().all()
+        cutoff = time.time() - STALE_AFTER_S
+        for name in names:
+            m = TEST_DB_RE.fullmatch(name)
+            if m and int(m.group(1)) < cutoff:
+                c.execute(sa.text(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
         c.execute(sa.text(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
         c.execute(sa.text(f"CREATE DATABASE {TEST_DB}"))
     yield urlunsplit(urlsplit(ADMIN_URL)._replace(path=f"/{TEST_DB}"))
