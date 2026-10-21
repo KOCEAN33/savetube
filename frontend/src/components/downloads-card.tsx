@@ -55,13 +55,16 @@ function ProblemJob({ job }: { job: Job }) {
 export function DownloadsCard() {
   const [problemLimit, setProblemLimit] = useState(JOB_PAGE)
   const active = useQuery({
-    queryKey: ["jobs", "archive", "all", "active"],
-    queryFn: () =>
-      api.jobs({ kind: "archive", state: ["running", "queued"], limit: MAX_JOB_LIMIT }),
-    refetchInterval: (q) =>
-      q.state.data?.some((j) => j.state === "running") ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
+    queryKey: ["jobs", "archive", "all", "running"],
+    queryFn: () => api.jobs({ kind: "archive", state: ["running"] }),
+    refetchInterval: (q) => (q.state.data?.length ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS),
   })
-  const busy = active.data?.some((j) => j.state === "running") ?? false
+  const busy = (active.data?.length ?? 0) > 0
+  const counts = useQuery({
+    queryKey: ["jobs", "archive", "all", "counts"],
+    queryFn: () => api.jobCounts({ kind: "archive" }),
+    refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
+  })
   const problems = useQuery({
     queryKey: ["jobs", "archive", "all", "problems", problemLimit],
     queryFn: () =>
@@ -70,17 +73,16 @@ export function DownloadsCard() {
     refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
   })
 
-  const running = active.data?.filter((j) => j.state === "running") ?? []
-  const queued = active.data?.filter((j) => j.state === "queued").length ?? 0
-  // The list stops at MAX_JOB_LIMIT jobs, so a full list may hide more.
-  const queuedLabel = active.data?.length === MAX_JOB_LIMIT ? `${queued}+` : `${queued}`
+  const running = active.data ?? []
 
   return (
     <Card className="gap-0 py-0">
       <CardHeader className="border-b py-4">
         <CardTitle>Downloads</CardTitle>
         <CardDescription>
-          {active.data ? `${running.length} running, ${queuedLabel} queued` : "Loading"}
+          {counts.data
+            ? `${counts.data.running} running, ${counts.data.queued} queued`
+            : "Loading"}
         </CardDescription>
       </CardHeader>
       <CardContent className="px-0">

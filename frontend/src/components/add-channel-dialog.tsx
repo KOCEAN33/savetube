@@ -486,6 +486,13 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
                     ? `${choice.picked.length} picked`
                     : "none"}
               </span>
+              {(choice.playlists === "all" ||
+                (choice.playlists === "some" && choice.picked.length > 0)) && (
+                <span>
+                  Videos other channels uploaded to these playlists:{" "}
+                  {choice.otherChannels ? "download" : "skip"}
+                </span>
+              )}
               <span>Live recording: {choice.watchLives ? "on" : "off"}</span>
               <span>
                 Words: include {words.include_words.join(", ") || "any"}, exclude{" "}

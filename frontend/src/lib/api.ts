@@ -140,6 +140,8 @@ export interface VideoDetail extends Video {
   info: Record<string, unknown> | null
 }
 
+export type VideoOrder = "newest" | "oldest"
+
 export interface VideoPage {
   total: number
   items: Video[]
@@ -369,14 +371,21 @@ export const api = {
     request<TitleKept[]>("POST", "/api/title-preview", body),
   jobs: (query: { kind?: JobKind; state?: JobState[]; channel_id?: string; limit?: number }) =>
     get<Job[]>("/api/jobs", query),
+  // Every state is present, zero when no job holds it.
+  jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
+    get<Record<JobState, number>>("/api/jobs/counts", query),
   videos: (query: {
     // The uploader.
     channel_id?: string
     // The uploader, or a channel whose sources list the video.
     listed_by?: string
+    // Videos the source lists. A `playlists` parent lists through its children.
+    source_id?: number
     type?: string
     state?: string
     q?: string
+    // By upload date. Default newest.
+    order?: VideoOrder
     limit?: number
     offset?: number
   }) => get<VideoPage>("/api/videos", query),

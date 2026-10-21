@@ -15,13 +15,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { api, mutations } from "@/lib/api"
+import { IDLE_REFETCH_MS } from "@/lib/channel"
 
 // Pauses or resumes every archive download. Pausing asks first, because it
 // stops the downloads that are running.
 export function DownloadPauseToggle() {
   const queryClient = useQueryClient()
   const [confirming, setConfirming] = useState(false)
-  const settings = useQuery({ queryKey: ["download-settings"], queryFn: api.downloadSettings })
+  // The interval shows a change another tab made.
+  const settings = useQuery({
+    queryKey: ["download-settings"],
+    queryFn: api.downloadSettings,
+    refetchInterval: IDLE_REFETCH_MS,
+  })
   const toggle = useMutation({
     mutationFn: mutations.setDownloadsPaused,
     onSuccess: (updated) => {

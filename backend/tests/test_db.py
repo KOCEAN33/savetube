@@ -1,8 +1,13 @@
 """Runs against a real Postgres. SAVETUBE_TEST_DATABASE_URL is an admin URL whose
-role has CREATEDB. Each run creates and drops its own database, savetube_test."""
+role has CREATEDB. Each run creates and drops its own database,
+savetube_test_<unix seconds>_<hex>, so concurrent runs against one server do not collide.
+Setup also drops databases of that pattern older than 24 hours, which killed runs leave behind."""
 
 import asyncio
 import os
+import re
+import secrets
+import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -32,7 +37,9 @@ from savetube.web.app import create_app
 from savetube.web.auth import User, current_user
 
 ADMIN_URL = os.environ.get("SAVETUBE_TEST_DATABASE_URL", "")
-TEST_DB = "savetube_test"
+TEST_DB = f"savetube_test_{int(time.time())}_{secrets.token_hex(6)}"
+TEST_DB_RE = re.compile(r"savetube_test_(\d+)_[0-9a-f]+")
+STALE_AFTER_S = 24 * 3600
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
 
@@ -42,6 +49,13 @@ def test_dsn():
     admin = Settings(database_url=ADMIN_URL)
     engine = sa.create_engine(admin.sqlalchemy_url, isolation_level="AUTOCOMMIT")
     with engine.connect() as c:
+        query = r"SELECT datname FROM pg_database WHERE datname LIKE 'savetube\_test\_%'"
+        names = c.execute(sa.text(query)).scalars().all()
+        cutoff = time.time() - STALE_AFTER_S
+        for name in names:
+            m = TEST_DB_RE.fullmatch(name)
+            if m and int(m.group(1)) < cutoff:
+                c.execute(sa.text(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
         c.execute(sa.text(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
         c.execute(sa.text(f"CREATE DATABASE {TEST_DB}"))
     yield urlunsplit(urlsplit(ADMIN_URL)._replace(path=f"/{TEST_DB}"))
@@ -142,6 +156,12 @@ def test_api_reports_only_stored_videos(settings):
     with engine.begin() as c:
         c.execute(
             sa.text("INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')")
+        )
+        c.execute(
+            sa.text(
+                "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes)"
+                " VALUES ('https://www.youtube.com/@a/videos', 'tab', 'UC1', true, 360)"
+            )
         )
         c.execute(
             sa.text(
@@ -262,6 +282,9 @@ async def test_poll_queues_unstored_videos_once(settings):
         # A new job waits for the dispatcher, with no queue job of its own.
         assert all(j.state is JobState.QUEUED and j.queue_job_id is None for j in jobs.values())
         assert (await session.get(Video, "new")).state is VideoState.PENDING
+        # A requeued failure waits as pending. One out of attempts stays failed.
+        assert (await session.get(Video, "retry")).state is VideoState.PENDING
+        assert (await session.get(Video, "gave_up")).state is VideoState.FAILED
         assert (await session.get(Video, "new")).channel_id == "UC1"
         assert await session.get(Video, "upcoming") is None
         assert (await session.get(Channel, "UC1")).dir_name == "Chan [UC1]"
@@ -1481,6 +1504,63 @@ async def test_poll_links_every_stored_video_and_cancels_queued_jobs_the_words_d
     # Another source lists `shared`, so this source's words do not cancel it.
     assert states[105] is JobState.QUEUED
     await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_queued_job_another_source_lists_is_cancelled_unless_an_archiving_source_wants_it(
+    settings,
+):
+    tab = f"https://www.youtube.com/channel/{VESP}"
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, archiving,"
+        " poll_interval_minutes, exclude_words) VALUES"
+        f" (1, '{tab}/streams', 'tab', '{VESP}', true, true, 360, '{{告知}}'),"
+        # Wants every title.
+        f" (2, '{tab}/videos', 'tab', '{VESP}', true, true, 360, '{{}}'),"
+        # Skips the title too.
+        f" (3, '{PL}A', 'playlist', '{VESP}', true, true, 360, '{{告知}}'),"
+        f" (4, '{PL}B', 'playlist', '{VESP}', true, false, 360, '{{}}'),"
+        f" (5, '{PL}C', 'playlist', '{VESP}', false, true, 360, '{{}}')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        f" ('wanted', '{VESP}', 'lives', 'w', 'pending'),"
+        f" ('also_skipped', '{VESP}', 'lives', 'a', 'pending'),"
+        f" ('not_archiving', '{VESP}', 'lives', 'n', 'pending'),"
+        f" ('disabled', '{VESP}', 'lives', 'd', 'pending')",
+        "INSERT INTO video_source (video_id, source_id) VALUES"
+        " ('wanted', 2), ('wanted', 3), ('also_skipped', 3), ('not_archiving', 4),"
+        " ('disabled', 5)",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (101, 'archive', 'queued', 'wanted', 0),"
+        " (102, 'archive', 'queued', 'also_skipped', 0),"
+        " (103, 'archive', 'queued', 'not_archiving', 0),"
+        " (104, 'archive', 'queued', 'disabled', 0)",
+        "SELECT setval('job_id_seq', 200)",
+    )
+    listing = {
+        "channel_id": VESP,
+        "channel": "VESPERBELL",
+        "entries": [
+            {"id": v, "title": f"告知 {v}", "live_status": "was_live"}
+            for v in ("wanted", "also_skipped", "not_archiving", "disabled")
+        ],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await _poll(sessionmaker, settings, 1, listing)
+    async with sessionmaker() as session:
+        states = dict(
+            (await session.execute(sa.select(Job.id, Job.state).where(Job.id > 100))).all()
+        )
+    await engine.dispose()
+    assert states == {
+        101: JobState.QUEUED,
+        102: JobState.CANCELLED,
+        103: JobState.CANCELLED,
+        104: JobState.CANCELLED,
+    }
 
 
 def _profiles(settings, *names):
@@ -2970,6 +3050,33 @@ def test_a_channel_page_sees_videos_its_tabs_list_from_another_uploader(settings
     assert [j["id"] for j in jobs] == [1]
 
 
+def test_api_lists_a_source_s_videos_a_playlists_parent_s_and_oldest_first(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO source (id, url, kind, channel_id, parent_id, enabled, poll_interval_minutes)"
+        " VALUES (1, 'https://www.youtube.com/@a/playlists', 'playlists', 'UC1', NULL, true, 360),"
+        " (2, 'https://www.youtube.com/playlist?list=PL2', 'playlist', 'UC1', 1, true, 360),"
+        " (3, 'https://www.youtube.com/playlist?list=PL3', 'playlist', 'UC1', 1, true, 360),"
+        " (4, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', NULL, true, 360)",
+        "INSERT INTO video (id, channel_id, type, title, state, upload_date) VALUES"
+        " ('p2', 'UC1', 'videos', 'in PL2', 'complete', '2026-01-03'),"
+        " ('p3', 'UC1', 'videos', 'in PL3', 'complete', '2026-01-02'),"
+        " ('tab', 'UC1', 'videos', 'tab only', 'complete', '2026-01-01')",
+        "INSERT INTO video_source (video_id, source_id) VALUES"
+        " ('p2', 2), ('p3', 3), ('p2', 4), ('tab', 4)",
+    )
+    with _api(settings) as client:
+        one = client.get("/api/videos", params={"source_id": 2}).json()
+        parent = client.get("/api/videos", params={"source_id": 1}).json()
+        tab = client.get("/api/videos", params={"source_id": 4, "q": "tab"}).json()
+        oldest = client.get("/api/videos", params={"source_id": 1, "order": "oldest"}).json()
+    assert [v["id"] for v in one["items"]] == ["p2"] and one["total"] == 1
+    assert [v["id"] for v in parent["items"]] == ["p2", "p3"] and parent["total"] == 2
+    assert [v["id"] for v in tab["items"]] == ["tab"]
+    assert [v["id"] for v in oldest["items"]] == ["p3", "p2"]
+
+
 @pytest.mark.anyio
 async def test_a_failed_live_check_is_one_warning_with_the_channel_name(settings, caplog):
     import logging
@@ -3022,6 +3129,61 @@ def test_api_channel_counts_use_the_channel_page_rule(settings):
         patched = client.patch("/api/channels/UC1", json={"watch_lives": False}).json()
     assert counts == {"UC1": (2, 120), "UC2": (2, 23)}
     assert (patched["video_count"], patched["bytes"]) == (2, 120)
+
+
+def test_api_channel_statistics_follow_the_channel_list_rule(settings):
+    # UC2 uploaded a video UC1's playlist lists and another one no source lists.
+    # No source names UC2.
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]'),"
+        " ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
+        " other_channels) VALUES"
+        " (1, 'https://www.youtube.com/playlist?list=PLa', 'playlist', 'UC1', true, 360, true),"
+        " (2, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', true, 360, false)",
+        "INSERT INTO video (id, channel_id, type, title, state, size_bytes) VALUES"
+        " ('own', 'UC1', 'videos', 'own', 'complete', 100),"
+        " ('guest', 'UC2', 'videos', 'guest', 'complete', 20),"
+        " ('pending', 'UC2', 'videos', 'p', 'pending', 7),"
+        " ('elsewhere', 'UC2', 'videos', 'b only', 'complete', 3)",
+        "INSERT INTO video_source (video_id, source_id) VALUES"
+        " ('own', 2), ('guest', 1), ('guest', 2), ('pending', 1)",
+    )
+    with _api(settings) as client:
+        summary = client.get("/api/stats/summary").json()
+    # Two sources listing one video count it once.
+    assert summary["by_channel"] == [{"channel_id": "UC1", "name": "A", "bytes": 120, "count": 2}]
+    assert (summary["total_bytes"], summary["video_count"]) == (123, 3)
+
+
+def test_api_counts_jobs_by_state(settings):
+    _job_rows(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v2', 'UC2', 'videos', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'running', 'busy1', 1), (3, 'archive', 'queued', 'busy2', 0),"
+        " (4, 'archive', 'queued', 'v2', 0), (5, 'record', 'queued', 'busy2', 0)",
+    )
+    with _api(settings) as client:
+        archive = client.get("/api/jobs/counts", params={"kind": "archive"}).json()
+        of_uc1 = client.get(
+            "/api/jobs/counts", params={"kind": "archive", "channel_id": "UC1"}
+        ).json()
+        every = client.get("/api/jobs/counts").json()
+    assert archive == {
+        "queued": 3,
+        "running": 1,
+        "succeeded": 0,
+        "failed": 0,
+        "missed": 0,
+        "cancelled": 0,
+        "interrupted": 0,
+    }
+    assert (of_uc1["queued"], of_uc1["running"]) == (2, 1)
+    assert every["queued"] == 4
 
 
 def test_api_marks_a_channel_tracked_only_when_a_source_names_it(settings):
@@ -3194,6 +3356,59 @@ async def test_a_worker_shutdown_interrupts_the_download_and_keeps_its_parts(set
     [line] = _events(caplog, "job.interrupted")
     assert line.levelno == logging.INFO
     assert (_fields(line)["job"], _fields(line)["video"]) == (1, "v1")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("reported", [True, False])
+async def test_an_interruption_clears_progress_to_sql_null(settings, reported):
+    from savetube.jobs import run
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    started = asyncio.Event()
+
+    async def downloading(params, report):
+        if reported:
+            await report({"percent": 50})
+        started.set()
+        await asyncio.Event().wait()
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    task = asyncio.create_task(
+        run(1, settings, live=False, runner=_Steps(downloading), sessionmaker=sessionmaker)
+    )
+    await asyncio.wait_for(started.wait(), 10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await engine.dispose()
+    # A JSON null is IS NOT NULL in SQL, so the hourly cleanup would count it.
+    rows = _sql_rows(settings, "SELECT id, progress FROM job WHERE progress IS NOT NULL")
+    assert rows == ([(201, {"percent": 50})] if reported else [])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("chat", "langs"),
+    [
+        # yt-dlp writes a subtitle to the temp path and renames a finished chat
+        # from its `.part`, so a file under its final name is complete.
+        (".tmp/v1.live_chat.json", ["all", "-live_chat"]),
+        ("v1.live_chat.json", ["all", "-live_chat"]),
+        (".tmp/v1.live_chat.json.part", ["all"]),
+        (None, ["all"]),
+    ],
+)
+async def test_a_resumed_run_skips_a_finished_chat_replay(settings, chat, langs):
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    workdir = settings.incoming_root / "v1"
+    if chat is not None:
+        (workdir / chat).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / chat).write_text("{}")
+    runner = _Steps(_finished())
+    await _run_steps(settings, runner)
+    [params] = runner.calls
+    assert params["subtitleslangs"] == langs
 
 
 @pytest.mark.anyio
@@ -3547,6 +3762,9 @@ async def test_a_youtube_block_interrupts_the_archive_job_and_pauses_downloads(s
     assert _events(caplog, "job.failed") == []
     [line] = _events(caplog, "job.interrupted")
     assert line.levelno == logging.WARNING and _fields(line)["reason"] == "blocked by YouTube"
+    fields = _fields(line)
+    assert list(fields) == ["job", "video", "channel", "title", "took", "present", "reason"]
+    assert fields["present"] == "2KiB"
     [blocked] = _events(caplog, "dispatch.blocked")
     assert blocked.levelno == logging.WARNING
     fields = _fields(blocked)
@@ -3590,22 +3808,25 @@ READ_TIMEOUT = (
 )
 
 
-def _network_step(message=READ_TIMEOUT):
+def _network_step(message=READ_TIMEOUT, progress=True):
     async def step(params, report):
         from savetube.jobs import DownloadFailed
 
-        _part(params)
+        if progress:
+            _part(params)
         await report({"event": "format", "format_id": "251"})
         raise DownloadFailed(message)
 
     return step
 
 
-def _network_rows(count, minutes_ago=10):
-    """`count` earlier network interruptions of v1's archive job."""
+def _network_rows(count, minutes_ago=10, progress=False):
+    """`count` earlier network interruptions of v1's archive job, each with or
+    without bytes added."""
+    prefix = "network error" if progress else "network error, no progress"
     return [
         "INSERT INTO job (kind, state, video_id, attempts, log_tail, finished_at) VALUES"
-        f" ('archive', 'interrupted', 'v1', 1, 'network error: x',"
+        f" ('archive', 'interrupted', 'v1', 1, '{prefix}: x',"
         f" now() - interval '{minutes_ago + i} minutes')"
         for i in range(count)
     ]
@@ -3624,6 +3845,9 @@ def _network_rows(count, minutes_ago=10):
             "INSERT INTO job (kind, state, video_id, attempts, log_tail, finished_at) VALUES"
             " ('archive', 'failed', 'v1', 1, 'x', now() - interval '30 minutes')",
         ],
+        # A run that added bytes resets the count, however many came before.
+        _network_rows(5),
+        _network_rows(10, progress=True),
     ],
 )
 async def test_a_network_error_interrupts_the_archive_job_and_keeps_the_parts(
@@ -3648,10 +3872,35 @@ async def test_a_network_error_interrupts_the_archive_job_and_keeps_the_parts(
     assert _events(caplog, "job.failed") == [] and _events(caplog, "dispatch.blocked") == []
     [line] = _events(caplog, "job.interrupted")
     assert line.levelno == logging.WARNING and _fields(line)["reason"] == "network error"
+    fields = _fields(line)
+    assert list(fields) == [
+        *("job", "video", "channel", "title", "took", "present", "added", "reason")
+    ]
+    assert (fields["present"], fields["added"]) == ("2KiB", "2KiB")
 
 
 @pytest.mark.anyio
-async def test_a_sixth_network_error_in_a_row_fails_the_job(settings, caplog):
+@pytest.mark.parametrize(
+    "earlier",
+    [
+        _network_rows(4),
+        # Stalls after the last run that added bytes still count.
+        [*_network_rows(4), *_network_rows(1, minutes_ago=60, progress=True)],
+    ],
+)
+async def test_a_network_error_with_no_bytes_added_is_marked_as_a_stall(settings, earlier):
+    _job_rows(
+        settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)", *earlier
+    )
+    known = set(_job_ids(settings))
+    jobs, _ = await _run_steps(settings, _Steps(_network_step(progress=False)))
+    [history] = [j for j in jobs.values() if j.id not in known]
+    assert history.log_tail == f"network error, no progress: {READ_TIMEOUT}"
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.QUEUED, 0)
+
+
+@pytest.mark.anyio
+async def test_a_sixth_network_stall_in_a_row_fails_the_job(settings, caplog):
     import logging
 
     _job_rows(
@@ -3659,10 +3908,11 @@ async def test_a_sixth_network_error_in_a_row_fails_the_job(settings, caplog):
         "UPDATE channel SET format = 'wa'",
         "SELECT setval('job_id_seq', 200)",
         *_network_rows(5),
+        *_network_rows(3, minutes_ago=60, progress=True),
     )
     known = set(_job_ids(settings))
     with caplog.at_level(logging.INFO, logger="savetube"):
-        jobs, video = await _run_steps(settings, _Steps(_network_step()))
+        jobs, video = await _run_steps(settings, _Steps(_network_step(progress=False)))
     assert set(jobs) == known
     assert (jobs[1].state, jobs[1].attempts) == (JobState.FAILED, 1)
     assert jobs[1].log_tail == READ_TIMEOUT
@@ -3849,6 +4099,37 @@ def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
     assert not columns & {"blocked_until", "block_count"}
 
 
+def test_migration_0012_sets_failed_videos_with_a_queued_archive_job_pending(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0011")
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('waits', 'UC1', 'videos', 't', 'failed'), ('gave_up', 'UC1', 'videos', 't', 'failed'),"
+        " ('recorded', 'UC1', 'lives', 't', 'failed'), ('done', 'UC1', 'videos', 't', 'complete')",
+        "INSERT INTO job (kind, state, video_id, attempts) VALUES"
+        " ('archive', 'failed', 'waits', 1), ('archive', 'queued', 'waits', 0),"
+        " ('archive', 'failed', 'gave_up', 1),"
+        " ('record', 'queued', 'recorded', 0),"
+        " ('archive', 'queued', 'done', 0)",
+    )
+    command.upgrade(cfg, "head")
+    states = dict(_sql_rows(settings, "SELECT id, state FROM video"))
+    assert states == {
+        "waits": "pending",
+        "gave_up": "failed",
+        "recorded": "failed",
+        "done": "complete",
+    }
+    command.downgrade(cfg, "0011")
+    assert dict(_sql_rows(settings, "SELECT id, state FROM video"))["waits"] == "pending"
+
+
 @pytest.mark.anyio
 async def test_dispatch_sends_nothing_while_paused_and_leaves_no_deferral(settings):
     from savetube.limits import TIMEZONE
@@ -3920,6 +4201,173 @@ async def test_a_pause_interrupts_a_running_archive_download_and_keeps_its_parts
     assert line.levelno == logging.INFO and _fields(line)["reason"] == "paused by user"
 
 
+SECOND_RUN_START = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+
+
+async def _reclaim_and_start_again(settings):
+    """The scheduler reclaims job 1 from a live worker, and a second run of it
+    starts, pins its own format, and works in the same directory."""
+    from savetube.jobs import reclaim_stalled
+
+    async def stalled():
+        return [(500, 1)]
+
+    async def finish(queue_job_id):
+        pass
+
+    engine = make_engine(settings.sqlalchemy_url)
+    await reclaim_stalled(make_sessionmaker(engine), settings, stalled=stalled, finish=finish)
+    await engine.dispose()
+    _sql(
+        settings,
+        "UPDATE job SET state = 'running', attempts = 1, queue_job_id = 501,"
+        f" started_at = '{SECOND_RUN_START.isoformat()}' WHERE id = 1",
+        "UPDATE video SET state = 'downloading', resume_format = '140' WHERE id = 'v1'",
+    )
+
+
+def _assert_left_to_the_second_run(settings, jobs, video, caplog):
+    import logging
+
+    # Only the reclaim wrote a history row.
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert history.log_tail == "worker stopped during the download"
+    owner = jobs[1]
+    assert (owner.state, owner.queue_job_id, owner.attempts) == (JobState.RUNNING, 501, 1)
+    assert owner.started_at == SECOND_RUN_START and owner.finished_at is None
+    assert (video.state, video.resume_format) == (VideoState.DOWNLOADING, "140")
+    assert video.dir_path is None
+    assert (settings.incoming_root / "v1").is_dir()
+    [line] = _events(caplog, "job.disowned")
+    fields = _fields(line)
+    assert line.levelno == logging.WARNING
+    assert (fields["job"], fields["video"]) == (1, "v1")
+    assert fields["reason"]
+    assert _events(caplog, "job.failed") == []
+    assert _events(caplog, "job.done") == []
+    assert [_fields(r)["reason"] for r in _events(caplog, "job.interrupted")] == [
+        "worker stopped during the download"
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_run_whose_job_was_reclaimed_stops_and_leaves_the_directory(
+    settings, caplog, monkeypatch
+):
+    import logging
+
+    from savetube import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.05)
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    cancelled = asyncio.Event()
+
+    async def downloading(params, report):
+        _part(params)
+        await report({"event": "format", "format_id": "251"})
+        await _reclaim_and_start_again(settings)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(_run_steps(settings, _Steps(downloading)), 10)
+
+    assert cancelled.is_set()
+    _assert_left_to_the_second_run(settings, jobs, video, caplog)
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+
+
+@pytest.mark.anyio
+async def test_a_disowned_run_that_finishes_moves_nothing_into_the_tree(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    finished = _finished()
+
+    async def done_after_reclaim(params, report):
+        info = await finished(params, report)
+        await _reclaim_and_start_again(settings)
+        return info
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(_run_steps(settings, _Steps(done_after_reclaim)), 10)
+
+    _assert_left_to_the_second_run(settings, jobs, video, caplog)
+    assert (settings.incoming_root / "v1" / "v1.webm").read_bytes() == b"mmmmm"
+    assert not (settings.archive_root / "A [UC1]").exists()
+
+
+@pytest.mark.anyio
+async def test_a_disowned_run_that_fails_writes_nothing(settings, caplog):
+    import logging
+
+    from savetube.jobs import DownloadFailed
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+
+    async def fails_after_reclaim(params, report):
+        _part(params)
+        await _reclaim_and_start_again(settings)
+        raise DownloadFailed("ERROR: something broke")
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(_run_steps(settings, _Steps(fails_after_reclaim)), 10)
+
+    _assert_left_to_the_second_run(settings, jobs, video, caplog)
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+
+
+@pytest.mark.anyio
+async def test_a_disowned_run_reports_nothing_onto_the_new_owners_row(settings, caplog):
+    import logging
+
+    from savetube.jobs import DownloadFailed
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+
+    async def reports_after_reclaim(params, report):
+        _part(params)
+        await _reclaim_and_start_again(settings)
+        _sql(settings, """UPDATE job SET progress = '{"percent": 50.0}' WHERE id = 1""")
+        await report({"percent": 10.0})
+        await report({"event": "format", "format_id": "251"})
+        raise DownloadFailed("ERROR: something broke")
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(
+            _run_steps(settings, _Steps(reports_after_reclaim)), 10
+        )
+
+    _assert_left_to_the_second_run(settings, jobs, video, caplog)
+    assert jobs[1].progress == {"percent": 50.0}
+
+
+@pytest.mark.anyio
+async def test_reclaim_takes_a_worker_as_stalled_after_300_s_without_a_heartbeat(
+    settings, monkeypatch
+):
+    from savetube import scheduler
+    from savetube.queue import app
+
+    asked = []
+
+    async def get_stalled_jobs(**kwargs):
+        asked.append(kwargs)
+        return []
+
+    engine = make_engine(settings.sqlalchemy_url)
+    monkeypatch.setattr(scheduler, "default_sessionmaker", lambda: make_sessionmaker(engine))
+    monkeypatch.setattr(app.job_manager, "get_stalled_jobs", get_stalled_jobs)
+    await scheduler.reclaim(settings)
+    await engine.dispose()
+    [kwargs] = asked
+    assert kwargs["seconds_since_heartbeat"] == 300
+    assert (kwargs["queue"], kwargs["task_name"]) == ("archive", "archive")
+
+
 @pytest.mark.anyio
 async def test_a_pause_never_cancels_a_live_recording(settings, monkeypatch):
     from savetube import jobs as jobs_module
@@ -3966,3 +4414,125 @@ def test_api_pauses_and_resumes_archive_downloads(settings, caplog):
     [paused] = _events(caplog, "dispatch.paused")
     [resumed] = _events(caplog, "dispatch.resumed")
     assert paused.levelno == resumed.levelno == logging.INFO
+
+
+async def _work(settings, monkeypatch, step, *, reclaim):
+    """A real worker takes job 1's queue job. With `reclaim`, the run first
+    plays the scheduler's reclaim, which fails that queue job, and a second
+    run's start. Returns the queue job's id."""
+    from procrastinate import PsycopgConnector
+    from procrastinate.jobs import Status
+
+    from savetube import jobs as jobs_module
+    from savetube.db import PSYCOPG_CONNECT_ARGS
+    from savetube.queue import ARCHIVE_QUEUE, app, archive
+
+    real_run = jobs_module.run
+    engine = make_engine(settings.sqlalchemy_url)
+
+    async def first(params, report):
+        if reclaim:
+            await app.job_manager.finish_job_by_id_async(
+                queue_job_id, status=Status.FAILED, delete_job=False
+            )
+            await _reclaim_and_start_again(settings)
+        return await step(params, report)
+
+    async def run(job_id, _settings, *, live, runner):
+        await real_run(
+            job_id,
+            settings,
+            live=live,
+            runner=_Steps(first),
+            sessionmaker=make_sessionmaker(engine),
+            tools=_FakeTools(),
+        )
+
+    monkeypatch.setattr(jobs_module, "run", run)
+    connector = PsycopgConnector(conninfo=settings.conninfo, kwargs=PSYCOPG_CONNECT_ARGS)
+    with app.replace_connector(connector):
+        async with app.open_async():
+            queue_job_id = await archive.defer_async(job_id=1)
+            _sql(settings, f"UPDATE job SET queue_job_id = {queue_job_id} WHERE id = 1")
+            # The worker settings of savetube.cli.
+            await asyncio.wait_for(
+                app.run_worker_async(
+                    queues=[ARCHIVE_QUEUE],
+                    wait=False,
+                    listen_notify=False,
+                    delete_jobs="successful",
+                    install_signal_handlers=False,
+                ),
+                10,
+            )
+    await engine.dispose()
+    return queue_job_id
+
+
+def _errors(caplog):
+    import logging
+
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["done", "failed"])
+async def test_a_worker_ends_a_reclaimed_queue_job_without_an_error(
+    settings, caplog, monkeypatch, outcome
+):
+    import gc
+    import logging
+
+    from savetube.jobs import DownloadFailed
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    finished = _finished()
+
+    async def step(params, report):
+        if outcome == "failed":
+            _part(params)
+            raise DownloadFailed("ERROR: something broke")
+        return await finished(params, report)
+
+    with caplog.at_level(logging.DEBUG):
+        queue_job_id = await _work(settings, monkeypatch, step, reclaim=True)
+        # An unretrieved task exception logs when the task is collected.
+        gc.collect()
+
+    assert _errors(caplog) == []
+    assert [_fields(r)["job"] for r in _events(caplog, "job.disowned")] == [1]
+    rows = _sql_rows(settings, f"SELECT status FROM procrastinate_jobs WHERE id = {queue_job_id}")
+    assert rows == [("failed",)]
+
+
+@pytest.mark.anyio
+async def test_a_worker_still_ends_its_own_queue_job(settings, caplog, monkeypatch):
+    import gc
+    import logging
+
+    from procrastinate import PsycopgConnector
+    from procrastinate.exceptions import ConnectorException
+    from procrastinate.jobs import Job as QueueJob
+    from procrastinate.jobs import Status
+
+    from savetube.db import PSYCOPG_CONNECT_ARGS
+    from savetube.queue import app
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    with caplog.at_level(logging.DEBUG):
+        queue_job_id = await _work(settings, monkeypatch, _finished(), reclaim=False)
+        gc.collect()
+
+    assert _errors(caplog) == []
+    assert [_fields(r)["job"] for r in _events(caplog, "job.done")] == [1]
+    rows = _sql_rows(settings, f"SELECT id FROM procrastinate_jobs WHERE id = {queue_job_id}")
+    assert rows == []
+
+    # Only a queue job the reclaim failed counts as already ended.
+    ended = _queue_row(settings, "succeeded")
+    job = QueueJob(id=ended, queue="archive", lock=None, queueing_lock=None, task_name="archive")
+    connector = PsycopgConnector(conninfo=settings.conninfo, kwargs=PSYCOPG_CONNECT_ARGS)
+    with app.replace_connector(connector):
+        async with app.open_async():
+            with pytest.raises(ConnectorException):
+                await app.job_manager.finish_job(job, Status.SUCCEEDED, delete_job=True)

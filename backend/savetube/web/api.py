@@ -253,6 +253,8 @@ async def me(user: CurrentUser) -> User:
 _size = func.coalesce(func.sum(Video.size_bytes), 0)
 # Statistics count what sits in the tree, not pending or failed downloads.
 _stored = Video.state == VideoState.COMPLETE
+# A channel the user added: at least one source names it.
+_tracked = select(Source.id).where(Source.channel_id == Channel.id).exists()
 
 
 @router.get("/stats/summary")
@@ -274,7 +276,10 @@ async def summary(session: Session) -> Summary:
             _size.label("bytes"),
             func.count(Video.id).label("count"),
         )
-        .join(Video, (Video.channel_id == Channel.id) & _stored)
+        # The channel list's rule: tracked channels only, and a video counts
+        # when the channel uploaded it or one of its sources lists it.
+        .join(Video, _of_channel(Channel.id) & _stored)
+        .where(_tracked)
         .group_by(Channel.id)
         .order_by(_size.desc())
     )
@@ -321,7 +326,7 @@ def _channels_query():
             Channel.avatar_url,
             func.count(Video.id).label("video_count"),
             _size.label("bytes"),
-            select(Source.id).where(Source.channel_id == Channel.id).exists().label("tracked"),
+            _tracked.label("tracked"),
         )
         # The channel page's rule: uploaded by the channel or listed by its sources.
         .outerjoin(Video, _of_channel(Channel.id) & _stored)
@@ -957,15 +962,34 @@ async def jobs(
     ]
 
 
+@router.get("/jobs/counts")
+async def job_counts(
+    session: Session, kind: JobKind | None = None, channel_id: str | None = None
+) -> dict[JobState, int]:
+    """The number of jobs in each state, every state present."""
+    q = select(Job.state, func.count()).group_by(Job.state)
+    if kind:
+        q = q.where(Job.kind == kind)
+    if channel_id:
+        q = q.outerjoin(Video, Video.id == Job.video_id).where(_of_channel(channel_id))
+    counts = dict.fromkeys(JobState, 0)
+    counts.update({state: n for state, n in await session.execute(q)})
+    return counts
+
+
 @router.get("/videos")
 async def videos(
     session: Session,
     channel_id: str | None = None,
     # The channel page's view: also the videos the channel's sources list.
     listed_by: str | None = None,
+    # Videos the source lists. A `playlists` parent lists through its children.
+    source_id: int | None = None,
     type: VideoType | None = None,
     state: VideoState | None = None,
     q: str | None = None,
+    # By upload date. A video without one sorts last either way.
+    order: Literal["newest", "oldest"] = "newest",
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> VideoPage:
@@ -974,6 +998,12 @@ async def videos(
         where.append(Video.channel_id == channel_id)
     if listed_by:
         where.append(_of_channel(listed_by))
+    if source_id is not None:
+        sources = select(Source.id).where(
+            (Source.id == source_id) | (Source.parent_id == source_id)
+        )
+        listed = select(VideoSource.video_id).where(VideoSource.source_id.in_(sources))
+        where.append(Video.id.in_(listed))
     if type:
         where.append(Video.type == type)
     if state:
@@ -982,10 +1012,11 @@ async def videos(
         pattern = f"%{q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
         where.append(or_(Video.title.ilike(pattern), Video.id == q))
     total = await session.scalar(select(func.count()).select_from(Video).where(*where))
+    by_date = Video.upload_date.desc() if order == "newest" else Video.upload_date.asc()
     items = await session.scalars(
         select(Video)
         .where(*where)
-        .order_by(Video.upload_date.desc().nulls_last(), Video.id)
+        .order_by(by_date.nulls_last(), Video.id)
         .limit(limit)
         .offset(offset)
     )

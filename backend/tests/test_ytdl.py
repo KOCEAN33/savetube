@@ -23,6 +23,51 @@ def test_live_params_record_from_start_without_pre_download_sleep(tmp_path):
     assert p["sleep_interval_requests"] == 0.75
 
 
+def test_a_dropped_connection_resumes_inside_one_download(tmp_path):
+    """yt-dlp as a library retries nothing unless `retries` is set, so one
+    dropped connection ended the whole run."""
+    import http.server
+    import threading
+
+    from yt_dlp import YoutubeDL
+    from yt_dlp.downloader.http import HttpFD
+
+    body = bytes(range(256)) * 4096
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            start = int((self.headers.get("Range") or "bytes=0-").split("=")[1].split("-")[0])
+            requests.append(start)
+            rest = body[start:]
+            self.send_response(206 if start else 200)
+            self.send_header("Content-Length", str(len(rest)))
+            if start:
+                self.send_header("Content-Range", f"bytes {start}-{len(body) - 1}/{len(body)}")
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            # The first response stops halfway, as googlevideo did.
+            self.wfile.write(rest if start else rest[: len(rest) // 2])
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        params = build_params(tmp_path) | {"quiet": True, "noprogress": True}
+        target = tmp_path / "media.bin"
+        with YoutubeDL(params) as ydl:
+            ok = HttpFD(ydl, params).download(
+                str(target), {"url": f"http://127.0.0.1:{server.server_port}/media"}
+            )
+    finally:
+        server.shutdown()
+    assert ok and target.read_bytes() == body
+    # The retry continues near the cut, from the last block yt-dlp wrote.
+    assert len(requests) == 2 and 0 < requests[1] <= len(body) // 2
+
+
 def test_cookie_copy_is_writable_and_passed(tmp_path):
     src = tmp_path / "secret.txt"
     src.write_text("# Netscape HTTP Cookie File\n")

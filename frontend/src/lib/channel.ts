@@ -44,3 +44,13 @@ export function channelBase(channelId: string, sources: Source[]): string {
   if (own) return own.url.slice(0, own.url.lastIndexOf("/"))
   return `https://www.youtube.com/channel/${channelId}`
 }
+
+// Short name for a source: the playlist title, or the tab.
+export function sourceLabel(s: Source): string {
+  if (s.title) return s.title
+  if (s.kind === "playlists") return "All playlists"
+  const list = new URL(s.url).searchParams.get("list")
+  if (list) return list
+  const tab = s.url.slice(s.url.lastIndexOf("/") + 1)
+  return VIDEO_TABS.find((t) => t.tab === tab)?.label ?? tab
+}

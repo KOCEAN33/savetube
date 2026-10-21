@@ -2,6 +2,7 @@ import * as React from "react"
 import { Link } from "react-router"
 import { ArchiveIcon } from "lucide-react"
 
+import { NavChannels } from "@/components/nav-channels"
 import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import {
@@ -35,6 +36,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarHeader>
       <SidebarContent>
         <NavMain items={navItems} />
+        <NavChannels />
       </SidebarContent>
       <SidebarFooter>
         <NavUser />
