@@ -1,16 +1,20 @@
+import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router"
 
 import { JobsTable } from "@/components/jobs-table"
 import { QueryState } from "@/components/query-state"
+import { Button } from "@/components/ui/button"
 import { api, type Job } from "@/lib/api"
 import { formatBytes, formatDateTime, formatDuration } from "@/lib/format"
 
 // The worker writes progress every 5 s, so a faster refetch shows nothing new.
 const RUNNING_REFETCH_MS = 3_000
 const IDLE_REFETCH_MS = 15_000
-const QUEUED_SHOWN = 50
-const RECENT = 20
+// Each list shows a page and grows by a page per "Show more".
+const PAGE = 10
+// GET /api/jobs caps limit at 500.
+const MAX_LIMIT = 500
 
 function ProgressLine({ job }: { job: Job }) {
   const p = job.progress
@@ -71,23 +75,31 @@ function RunningJob({ job }: { job: Job }) {
 // The running download first, then the queued jobs in the order the
 // dispatcher takes them (oldest first), then the latest finished jobs.
 export function ChannelJobs({ channelId }: { channelId: string }) {
+  const [queuedShown, setQueuedShown] = useState(PAGE)
+  const [recentLimit, setRecentLimit] = useState(PAGE)
   const active = useQuery({
     queryKey: ["jobs", "archive", channelId, "active"],
     queryFn: () =>
-      api.jobs({ kind: "archive", channel_id: channelId, state: ["running", "queued"], limit: 500 }),
+      api.jobs({
+        kind: "archive",
+        channel_id: channelId,
+        state: ["running", "queued"],
+        limit: MAX_LIMIT,
+      }),
     refetchInterval: (q) =>
       q.state.data?.some((j) => j.state === "running") ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
   })
   const busy = active.data?.some((j) => j.state === "running") ?? false
   const recent = useQuery({
-    queryKey: ["jobs", "archive", channelId, "recent"],
+    queryKey: ["jobs", "archive", channelId, "recent", recentLimit],
     queryFn: () =>
       api.jobs({
         kind: "archive",
         channel_id: channelId,
         state: ["succeeded", "failed", "cancelled"],
-        limit: RECENT,
+        limit: recentLimit,
       }),
+    placeholderData: (previous) => previous,
     refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
   })
 
@@ -115,12 +127,17 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
               {queued.length === 0 ? (
                 <p className="p-3 text-sm text-muted-foreground">Nothing waits.</p>
               ) : (
-                <JobsTable jobs={queued.slice(0, QUEUED_SHOWN)} empty="" />
+                <JobsTable jobs={queued.slice(0, queuedShown)} empty="" />
               )}
-              {queued.length > QUEUED_SHOWN && (
-                <p className="p-3 text-xs text-muted-foreground">
-                  {queued.length - QUEUED_SHOWN} more wait after these.
-                </p>
+              {queued.length > queuedShown && (
+                <div className="flex items-center gap-3 p-3">
+                  <Button variant="outline" size="sm" onClick={() => setQueuedShown(queuedShown + PAGE)}>
+                    Show more
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {queued.length - queuedShown} more wait after these.
+                  </span>
+                </div>
               )}
             </>
           )
@@ -128,7 +145,23 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
       </QueryState>
       <h3 className="border-y bg-muted px-3 py-2 text-sm font-medium">Recently finished</h3>
       <QueryState query={recent}>
-        {(jobs) => <JobsTable jobs={jobs} empty="No finished job yet." />}
+        {(jobs) => (
+          <>
+            <JobsTable jobs={jobs} empty="No finished job yet." />
+            {/* A full page means more may exist. */}
+            {jobs.length >= recentLimit && recentLimit < MAX_LIMIT && (
+              <div className="p-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRecentLimit(Math.min(recentLimit + PAGE, MAX_LIMIT))}
+                >
+                  Show more
+                </Button>
+              </div>
+            )}
+          </>
+        )}
       </QueryState>
     </div>
   )
