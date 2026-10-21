@@ -91,10 +91,13 @@ class DispatchLog:
             )
         reason = None
         if d.waiting:
-            reason = "window" if d.opens is not None else "slots"
+            if d.blocked_until is not None:
+                reason = "blocked"
+            else:
+                reason = "window" if d.opens is not None else "slots"
         if reason != self._reason:
             self._reason = reason
-            if reason == "window":
+            if reason in ("window", "blocked"):
                 emit(
                     log,
                     logging.INFO,
@@ -128,6 +131,9 @@ class DispatchLog:
                 window=d.window or "none",
                 open="no" if d.opens is not None else "yes",
                 ratelimit=f"{human_bytes(d.rate_limit)}/s" if d.rate_limit else "none",
+                blocked=d.blocked_until.astimezone(TIMEZONE).isoformat(timespec="minutes")
+                if d.blocked_until
+                else "none",
             )
 
 

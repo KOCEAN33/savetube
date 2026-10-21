@@ -12,7 +12,7 @@ import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
@@ -23,8 +23,26 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from savetube import integrity, logs
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
-from savetube.db.models import Channel, Job, JobKind, JobState, Video, VideoState
-from savetube.limits import admit, load, lock, next_window_start, running
+from savetube.db.models import (
+    Channel,
+    DownloadSettings,
+    Job,
+    JobKind,
+    JobState,
+    Video,
+    VideoState,
+)
+from savetube.limits import (
+    TIMEZONE,
+    admit,
+    backoff,
+    blocked,
+    concurrency,
+    load,
+    lock,
+    next_window_start,
+    running,
+)
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
 from savetube.poll import MAX_ARCHIVE_ATTEMPTS
@@ -61,10 +79,22 @@ SHUTDOWN_LOG = "worker shut down during the download"
 FORMAT_GONE = "Requested format is not available"
 # A partial directory no queued or running job wants is deleted after this.
 ORPHAN_DAYS = 7
+BLOCKED_LOG = "blocked by YouTube"
+# yt-dlp's text when YouTube refuses this client rather than the video. Each
+# group matches when all its lowercase parts are in the message. The bot check
+# reads "Sign in to confirm you’re not a bot", with a straight or curly
+# apostrophe, so no part includes it.
+BLOCK_MARKERS = (("confirm you", "not a bot"), ("http error 429",))
 
 
 class DownloadFailed(Exception):
     pass
+
+
+def youtube_block(message: str) -> bool:
+    """Whether a download failure is YouTube refusing this client."""
+    text = message.lower()
+    return any(all(part in text for part in group) for group in BLOCK_MARKERS)
 
 
 def _log_format(info: dict[str, Any]) -> None:
@@ -357,11 +387,13 @@ class Dispatched:
     requeued: list[int]
     rate_limit: int | None
     window: str | None
+    # When the pause after a YouTube block ends. None when no pause holds.
+    blocked_until: datetime | None = None
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
     """Put the oldest waiting archive jobs on the queue, one per free slot, and
-    only inside the download window. Commits.
+    only inside the download window and outside a block pause. Commits.
 
     A waiting job is a queued archive job with no queue job. A dispatched job
     holds its slot until a worker takes it or hands it back.
@@ -380,6 +412,10 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         )
     )
     opens = next_window_start(now, limits.window_start, limits.window_end)
+    paused = blocked(limits, now)
+    if paused is not None:
+        opens = max(opens, paused) if opens is not None else paused
+    max_concurrent = concurrency(limits)
     await session.execute(
         update(Job)
         .where(queued, Job.queue_job_id.is_(None), Job.deferred_until.is_distinct_from(opens))
@@ -391,7 +427,7 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         dispatched = await session.scalar(
             select(func.count()).select_from(Job).where(queued, Job.queue_job_id.is_not(None))
         )
-        free = limits.max_concurrent - busy - dispatched
+        free = max_concurrent - busy - dispatched
         waiting = await session.scalars(
             select(Job.id)
             .where(queued, Job.queue_job_id.is_(None))
@@ -419,11 +455,12 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         started=started,
         waiting=left,
         running=busy,
-        max_concurrent=limits.max_concurrent,
+        max_concurrent=max_concurrent,
         opens=opens,
         requeued=requeued,
         rate_limit=limits.rate_limit_bytes,
         window=window,
+        blocked_until=paused,
     )
 
 
@@ -462,15 +499,13 @@ async def run(
                 await session.execute(update(Job).where(Job.id == job_id).values(queue_job_id=None))
                 await session.commit()
                 current = await load(session)
-                closed = next_window_start(now, current.window_start, current.window_end)
-                emit(
-                    log,
-                    logging.INFO,
-                    "job.returned",
-                    job=job_id,
-                    video=video_id,
-                    reason="window" if closed is not None else "slots",
-                )
+                if blocked(current, now) is not None:
+                    reason = "blocked"
+                elif next_window_start(now, current.window_start, current.window_end):
+                    reason = "window"
+                else:
+                    reason = "slots"
+                emit(log, logging.INFO, "job.returned", job=job_id, video=video_id, reason=reason)
                 return
             ratelimit = limits.rate_limit_bytes
         channel = await settings_channel(session, video_id)
@@ -591,7 +626,10 @@ async def run(
                     video.resume_format = None
                     video.verified_at = video.completed_at
                     video.verified_checks = checks
+                unblocked = 0 if live else await _unblock(session, datetime.now(UTC))
                 await session.commit()
+            if unblocked:
+                emit(log, logging.INFO, "dispatch.unblocked", count=unblocked)
             emit(
                 log,
                 logging.INFO,
@@ -624,6 +662,21 @@ async def run(
             )
             raise
         except Exception as e:
+            if not live and isinstance(e, DownloadFailed) and youtube_block(str(e)):
+                await _blocked(sessionmaker, job_id, e)
+                emit(
+                    log,
+                    logging.WARNING,
+                    "job.interrupted",
+                    job=job_id,
+                    video=video_id,
+                    **described,
+                    took=human_duration(time.monotonic() - started),
+                    present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
+                    reason=BLOCKED_LOG,
+                )
+                setattr(e, _RECORDED, True)
+                raise
             # A retry after a real failure starts over, so the parts would
             # otherwise stay on the dataset for good.
             shutil.rmtree(workdir, ignore_errors=True)
@@ -652,6 +705,56 @@ async def run(
             )
             setattr(e, _RECORDED, True)
             raise
+
+
+async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFailed) -> None:
+    """Interrupt an archive job YouTube refused, so it counts no attempt and
+    keeps its parts, and pause archive downloads. Jobs refused together pause
+    once: only the first one past an expired pause lengthens it."""
+    async with sessionmaker() as session:
+        await lock(session)
+        limits = await session.get(DownloadSettings, 1)
+        if limits is None:
+            limits = DownloadSettings(id=1, max_concurrent=1, block_count=0)
+            session.add(limits)
+        now = datetime.now(UTC)
+        pause: timedelta | None = None
+        if blocked(limits, now) is None:
+            limits.block_count += 1
+            pause = backoff(limits.block_count)
+            limits.blocked_until = now + pause
+        job = await session.get(Job, job_id)
+        await _interrupt(session, job, f"{BLOCKED_LOG}: {e}"[:LOG_TAIL_CHARS])
+        await session.commit()
+    if pause is not None:
+        emit(
+            log,
+            logging.WARNING,
+            "dispatch.blocked",
+            until=limits.blocked_until.astimezone(TIMEZONE).isoformat(timespec="minutes"),
+            backoff=human_duration(pause.total_seconds()),
+            count=limits.block_count,
+            job=job_id,
+            video=job.video_id,
+            reason=logs.cut(str(e)),
+        )
+
+
+async def _unblock(session: AsyncSession, now: datetime) -> int:
+    """End the probe after a block: a success resets the count. Returns the
+    count it cleared, 0 when none. A success while a pause holds clears
+    nothing, because that download started before the block."""
+    limits = await load(session)
+    if not limits.block_count or blocked(limits, now) is not None:
+        return 0
+    await lock(session)
+    await session.refresh(limits)
+    count = limits.block_count
+    if not count or blocked(limits, now) is not None:
+        return 0
+    limits.block_count = 0
+    limits.blocked_until = None
+    return count
 
 
 async def _pin(session: AsyncSession, video_id: str, format_id: str | None) -> None:

@@ -949,6 +949,9 @@ class DownloadSettingsIn(BaseModel):
 
 class DownloadSettingsOut(DownloadSettingsIn):
     timezone: str
+    # Set by a YouTube block, read-only here (savetube.jobs).
+    blocked_until: datetime | None = None
+    block_count: int = 0
 
 
 def _hhmm(t: time | None) -> str | None:
@@ -962,6 +965,8 @@ def _settings_out(row: DownloadSettings) -> DownloadSettingsOut:
         window_start=_hhmm(row.window_start),
         window_end=_hhmm(row.window_end),
         timezone=TIMEZONE.key,
+        blocked_until=row.blocked_until,
+        block_count=row.block_count,
     )
 
 

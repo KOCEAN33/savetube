@@ -135,6 +135,9 @@ class DownloadSettings(Base):
     # Local times in savetube.limits.TIMEZONE. Both set or both null.
     window_start: Mapped[time | None]
     window_end: Mapped[time | None]
+    # The pause after a YouTube block, and the blocks since the last success.
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    block_count: Mapped[int] = mapped_column(default=0, server_default="0")
 
 
 class Source(Base):

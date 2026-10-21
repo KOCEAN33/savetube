@@ -3,7 +3,7 @@ import multiprocessing
 
 import pytest
 
-from savetube.jobs import pump_progress
+from savetube.jobs import pump_progress, youtube_block
 
 
 @pytest.fixture
@@ -69,3 +69,17 @@ async def test_a_failed_write_does_not_stop_the_pump():
     await asyncio.wait_for(pump_progress(receive, report, every=0.05), 2)
     assert calls == [{"pct": 1.0}]
     receive.close()
+
+
+@pytest.mark.parametrize(
+    ("message", "block"),
+    [
+        ("DownloadError: ERROR: [youtube] v1: Sign in to confirm you’re not a bot.", True),
+        ("ERROR: [youtube] v1: Sign in to confirm you're not a bot. Use --cookies", True),
+        ("ERROR: unable to download video data: HTTP Error 429: Too Many Requests", True),
+        ("ERROR: unable to download video data: HTTP Error 403: Forbidden", False),
+        ("ERROR: [youtube] v1: Video unavailable. This video is not a bot test", False),
+    ],
+)
+def test_a_youtube_block_is_the_bot_check_or_429(message, block):
+    assert youtube_block(message) is block

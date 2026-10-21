@@ -1844,6 +1844,8 @@ def test_api_download_settings_and_job_deferral(settings):
             "window_start": None,
             "window_end": None,
             "timezone": "Asia/Seoul",
+            "blocked_until": None,
+            "block_count": 0,
         }
         body = {
             "max_concurrent": 3,
@@ -1853,7 +1855,8 @@ def test_api_download_settings_and_job_deferral(settings):
         }
         put = client.put("/api/download-settings", json=body)
         assert put.status_code == 200
-        assert put.json() == body | {"timezone": "Asia/Seoul"}
+        unblocked = {"blocked_until": None, "block_count": 0}
+        assert put.json() == body | {"timezone": "Asia/Seoul"} | unblocked
         assert client.get("/api/download-settings").json() == put.json()
         for bad in (
             body | {"window_end": None},
@@ -3073,3 +3076,228 @@ def test_migration_0008_turns_interrupted_jobs_into_cancelled_on_downgrade(setti
     # The old code counts a failed job as an attempt, so an interrupted one
     # becomes cancelled.
     assert states == {1: "queued", 2: "cancelled"}
+
+
+BOT_CHECK = (
+    "DownloadError: ERROR: [youtube] v1: Sign in to confirm you’re not a bot."
+    " Use --cookies-from-browser or --cookies for the authentication."
+)
+
+
+def _block_state(settings):
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        row = c.execute(
+            sa.text("SELECT block_count, blocked_until FROM download_settings WHERE id = 1")
+        ).one()
+    engine.dispose()
+    return row.block_count, row.blocked_until
+
+
+async def _blocked_step(params, report):
+    from savetube.jobs import DownloadFailed
+
+    _part(params)
+    await report({"event": "format", "format_id": "251"})
+    raise DownloadFailed(BOT_CHECK)
+
+
+@pytest.mark.anyio
+async def test_a_youtube_block_interrupts_the_archive_job_and_pauses_downloads(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    before = datetime.now(UTC)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _Steps(_blocked_step))
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert (history.state, history.video_id) == ("interrupted", "v1")
+    assert history.log_tail == f"blocked by YouTube: {BOT_CHECK}"
+    # No attempt counts, and the parts and the pin stay for the resume.
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert video.state is VideoState.PENDING and video.resume_format == "251"
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+    count, until = _block_state(settings)
+    assert count == 1
+    assert before + timedelta(minutes=30) <= until <= datetime.now(UTC) + timedelta(minutes=30)
+    assert _events(caplog, "job.failed") == []
+    [line] = _events(caplog, "job.interrupted")
+    assert line.levelno == logging.WARNING and _fields(line)["reason"] == "blocked by YouTube"
+    [blocked] = _events(caplog, "dispatch.blocked")
+    assert blocked.levelno == logging.WARNING
+    fields = _fields(blocked)
+    assert (fields["count"], fields["backoff"], fields["job"], fields["video"]) == (
+        1,
+        "30m0s",
+        1,
+        "v1",
+    )
+
+
+@pytest.mark.anyio
+async def test_a_block_while_paused_interrupts_without_lengthening_the_pause(settings, caplog):
+    import logging
+
+    _job_rows(settings, "SELECT setval('job_id_seq', 200)")
+
+    async def blocked_together(params, report):
+        from savetube.jobs import DownloadFailed
+
+        # Another job hit the block while this one was downloading.
+        _sql(
+            settings,
+            "UPDATE download_settings SET block_count = 1,"
+            " blocked_until = now() + interval '30 minutes'",
+        )
+        raise DownloadFailed("ERROR: unable to download video data: HTTP Error 429")
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _Steps(blocked_together))
+    assert jobs[1].state is JobState.QUEUED and jobs[1].attempts == 0
+    count, until = _block_state(settings)
+    assert count == 1 and until < datetime.now(UTC) + timedelta(minutes=30)
+    assert _events(caplog, "dispatch.blocked") == []
+    assert len(_events(caplog, "job.interrupted")) == 1
+
+
+@pytest.mark.anyio
+async def test_dispatch_sends_nothing_while_blocked_then_one_probe(settings):
+    _waiting_rows(
+        settings,
+        "UPDATE job SET state = 'succeeded' WHERE id = 10",
+        "UPDATE download_settings SET max_concurrent = 5, block_count = 2,"
+        " blocked_until = '2026-10-21T03:00:00Z'",
+    )
+    until = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)
+    enqueued, jobs = await _dispatch(settings, until - timedelta(minutes=1))
+    assert enqueued == []
+    assert [jobs[i].deferred_until for i in (12, 13, 14)] == [until, until, until]
+
+    # The pause is over, but until a download succeeds only one runs at a time.
+    enqueued, jobs = await _dispatch(settings, until)
+    assert enqueued == [12]
+    assert [jobs[i].deferred_until for i in (12, 13, 14)] == [None, None, None]
+
+
+@pytest.mark.anyio
+async def test_dispatch_while_blocked_waits_for_the_later_of_pause_and_window(settings):
+    from savetube.limits import TIMEZONE
+
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 5, block_count = 1,"
+        " window_start = '23:00', window_end = '05:00', blocked_until = '2026-10-22T00:30:00+09'",
+    )
+    noon = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
+    enqueued, jobs = await _dispatch(settings, noon)
+    assert enqueued == []
+    assert jobs[12].deferred_until == datetime(2026, 10, 22, 0, 30, tzinfo=TIMEZONE)
+
+
+@pytest.mark.anyio
+async def test_a_worker_hands_back_a_job_while_blocked(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE download_settings SET blocked_until = now() + interval '1 hour'")
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        job, runner, _ = await _run(settings)
+    assert runner.params is None
+    assert job.state is JobState.QUEUED and job.queue_job_id is None
+    [line] = _events(caplog, "job.returned")
+    assert _fields(line)["reason"] == "blocked"
+
+
+@pytest.mark.anyio
+async def test_the_probe_admits_one_archive_job_at_a_time(settings, caplog):
+    import logging
+
+    _job_rows(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'running', 'busy1', 1)",
+        "UPDATE download_settings SET max_concurrent = 5, block_count = 1,"
+        " blocked_until = now() - interval '1 minute'",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        job, runner, _ = await _run(settings)
+    assert runner.params is None and job.state is JobState.QUEUED
+    assert _fields(_events(caplog, "job.returned")[0])["reason"] == "slots"
+
+
+@pytest.mark.anyio
+async def test_a_success_after_the_pause_ends_the_probe(settings, caplog):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa'",
+        "UPDATE download_settings SET block_count = 2, blocked_until = now() - interval '1 minute'",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _Steps(_finished()))
+    assert jobs[1].state is JobState.SUCCEEDED
+    assert _block_state(settings) == (0, None)
+    [line] = _events(caplog, "dispatch.unblocked")
+    assert line.levelno == logging.INFO and _fields(line)["count"] == 2
+
+
+@pytest.mark.anyio
+async def test_a_blocked_recording_still_fails(settings, caplog):
+    import logging
+
+    from savetube.jobs import DownloadFailed, run
+
+    _job_rows(settings, "UPDATE job SET kind = 'record'")
+
+    async def blocked(params, report):
+        raise DownloadFailed(BOT_CHECK)
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    with caplog.at_level(logging.INFO, logger="savetube"), pytest.raises(DownloadFailed):
+        await run(1, settings, live=True, runner=_Steps(blocked), sessionmaker=sessionmaker)
+    async with sessionmaker() as session:
+        job = await session.get(Job, 1)
+    await engine.dispose()
+    assert job.state is JobState.FAILED and job.log_tail == BOT_CHECK
+    assert _block_state(settings) == (0, None)
+    assert len(_events(caplog, "job.failed")) == 1
+
+
+def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0008")
+    _job_rows(
+        settings,
+        "UPDATE job SET state = 'succeeded' WHERE id = 1",
+        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail) VALUES"
+        " (2, 'archive', 'failed', 'v1', 1, 'Sign in to confirm you’re not a bot.'),"
+        " (3, 'archive', 'failed', 'v1', 1, 'HTTP Error 403: Forbidden'),"
+        " (4, 'record', 'failed', 'busy2', 1, 'Sign in to confirm you’re NOT A BOT.')",
+    )
+    command.upgrade(cfg, "head")
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
+    assert states == {1: "succeeded", 2: "interrupted", 3: "failed", 4: "failed"}
+    assert _block_state(settings) == (0, None)
+
+    command.downgrade(cfg, "0008")
+    with engine.connect() as c:
+        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
+        columns = set(
+            c.execute(
+                sa.text(
+                    "SELECT column_name FROM information_schema.columns"
+                    " WHERE table_name = 'download_settings'"
+                )
+            ).scalars()
+        )
+    engine.dispose()
+    # The downgrade leaves the data as it is.
+    assert states[2] == "interrupted"
+    assert not columns & {"blocked_until", "block_count"}

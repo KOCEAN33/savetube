@@ -1,5 +1,6 @@
-"""Download limits for archive jobs: a concurrency cap, a rate limit, and a
-daily window in Asia/Seoul (docs/plan/archive.md, Download limits)."""
+"""Download limits for archive jobs: a concurrency cap, a rate limit, a
+daily window in Asia/Seoul, and a pause after a YouTube block
+(docs/plan/archive.md, Download limits)."""
 
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from savetube.db.models import DownloadSettings, Job, JobKind, JobState
 
 TIMEZONE = ZoneInfo("Asia/Seoul")
+BLOCK_BACKOFF = timedelta(minutes=30)
+BLOCK_BACKOFF_MAX = timedelta(hours=12)
 
 
 def next_window_start(now: datetime, start: time | None, end: time | None) -> datetime | None:
@@ -35,7 +38,26 @@ _SLOT_LOCK = 0x5A7E7B0E
 
 async def load(session: AsyncSession) -> DownloadSettings:
     """The stored limits, or the defaults when the row is missing."""
-    return await session.get(DownloadSettings, 1) or DownloadSettings(id=1, max_concurrent=1)
+    return await session.get(DownloadSettings, 1) or DownloadSettings(
+        id=1, max_concurrent=1, block_count=0
+    )
+
+
+def backoff(count: int) -> timedelta:
+    """The pause after the `count`th block in a row: 30 min, doubling, at most 12 h."""
+    return min(BLOCK_BACKOFF * 2 ** (count - 1), BLOCK_BACKOFF_MAX)
+
+
+def blocked(limits: DownloadSettings, now: datetime) -> datetime | None:
+    """When the pause after a YouTube block ends, None when no pause holds."""
+    until = limits.blocked_until
+    return until if until is not None and until > now else None
+
+
+def concurrency(limits: DownloadSettings) -> int:
+    """`max_concurrent`, or 1 after a block until a download succeeds, so one
+    job tests whether YouTube still blocks."""
+    return 1 if limits.block_count else limits.max_concurrent
 
 
 async def lock(session: AsyncSession) -> None:
@@ -61,6 +83,8 @@ async def admit(session: AsyncSession, now: datetime) -> DownloadSettings | None
     limits = await load(session)
     if next_window_start(now, limits.window_start, limits.window_end) is not None:
         return None
-    if await running(session) >= limits.max_concurrent:
+    if blocked(limits, now) is not None:
+        return None
+    if await running(session) >= concurrency(limits):
         return None
     return limits

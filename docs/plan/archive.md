@@ -82,11 +82,20 @@
 - A `PUT /api/download-settings` changes no job. The next dispatch, within 10 s, applies the new limits.
 - Migration `0006` deletes every `succeeded` procrastinate job and every `todo` archive procrastinate job. It clears `queue_job_id` and `deferred_until` on every `queued` archive job whose procrastinate job is not `doing`, so the dispatcher takes it. A `doing` job and its `job` row stay. The downgrade cancels every waiting archive job, so the old poll queues its video again.
 - Process health and job ownership are separate. Kubernetes judges health: worker and scheduler serve `GET /healthz` on `SAVETUBE_HEALTH_PORT` (default 8081) from their own asyncio loop, so a stuck loop fails the probe, and the chart sets a livenessProbe on it. The metrics port cannot serve this, because `prometheus_client` answers from its own thread while the loop hangs. Docker compose runs the same check as a `healthcheck`. Job ownership stays in Postgres as procrastinate's heartbeat lease.
+- A YouTube block pauses archive downloads. A block is a `DownloadFailed` whose text, lowercased, holds both "confirm you" and "not a bot", or "http error 429". The bot check text has a straight or a curly apostrophe, so no marker includes it. `savetube.jobs.BLOCK_MARKERS` holds the markers.
+- A blocked archive job is interrupted, not failed: it counts as no attempt, keeps `.incoming/<video id>/` and its pinned format, and logs `job.interrupted` at WARNING with reason "blocked by YouTube". The `interrupted` row's `log_tail` holds the yt-dlp text.
+- The first block past an expired pause adds 1 to `download_settings.block_count` and sets `blocked_until` to now plus the backoff, under the slot lock. The backoff is 30 min, doubling with each count, at most 12 h: 30 min, 1 h, 2 h, 4 h, 8 h, 12 h. It logs `dispatch.blocked` at WARNING with `until`, `backoff`, `count`, the job, the video, and the reason.
+- A block while a pause holds, such as jobs refused together, only interrupts its job.
+- While `blocked_until` is in the future, the dispatcher queues nothing and the worker hands a job back with `job.returned` reason "blocked". `job.deferred_until` holds the later of `blocked_until` and the next window start.
+- After the pause and until a download succeeds, `block_count` is above 0 and the effective `max_concurrent` is 1. One job tests whether YouTube still blocks.
+- A succeeded archive job after the pause resets `block_count` to 0 and `blocked_until` to null, and logs `dispatch.unblocked` at INFO with the previous count. A success while a pause holds resets nothing, because that download started before the block.
+- A live recording ignores blocks. A blocked recording fails like any other failure.
+- Migration `0009` adds `blocked_until` and `block_count` and turns every `failed` archive job whose `log_tail` holds "not a bot" into `interrupted`, so a bot-check wave gives back the attempts it took. The downgrade drops the columns and keeps those jobs `interrupted`.
 - The scheduler reclaims an archive job left `running` by a dead worker every minute. It reads procrastinate's stalled jobs, found by the worker heartbeat. The job is interrupted with `log_tail` "worker stopped during the download" and logs `job.interrupted` at WARNING. Without this, a dead worker's jobs hold download slots forever.
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
-| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, timezone}` |
+| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, timezone, blocked_until, block_count}`. The last two are read-only |
 | `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end}` | the settings |
 | `GET /api/jobs` | | each job also carries `deferred_until` |
 | `PATCH /api/sources/{id}` | also `archiving` | the source, with `archiving` |
