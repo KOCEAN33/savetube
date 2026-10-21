@@ -67,6 +67,13 @@
 - `PATCH /api/sources/{id}` with `archiving: true` resumes downloads, and the source is polled on the next scheduler tick. On a `playlists` parent the flag is copied to every child, and a child created later takes the parent's value.
 - Sources that existed before migration 0003 keep downloading: the migration sets `archiving` on for them.
 - Live detection ignores `archiving`.
+- `download_settings.paused` pauses every archive download. The user sets it with the header's pause switch (frontend.md). Polls go on and still create archive jobs, which wait.
+- While paused, the dispatcher queues nothing and the worker hands a job back with `job.returned` reason "paused". `job.deferred_until` stays null, because a pause has no known end.
+- A pause also stops running archive downloads. Each running download reads the flag every 5 s (`PAUSE_POLL_SECONDS` in `savetube.jobs`), so a download stops within about 5 s. The stop is a SIGTERM cancel (Resuming and verifying downloads): the child is killed, the `.part` files and the pin stay, the job is interrupted with no attempt used and `log_tail` "paused by user", and `job.interrupted` logs at INFO. The queue job ends as succeeded.
+- A failed flag read logs `job.pause_check_failed` at WARNING, and the download goes on.
+- Resuming clears the flag. The next dispatch, within 10 s, queues waiting jobs, and an interrupted job resumes its parts.
+- `PUT /api/download-settings/paused` logs `dispatch.paused` or `dispatch.resumed` at INFO with the running archive downloads, only when the value changes. `PUT /api/download-settings` leaves the flag as it is, so saving the limits never resumes downloads.
+- A live recording ignores the pause and is never stopped by it.
 
 ## Download limits
 
@@ -97,8 +104,9 @@
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
-| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile, timezone, blocked_until, block_count}`. The last two are read-only |
+| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile, timezone, blocked_until, block_count, paused}`. The last three are read-only here |
 | `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile}`. A `cookie_profile` the scheduler has not recorded as present is a 422 | the settings |
+| `PUT /api/download-settings/paused` | `{paused}` | the settings |
 | `GET /api/cookie-profiles` | | `[{name}]`, the profiles the scheduler last recorded, by name. Never their content |
 | `GET /api/jobs` | | each job also carries `deferred_until` |
 | `PATCH /api/sources/{id}` | also `archiving` | the source, with `archiving` |

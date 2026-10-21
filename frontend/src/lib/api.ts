@@ -321,6 +321,8 @@ export interface DownloadSettingsIn {
 
 export interface DownloadSettings extends DownloadSettingsIn {
   timezone: string
+  // The user's pause of archive downloads. Set only through setDownloadsPaused.
+  paused: boolean
 }
 
 export const mutations = {
@@ -335,6 +337,8 @@ export const mutations = {
     request<Channel>("PATCH", `/api/channels/${encodeURIComponent(id)}`, body),
   replaceDownloadSettings: (body: DownloadSettingsIn) =>
     request<DownloadSettings>("PUT", "/api/download-settings", body),
+  setDownloadsPaused: (paused: boolean) =>
+    request<DownloadSettings>("PUT", "/api/download-settings/paused", { paused }),
   replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
 }
 

@@ -1,5 +1,6 @@
 import { useLocation } from "react-router"
 
+import { DownloadPauseToggle } from "@/components/download-pause"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { navTitle } from "@/lib/nav"
@@ -16,6 +17,9 @@ export function SiteHeader() {
           className="mx-2 data-[orientation=vertical]:h-4"
         />
         <h1 className="text-base font-medium">{navTitle(pathname)}</h1>
+        <div className="ml-auto">
+          <DownloadPauseToggle />
+        </div>
       </div>
     </header>
   )

@@ -93,11 +93,18 @@ NETWORK_LOG = "network error"
 # Network interruptions of one video since its last failed or succeeded
 # archive job. The next network error after these is a failure.
 MAX_NETWORK_INTERRUPTS = 5
+PAUSED_LOG = "paused by user"
+# A running archive download reads the user's pause this often.
+PAUSE_POLL_SECONDS = 5
 NO_MEMBER = "no cookie profile is a confirmed member of the channel"
 
 
 class DownloadFailed(Exception):
     pass
+
+
+class Paused(Exception):
+    """The user paused archive downloads while this one ran."""
 
 
 def _log_format(info: dict[str, Any]) -> None:
@@ -392,11 +399,14 @@ class Dispatched:
     window: str | None
     # When the pause after a YouTube block ends. None when no pause holds.
     blocked_until: datetime | None = None
+    # The user's pause, which has no end until the user resumes.
+    paused: bool = False
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
     """Put the oldest waiting archive jobs on the queue, one per free slot, and
-    only inside the download window and outside a block pause. Commits.
+    only inside the download window, outside a block pause, and while the user
+    has not paused downloads. Commits.
 
     A waiting job is a queued archive job with no queue job. A dispatched job
     holds its slot until a worker takes it or hands it back.
@@ -415,18 +425,20 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         )
     )
     opens = next_window_start(now, limits.window_start, limits.window_end)
-    paused = blocked(limits, now)
-    if paused is not None:
-        opens = max(opens, paused) if opens is not None else paused
+    block_end = blocked(limits, now)
+    if block_end is not None:
+        opens = max(opens, block_end) if opens is not None else block_end
+    # The user's pause has no known end, so a waiting job shows none.
+    deferred = None if limits.paused else opens
     max_concurrent = concurrency(limits)
     await session.execute(
         update(Job)
-        .where(queued, Job.queue_job_id.is_(None), Job.deferred_until.is_distinct_from(opens))
-        .values(deferred_until=opens)
+        .where(queued, Job.queue_job_id.is_(None), Job.deferred_until.is_distinct_from(deferred))
+        .values(deferred_until=deferred)
     )
     started: list[int] = []
     busy = await running(session)
-    if opens is None:
+    if opens is None and not limits.paused:
         dispatched = await session.scalar(
             select(func.count()).select_from(Job).where(queued, Job.queue_job_id.is_not(None))
         )
@@ -463,7 +475,8 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         requeued=requeued,
         rate_limit=limits.rate_limit_bytes,
         window=window,
-        blocked_until=paused,
+        blocked_until=block_end,
+        paused=limits.paused,
     )
 
 
@@ -484,8 +497,9 @@ async def run(
     sessionmaker: async_sessionmaker | None = None,
     tools: integrity.Tools | None = None,
 ) -> None:
-    """Run one job. An archive job outside the download window, or with no free
-    slot, goes back to waiting for the dispatcher. A recording ignores the limits."""
+    """Run one job. An archive job outside the download window, with no free
+    slot, or while paused, goes back to waiting for the dispatcher. A pause
+    while it runs interrupts it. A recording ignores the limits."""
     sessionmaker = sessionmaker or default_sessionmaker()
     ratelimit = None
     async with sessionmaker() as session:
@@ -502,7 +516,9 @@ async def run(
                 await session.execute(update(Job).where(Job.id == job_id).values(queue_job_id=None))
                 await session.commit()
                 current = await load(session)
-                if blocked(current, now) is not None:
+                if current.paused:
+                    reason = "paused"
+                elif blocked(current, now) is not None:
                     reason = "blocked"
                 elif next_window_start(now, current.window_start, current.window_end):
                     reason = "window"
@@ -607,17 +623,20 @@ async def run(
                 if live:
                     info = await runner(video_url(video_id), params(fmt), report)
                 else:
-                    info, checks = await _archive(
+                    info, checks = await _unless_paused(
                         sessionmaker,
-                        video_id,
-                        workdir,
-                        runner=runner,
-                        params=params,
-                        fmt=fmt,
-                        pinned=pinned,
-                        report=report,
-                        streams=streams,
-                        tools=tools or integrity.Tools(),
+                        _archive(
+                            sessionmaker,
+                            video_id,
+                            workdir,
+                            runner=runner,
+                            params=params,
+                            fmt=fmt,
+                            pinned=pinned,
+                            report=report,
+                            streams=streams,
+                            tools=tools or integrity.Tools(),
+                        ),
                     )
 
             async with sessionmaker() as session:
@@ -649,13 +668,14 @@ async def run(
                 took=human_duration(time.monotonic() - started),
                 path=video.dir_path,
             )
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Paused) as e:
             # A recorder's retry starts from the first segment anyway.
             if live:
                 raise
+            reason = PAUSED_LOG if isinstance(e, Paused) else SHUTDOWN_LOG
             async with sessionmaker() as session:
                 job = await session.get(Job, job_id)
-                await _interrupt(session, job, SHUTDOWN_LOG)
+                await _interrupt(session, job, reason)
                 await session.commit()
             emit(
                 log,
@@ -666,8 +686,11 @@ async def run(
                 **described,
                 took=human_duration(time.monotonic() - started),
                 present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
-                reason=SHUTDOWN_LOG,
+                reason=reason,
             )
+            # A pause ends the queue job. The dispatcher queues the job again.
+            if isinstance(e, Paused):
+                return
             raise
         except Exception as e:
             if not live and isinstance(e, DownloadFailed) and youtube_block(str(e)):
@@ -736,6 +759,38 @@ async def run(
             )
             setattr(e, _RECORDED, True)
             raise
+
+
+async def _unless_paused[T](sessionmaker: async_sessionmaker, work: Awaitable[T]) -> T:
+    """Await `work`, and cancel it when the user pauses archive downloads,
+    raising Paused. A cancel kills the download child and keeps its parts,
+    as a shutdown does."""
+    task = asyncio.ensure_future(work)
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=PAUSE_POLL_SECONDS)
+            if task.done():
+                break
+            try:
+                async with sessionmaker() as session:
+                    paused = (await load(session)).paused
+            except Exception as e:
+                # A database hiccup must not end a download that runs for hours.
+                emit(log, logging.WARNING, "job.pause_check_failed", reason=f"{e}")
+                continue
+            if paused:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                # A download that ended before the cancel keeps its result.
+                if task.cancelled():
+                    raise Paused
+    except asyncio.CancelledError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        raise
+    return task.result()
 
 
 async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFailed) -> None:

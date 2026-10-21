@@ -7,6 +7,7 @@
 - Sidebar: Dashboard, Channels, Live, Settings, Videos. Videos stays as built and gets its own review later.
 - Live lists record jobs: detected, upcoming and recorded streams. Archive download jobs show on their channel's page.
 - Settings holds the download limits, the general cookie profile, and the global title words. The profile select offers "None (cookie-free)" and each present profile from `GET /api/cookie-profiles`.
+- The site header holds the pause switch for every archive download (archive.md, Pausing downloads), on every page. While paused it shows a "Downloads paused" badge and a Resume button. "Pause downloads" opens a confirmation modal first, because a pause stops the running downloads. Resume applies at once. Settings shows the same switch above the download limits.
 - Every create and edit form opens in a large modal in the middle of the screen, never a side sheet.
 
 ## Adding a channel

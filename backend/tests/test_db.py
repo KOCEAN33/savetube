@@ -2015,6 +2015,7 @@ def test_api_download_settings_and_job_deferral(settings):
             "timezone": "Asia/Seoul",
             "blocked_until": None,
             "block_count": 0,
+            "paused": False,
         }
         body = {
             "max_concurrent": 3,
@@ -2025,7 +2026,7 @@ def test_api_download_settings_and_job_deferral(settings):
         }
         put = client.put("/api/download-settings", json=body)
         assert put.status_code == 200
-        unblocked = {"blocked_until": None, "block_count": 0}
+        unblocked = {"blocked_until": None, "block_count": 0, "paused": False}
         assert put.json() == body | {"timezone": "Asia/Seoul"} | unblocked
         assert client.get("/api/download-settings").json() == put.json()
         for bad in (
@@ -3702,3 +3703,122 @@ def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
     # The downgrade leaves the data as it is.
     assert states[2] == "interrupted"
     assert not columns & {"blocked_until", "block_count"}
+
+
+@pytest.mark.anyio
+async def test_dispatch_sends_nothing_while_paused_and_leaves_no_deferral(settings):
+    from savetube.limits import TIMEZONE
+
+    _waiting_rows(
+        settings,
+        "UPDATE job SET state = 'succeeded' WHERE id = 10",
+        "UPDATE download_settings SET max_concurrent = 5, paused = true,"
+        " window_start = '23:00', window_end = '05:00'",
+    )
+    # Outside the window too, but a pause has no known end.
+    noon = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
+    enqueued, jobs = await _dispatch(settings, noon)
+    assert enqueued == []
+    assert [jobs[i].deferred_until for i in (12, 13, 14)] == [None, None, None]
+    opens = datetime(2026, 10, 21, 23, 0, tzinfo=TIMEZONE)
+    enqueued, _ = await _dispatch(settings, opens)
+    assert enqueued == []
+
+    _sql(settings, "UPDATE download_settings SET paused = false")
+    enqueued, _ = await _dispatch(settings, opens)
+    assert enqueued == [12, 13, 14]
+
+
+@pytest.mark.anyio
+async def test_a_worker_hands_back_a_job_while_paused(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE download_settings SET paused = true")
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        job, runner, _ = await _run(settings)
+    assert runner.params is None
+    assert job.state is JobState.QUEUED and job.queue_job_id is None and job.attempts == 0
+    assert job.deferred_until is None
+    [line] = _events(caplog, "job.returned")
+    assert _fields(line)["reason"] == "paused"
+
+
+@pytest.mark.anyio
+async def test_a_pause_interrupts_a_running_archive_download_and_keeps_its_parts(
+    settings, caplog, monkeypatch
+):
+    import logging
+
+    from savetube import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.05)
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+
+    async def downloading(params, report):
+        _part(params)
+        await report({"event": "format", "format_id": "251"})
+        _sql(settings, "UPDATE download_settings SET paused = true")
+        await asyncio.Event().wait()
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(_run_steps(settings, _Steps(downloading)), 10)
+
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert (history.state, history.video_id) == ("interrupted", "v1")
+    assert history.log_tail == "paused by user"
+    assert history.attempts == 1 and history.finished_at is not None
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert jobs[1].deferred_until is None
+    assert video.state is VideoState.PENDING and video.resume_format == "251"
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+    assert _events(caplog, "job.failed") == []
+    [line] = _events(caplog, "job.interrupted")
+    assert line.levelno == logging.INFO and _fields(line)["reason"] == "paused by user"
+
+
+@pytest.mark.anyio
+async def test_a_pause_never_cancels_a_live_recording(settings, monkeypatch):
+    from savetube import jobs as jobs_module
+    from savetube.jobs import DownloadFailed, run
+
+    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.01)
+    _job_rows(
+        settings,
+        "UPDATE job SET kind = 'record'",
+        "UPDATE download_settings SET paused = true",
+    )
+
+    async def recording(params, report):
+        # Many poll intervals pass while the recording runs.
+        await asyncio.sleep(0.3)
+        raise DownloadFailed("the live ended badly")
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    with pytest.raises(DownloadFailed):
+        await run(1, settings, live=True, runner=_Steps(recording), sessionmaker=sessionmaker)
+    async with sessionmaker() as session:
+        jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
+    await engine.dispose()
+    assert list(jobs) == [1]
+    assert jobs[1].state is JobState.FAILED and jobs[1].log_tail == "the live ended badly"
+
+
+def test_api_pauses_and_resumes_archive_downloads(settings, caplog):
+    import logging
+
+    _job_rows(settings)
+    with _api(settings) as client, caplog.at_level(logging.INFO, logger="savetube"):
+        assert client.get("/api/download-settings").json()["paused"] is False
+        put = client.put("/api/download-settings/paused", json={"paused": True})
+        assert put.status_code == 200 and put.json()["paused"] is True
+        assert client.get("/api/download-settings").json()["paused"] is True
+        # Saving the limits leaves the pause as it is.
+        limits = {"max_concurrent": 2, "cookie_profile": None}
+        assert client.put("/api/download-settings", json=limits).json()["paused"] is True
+        assert client.put("/api/download-settings/paused", json={}).status_code == 422
+        put = client.put("/api/download-settings/paused", json={"paused": False})
+        assert put.json()["paused"] is False
+    [paused] = _events(caplog, "dispatch.paused")
+    [resumed] = _events(caplog, "dispatch.resumed")
+    assert paused.levelno == resumed.levelno == logging.INFO

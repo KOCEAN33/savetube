@@ -973,6 +973,12 @@ class DownloadSettingsOut(DownloadSettingsIn):
     # Set by a YouTube block, read-only here (savetube.jobs).
     blocked_until: datetime | None = None
     block_count: int = 0
+    # Set through PUT /api/download-settings/paused only.
+    paused: bool = False
+
+
+class PausedIn(BaseModel):
+    paused: bool
 
 
 def _hhmm(t: time | None) -> str | None:
@@ -989,6 +995,7 @@ def _settings_out(row: DownloadSettings) -> DownloadSettingsOut:
         timezone=TIMEZONE.key,
         blocked_until=row.blocked_until,
         block_count=row.block_count,
+        paused=row.paused,
     )
 
 
@@ -1028,6 +1035,28 @@ async def replace_download_settings(
         window=f"{body.window_start}-{body.window_end}" if body.window_start else "none",
         cookie_profile=body.cookie_profile or "none",
     )
+    return _settings_out(row)
+
+
+@router.put("/download-settings/paused")
+async def pause_downloads(session: Session, body: PausedIn) -> DownloadSettingsOut:
+    """Pause or resume archive downloads. The next dispatch, and every running
+    download within PAUSE_POLL_SECONDS, applies it. Recordings ignore it."""
+    row = await session.get(DownloadSettings, 1)
+    if row is None:
+        row = DownloadSettings(id=1)
+        session.add(row)
+    changed = row.paused != body.paused
+    row.paused = body.paused
+    running = await limits.running(session)
+    await session.commit()
+    if changed:
+        emit(
+            log,
+            logging.INFO,
+            "dispatch.paused" if body.paused else "dispatch.resumed",
+            running=running,
+        )
     return _settings_out(row)
 
 
