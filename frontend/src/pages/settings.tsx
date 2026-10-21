@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
+import { DownloadPauseToggle } from "@/components/download-pause"
 import { ErrorBox, Page, PageSection, QueryState } from "@/components/query-state"
 import { WordListEditor } from "@/components/source-words"
 import { Button } from "@/components/ui/button"
@@ -100,6 +101,14 @@ function DownloadSettingsForm({
       <p className="text-sm text-muted-foreground">
         These limits apply to archive downloads only. Live recordings ignore them.
       </p>
+      <div className="flex flex-col items-start gap-2">
+        <Label>Pause</Label>
+        <p className="text-xs text-muted-foreground">
+          A pause stops running downloads and starts no new one until you resume. The page header
+          holds the same switch.
+        </p>
+        <DownloadPauseToggle />
+      </div>
       <div className="flex flex-col gap-2">
         <Label htmlFor="dl-concurrent">Max concurrent downloads</Label>
         <Input

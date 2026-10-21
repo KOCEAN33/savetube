@@ -6,15 +6,13 @@ import { JobsTable } from "@/components/jobs-table"
 import { QueryState } from "@/components/query-state"
 import { Button } from "@/components/ui/button"
 import { api, type Job } from "@/lib/api"
+import {
+  IDLE_REFETCH_MS,
+  JOB_PAGE,
+  MAX_JOB_LIMIT,
+  RUNNING_REFETCH_MS,
+} from "@/lib/channel"
 import { formatBytes, formatDateTime, formatDuration } from "@/lib/format"
-
-// The worker writes progress every 5 s, so a faster refetch shows nothing new.
-const RUNNING_REFETCH_MS = 3_000
-const IDLE_REFETCH_MS = 15_000
-// Each list shows a page and grows by a page per "Show more".
-const PAGE = 10
-// GET /api/jobs caps limit at 500.
-const MAX_LIMIT = 500
 
 function ProgressLine({ job }: { job: Job }) {
   const p = job.progress
@@ -48,9 +46,23 @@ function ProgressLine({ job }: { job: Job }) {
   )
 }
 
-function RunningJob({ job }: { job: Job }) {
+export function ChannelLink({ job }: { job: Job }) {
+  if (!job.channel_id) return <span className="text-xs text-muted-foreground">-</span>
+  return (
+    <Link
+      className="w-fit text-xs text-muted-foreground hover:underline"
+      to={`/channels/${encodeURIComponent(job.channel_id)}`}
+    >
+      {job.channel_name ?? job.channel_id}
+    </Link>
+  )
+}
+
+// `withChannel` names the video's uploader, for a list that spans channels.
+export function RunningJob({ job, withChannel = false }: { job: Job; withChannel?: boolean }) {
   return (
     <li className="flex flex-col gap-2 p-3">
+      {withChannel && <ChannelLink job={job} />}
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         {job.video_id ? (
           <Link
@@ -75,8 +87,8 @@ function RunningJob({ job }: { job: Job }) {
 // The running download first, then the queued jobs in the order the
 // dispatcher takes them (oldest first), then the latest finished jobs.
 export function ChannelJobs({ channelId }: { channelId: string }) {
-  const [queuedShown, setQueuedShown] = useState(PAGE)
-  const [recentLimit, setRecentLimit] = useState(PAGE)
+  const [queuedShown, setQueuedShown] = useState(JOB_PAGE)
+  const [recentLimit, setRecentLimit] = useState(JOB_PAGE)
   const active = useQuery({
     queryKey: ["jobs", "archive", channelId, "active"],
     queryFn: () =>
@@ -84,7 +96,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
         kind: "archive",
         channel_id: channelId,
         state: ["running", "queued"],
-        limit: MAX_LIMIT,
+        limit: MAX_JOB_LIMIT,
       }),
     refetchInterval: (q) =>
       q.state.data?.some((j) => j.state === "running") ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
@@ -132,7 +144,11 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
               )}
               {queued.length > queuedShown && (
                 <div className="flex items-center gap-3 p-3">
-                  <Button variant="outline" size="sm" onClick={() => setQueuedShown(queuedShown + PAGE)}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setQueuedShown(queuedShown + JOB_PAGE)}
+                  >
                     Show more
                   </Button>
                   <span className="text-xs text-muted-foreground">
@@ -150,12 +166,12 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
           <>
             <JobsTable jobs={jobs} empty="No finished job yet." />
             {/* A full page means more may exist. */}
-            {jobs.length >= recentLimit && recentLimit < MAX_LIMIT && (
+            {jobs.length >= recentLimit && recentLimit < MAX_JOB_LIMIT && (
               <div className="p-3">
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setRecentLimit(Math.min(recentLimit + PAGE, MAX_LIMIT))}
+                  onClick={() => setRecentLimit(Math.min(recentLimit + JOB_PAGE, MAX_JOB_LIMIT))}
                 >
                   Show more
                 </Button>

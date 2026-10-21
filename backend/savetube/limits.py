@@ -1,6 +1,6 @@
 """Download limits for archive jobs: a concurrency cap, a rate limit, a
-daily window in Asia/Seoul, and a pause after a YouTube block
-(docs/plan/archive.md, Download limits)."""
+daily window in Asia/Seoul, a pause after a YouTube block, and the user's
+pause (docs/plan/archive.md, Download limits)."""
 
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -39,7 +39,7 @@ _SLOT_LOCK = 0x5A7E7B0E
 async def load(session: AsyncSession) -> DownloadSettings:
     """The stored limits, or the defaults when the row is missing."""
     return await session.get(DownloadSettings, 1) or DownloadSettings(
-        id=1, max_concurrent=1, block_count=0
+        id=1, max_concurrent=1, block_count=0, paused=False
     )
 
 
@@ -81,6 +81,8 @@ async def admit(session: AsyncSession, now: datetime) -> DownloadSettings | None
     """
     await lock(session)
     limits = await load(session)
+    if limits.paused:
+        return None
     if next_window_start(now, limits.window_start, limits.window_end) is not None:
         return None
     if blocked(limits, now) is not None:

@@ -48,7 +48,14 @@ from savetube.logs import emit, human_bytes, human_duration
 from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
 from savetube.poll import MAX_ARCHIVE_ATTEMPTS
 from savetube.storage import dir_size
-from savetube.ytdl import DEFAULT_FORMAT, build_params, download, video_url, youtube_block
+from savetube.ytdl import (
+    DEFAULT_FORMAT,
+    build_params,
+    download,
+    network_error,
+    video_url,
+    youtube_block,
+)
 
 log = logging.getLogger(__name__)
 
@@ -81,11 +88,23 @@ FORMAT_GONE = "Requested format is not available"
 # A partial directory no queued or running job wants is deleted after this.
 ORPHAN_DAYS = 7
 BLOCKED_LOG = "blocked by YouTube"
+# The `log_tail` prefix of a run a network error interrupted.
+NETWORK_LOG = "network error"
+# Network interruptions of one video since its last failed or succeeded
+# archive job. The next network error after these is a failure.
+MAX_NETWORK_INTERRUPTS = 5
+PAUSED_LOG = "paused by user"
+# A running archive download reads the user's pause this often.
+PAUSE_POLL_SECONDS = 5
 NO_MEMBER = "no cookie profile is a confirmed member of the channel"
 
 
 class DownloadFailed(Exception):
     pass
+
+
+class Paused(Exception):
+    """The user paused archive downloads while this one ran."""
 
 
 def _log_format(info: dict[str, Any]) -> None:
@@ -380,11 +399,14 @@ class Dispatched:
     window: str | None
     # When the pause after a YouTube block ends. None when no pause holds.
     blocked_until: datetime | None = None
+    # The user's pause, which has no end until the user resumes.
+    paused: bool = False
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
     """Put the oldest waiting archive jobs on the queue, one per free slot, and
-    only inside the download window and outside a block pause. Commits.
+    only inside the download window, outside a block pause, and while the user
+    has not paused downloads. Commits.
 
     A waiting job is a queued archive job with no queue job. A dispatched job
     holds its slot until a worker takes it or hands it back.
@@ -403,18 +425,20 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         )
     )
     opens = next_window_start(now, limits.window_start, limits.window_end)
-    paused = blocked(limits, now)
-    if paused is not None:
-        opens = max(opens, paused) if opens is not None else paused
+    block_end = blocked(limits, now)
+    if block_end is not None:
+        opens = max(opens, block_end) if opens is not None else block_end
+    # The user's pause has no known end, so a waiting job shows none.
+    deferred = None if limits.paused else opens
     max_concurrent = concurrency(limits)
     await session.execute(
         update(Job)
-        .where(queued, Job.queue_job_id.is_(None), Job.deferred_until.is_distinct_from(opens))
-        .values(deferred_until=opens)
+        .where(queued, Job.queue_job_id.is_(None), Job.deferred_until.is_distinct_from(deferred))
+        .values(deferred_until=deferred)
     )
     started: list[int] = []
     busy = await running(session)
-    if opens is None:
+    if opens is None and not limits.paused:
         dispatched = await session.scalar(
             select(func.count()).select_from(Job).where(queued, Job.queue_job_id.is_not(None))
         )
@@ -451,7 +475,8 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         requeued=requeued,
         rate_limit=limits.rate_limit_bytes,
         window=window,
-        blocked_until=paused,
+        blocked_until=block_end,
+        paused=limits.paused,
     )
 
 
@@ -472,8 +497,9 @@ async def run(
     sessionmaker: async_sessionmaker | None = None,
     tools: integrity.Tools | None = None,
 ) -> None:
-    """Run one job. An archive job outside the download window, or with no free
-    slot, goes back to waiting for the dispatcher. A recording ignores the limits."""
+    """Run one job. An archive job outside the download window, with no free
+    slot, or while paused, goes back to waiting for the dispatcher. A pause
+    while it runs interrupts it. A recording ignores the limits."""
     sessionmaker = sessionmaker or default_sessionmaker()
     ratelimit = None
     async with sessionmaker() as session:
@@ -490,7 +516,9 @@ async def run(
                 await session.execute(update(Job).where(Job.id == job_id).values(queue_job_id=None))
                 await session.commit()
                 current = await load(session)
-                if blocked(current, now) is not None:
+                if current.paused:
+                    reason = "paused"
+                elif blocked(current, now) is not None:
                     reason = "blocked"
                 elif next_window_start(now, current.window_start, current.window_end):
                     reason = "window"
@@ -595,17 +623,20 @@ async def run(
                 if live:
                     info = await runner(video_url(video_id), params(fmt), report)
                 else:
-                    info, checks = await _archive(
+                    info, checks = await _unless_paused(
                         sessionmaker,
-                        video_id,
-                        workdir,
-                        runner=runner,
-                        params=params,
-                        fmt=fmt,
-                        pinned=pinned,
-                        report=report,
-                        streams=streams,
-                        tools=tools or integrity.Tools(),
+                        _archive(
+                            sessionmaker,
+                            video_id,
+                            workdir,
+                            runner=runner,
+                            params=params,
+                            fmt=fmt,
+                            pinned=pinned,
+                            report=report,
+                            streams=streams,
+                            tools=tools or integrity.Tools(),
+                        ),
                     )
 
             async with sessionmaker() as session:
@@ -637,13 +668,14 @@ async def run(
                 took=human_duration(time.monotonic() - started),
                 path=video.dir_path,
             )
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Paused) as e:
             # A recorder's retry starts from the first segment anyway.
             if live:
                 raise
+            reason = PAUSED_LOG if isinstance(e, Paused) else SHUTDOWN_LOG
             async with sessionmaker() as session:
                 job = await session.get(Job, job_id)
-                await _interrupt(session, job, SHUTDOWN_LOG)
+                await _interrupt(session, job, reason)
                 await session.commit()
             emit(
                 log,
@@ -654,8 +686,11 @@ async def run(
                 **described,
                 took=human_duration(time.monotonic() - started),
                 present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
-                reason=SHUTDOWN_LOG,
+                reason=reason,
             )
+            # A pause ends the queue job. The dispatcher queues the job again.
+            if isinstance(e, Paused):
+                return
             raise
         except Exception as e:
             if not live and isinstance(e, DownloadFailed) and youtube_block(str(e)):
@@ -670,6 +705,29 @@ async def run(
                     took=human_duration(time.monotonic() - started),
                     present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
                     reason=BLOCKED_LOG,
+                )
+                setattr(e, _RECORDED, True)
+                raise
+            if (
+                not live
+                and isinstance(e, DownloadFailed)
+                and network_error(str(e))
+                and await _network_interrupts(sessionmaker, video_id) < MAX_NETWORK_INTERRUPTS
+            ):
+                async with sessionmaker() as session:
+                    job = await session.get(Job, job_id)
+                    await _interrupt(session, job, f"{NETWORK_LOG}: {e}"[:LOG_TAIL_CHARS])
+                    await session.commit()
+                emit(
+                    log,
+                    logging.WARNING,
+                    "job.interrupted",
+                    job=job_id,
+                    video=video_id,
+                    **described,
+                    took=human_duration(time.monotonic() - started),
+                    present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
+                    reason=NETWORK_LOG,
                 )
                 setattr(e, _RECORDED, True)
                 raise
@@ -703,6 +761,38 @@ async def run(
             raise
 
 
+async def _unless_paused[T](sessionmaker: async_sessionmaker, work: Awaitable[T]) -> T:
+    """Await `work`, and cancel it when the user pauses archive downloads,
+    raising Paused. A cancel kills the download child and keeps its parts,
+    as a shutdown does."""
+    task = asyncio.ensure_future(work)
+    try:
+        while not task.done():
+            await asyncio.wait({task}, timeout=PAUSE_POLL_SECONDS)
+            if task.done():
+                break
+            try:
+                async with sessionmaker() as session:
+                    paused = (await load(session)).paused
+            except Exception as e:
+                # A database hiccup must not end a download that runs for hours.
+                emit(log, logging.WARNING, "job.pause_check_failed", reason=f"{e}")
+                continue
+            if paused:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                # A download that ended before the cancel keeps its result.
+                if task.cancelled():
+                    raise Paused
+    except asyncio.CancelledError:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        raise
+    return task.result()
+
+
 async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFailed) -> None:
     """Interrupt an archive job YouTube refused, so it counts no attempt and
     keeps its parts, and pause archive downloads. Jobs refused together pause
@@ -733,6 +823,29 @@ async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFai
             job=job_id,
             video=job.video_id,
             reason=logs.cut(str(e)),
+        )
+
+
+async def _network_interrupts(sessionmaker: async_sessionmaker, video_id: str) -> int:
+    """The video's network interruptions since its last failed or succeeded
+    archive job. Ordered by `finished_at`, because a failed job keeps the id
+    it had before its interrupted rows."""
+    archive = (Job.video_id == video_id) & (Job.kind == JobKind.ARCHIVE)
+    last_end = (
+        select(func.max(Job.finished_at))
+        .where(archive, Job.state.in_([JobState.FAILED, JobState.SUCCEEDED]))
+        .scalar_subquery()
+    )
+    async with sessionmaker() as session:
+        return await session.scalar(
+            select(func.count())
+            .select_from(Job)
+            .where(
+                archive,
+                Job.state == JobState.INTERRUPTED,
+                Job.log_tail.startswith(f"{NETWORK_LOG}: ", autoescape=True),
+                (Job.finished_at > last_end) | last_end.is_(None),
+            )
         )
 
 
@@ -881,6 +994,7 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
         # A recording works in `.incoming/<job id>/`.
         wanted |= {str(i) for i in await session.scalars(select(Job.id).where(active))}
     cutoff = time.time() - ORPHAN_DAYS * 86400
+    deleted = []
     for d in root.iterdir():
         if not d.is_dir() or d.name in wanted:
             continue
@@ -889,6 +1003,7 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
             continue
         size = dir_size(d)
         shutil.rmtree(d, ignore_errors=True)
+        deleted.append(d.name)
         emit(
             log,
             logging.INFO,
@@ -897,3 +1012,10 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
             size=human_bytes(size),
             idle=human_duration(time.time() - newest),
         )
+    if deleted:
+        # The pin names formats of parts that are now gone.
+        async with sessionmaker() as session:
+            await session.execute(
+                update(Video).where(Video.id.in_(deleted)).values(resume_format=None)
+            )
+            await session.commit()
