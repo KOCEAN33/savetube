@@ -14,7 +14,7 @@ import {
 } from "@/lib/format"
 
 function infoString(info: VideoDetail["info"], key: string): string | null {
-  const value = info[key]
+  const value = info?.[key]
   if (typeof value === "string") return value
   if (typeof value === "number") return formatCount(value)
   return null
@@ -84,14 +84,16 @@ export function VideoDetailPage() {
                     {description}
                   </p>
                 )}
-                <details className="rounded-lg border">
-                  <summary className="cursor-pointer p-3 text-sm font-medium">
-                    Raw yt-dlp info
-                  </summary>
-                  <pre className="max-h-[32rem] overflow-auto border-t p-3 text-xs">
-                    {JSON.stringify(v.info, null, 2)}
-                  </pre>
-                </details>
+                {v.info && (
+                  <details className="rounded-lg border">
+                    <summary className="cursor-pointer p-3 text-sm font-medium">
+                      Raw yt-dlp info
+                    </summary>
+                    <pre className="max-h-[32rem] overflow-auto border-t p-3 text-xs">
+                      {JSON.stringify(v.info, null, 2)}
+                    </pre>
+                  </details>
+                )}
               </CardContent>
             </Card>
           )

@@ -132,7 +132,8 @@ export interface Video {
 }
 
 export interface VideoDetail extends Video {
-  info: Record<string, unknown>
+  // yt-dlp's info, null until a download completes.
+  info: Record<string, unknown> | null
 }
 
 export interface VideoPage {
