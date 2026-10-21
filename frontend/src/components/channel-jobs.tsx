@@ -102,6 +102,12 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
       q.state.data?.some((j) => j.state === "running") ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
   })
   const busy = active.data?.some((j) => j.state === "running") ?? false
+  // The active list stops at MAX_JOB_LIMIT, so the queued counts come from the server.
+  const counts = useQuery({
+    queryKey: ["jobs", "archive", channelId, "counts"],
+    queryFn: () => api.jobCounts({ kind: "archive", channel_id: channelId }),
+    refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
+  })
   const recent = useQuery({
     queryKey: ["jobs", "archive", channelId, "recent", recentLimit],
     queryFn: () =>
@@ -122,6 +128,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
         {(jobs) => {
           const running = jobs.filter((j) => j.state === "running")
           const queued = jobs.filter((j) => j.state === "queued").sort((a, b) => a.id - b.id)
+          const queuedTotal = counts.data?.queued ?? queued.length
           return (
             <>
               <h3 className="border-b bg-muted px-3 py-2 text-sm font-medium">Downloading now</h3>
@@ -135,7 +142,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
                 </ul>
               )}
               <h3 className="border-y bg-muted px-3 py-2 text-sm font-medium">
-                Queued ({queued.length}), next first
+                Queued ({queuedTotal}), next first
               </h3>
               {queued.length === 0 ? (
                 <p className="p-3 text-sm text-muted-foreground">Nothing waits.</p>
@@ -152,7 +159,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
                     Show more
                   </Button>
                   <span className="text-xs text-muted-foreground">
-                    {queued.length - queuedShown} more wait after these.
+                    {queuedTotal - queuedShown} more wait after these.
                   </span>
                 </div>
               )}
