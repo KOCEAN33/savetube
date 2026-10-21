@@ -4,6 +4,7 @@ import multiprocessing
 import pytest
 
 from savetube.jobs import pump_progress, youtube_block
+from savetube.ytdl import network_error
 
 
 @pytest.fixture
@@ -83,3 +84,29 @@ async def test_a_failed_write_does_not_stop_the_pump():
 )
 def test_a_youtube_block_is_the_bot_check_or_429(message, block):
     assert youtube_block(message) is block
+
+
+@pytest.mark.parametrize(
+    ("message", "network"),
+    [
+        (
+            "DownloadError: ERROR: \r[download] Got error: HTTPSConnectionPool("
+            "host='rr7---sn-3u-bh2zl.googlevideo.com', port=443): Read timed out."
+            " (read timeout=20.0)",
+            True,
+        ),
+        (
+            "DownloadError: ERROR: \r[download] Got error:"
+            " 4392287 bytes read, 5689076 more expected",
+            True,
+        ),
+        ("ERROR: [download] Got error: [Errno 54] Connection reset by peer", True),
+        ("ERROR: Remote end closed connection without response", True),
+        ("ERROR: IncompleteRead(1024 bytes read, 2048 more expected)", True),
+        ("ERROR: unable to download video data: HTTP Error 403: Forbidden", False),
+        ("ERROR: [youtube] v1: Requested format is not available", False),
+        ("ERROR: 4392287 bytes read", False),
+    ],
+)
+def test_a_network_error_is_a_dropped_or_timed_out_connection(message, network):
+    assert network_error(message) is network

@@ -3439,6 +3439,128 @@ async def test_a_block_while_paused_interrupts_without_lengthening_the_pause(set
     assert len(_events(caplog, "job.interrupted")) == 1
 
 
+READ_TIMEOUT = (
+    "DownloadError: ERROR: \r[download] Got error: HTTPSConnectionPool("
+    "host='rr7---sn-3u-bh2zl.googlevideo.com', port=443): Read timed out. (read timeout=20.0)"
+)
+
+
+def _network_step(message=READ_TIMEOUT):
+    async def step(params, report):
+        from savetube.jobs import DownloadFailed
+
+        _part(params)
+        await report({"event": "format", "format_id": "251"})
+        raise DownloadFailed(message)
+
+    return step
+
+
+def _network_rows(count, minutes_ago=10):
+    """`count` earlier network interruptions of v1's archive job."""
+    return [
+        "INSERT INTO job (kind, state, video_id, attempts, log_tail, finished_at) VALUES"
+        f" ('archive', 'interrupted', 'v1', 1, 'network error: x',"
+        f" now() - interval '{minutes_ago + i} minutes')"
+        for i in range(count)
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "earlier",
+    [
+        [],
+        # Four interruptions so far leave room for a fifth.
+        _network_rows(4),
+        # A failure ends the run of interruptions before it.
+        [
+            *_network_rows(5, minutes_ago=60),
+            "INSERT INTO job (kind, state, video_id, attempts, log_tail, finished_at) VALUES"
+            " ('archive', 'failed', 'v1', 1, 'x', now() - interval '30 minutes')",
+        ],
+    ],
+)
+async def test_a_network_error_interrupts_the_archive_job_and_keeps_the_parts(
+    settings, caplog, earlier
+):
+    import logging
+
+    _job_rows(
+        settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)", *earlier
+    )
+    known = set(_job_ids(settings))
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _Steps(_network_step()))
+    [history] = [j for j in jobs.values() if j.id not in known]
+    assert (history.state, history.video_id) == ("interrupted", "v1")
+    assert history.log_tail == f"network error: {READ_TIMEOUT}"
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert video.state is VideoState.PENDING and video.resume_format == "251"
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+    # A network error is no YouTube block, so downloads do not pause.
+    assert _block_state(settings) == (0, None)
+    assert _events(caplog, "job.failed") == [] and _events(caplog, "dispatch.blocked") == []
+    [line] = _events(caplog, "job.interrupted")
+    assert line.levelno == logging.WARNING and _fields(line)["reason"] == "network error"
+
+
+@pytest.mark.anyio
+async def test_a_sixth_network_error_in_a_row_fails_the_job(settings, caplog):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa'",
+        "SELECT setval('job_id_seq', 200)",
+        *_network_rows(5),
+    )
+    known = set(_job_ids(settings))
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _Steps(_network_step()))
+    assert set(jobs) == known
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.FAILED, 1)
+    assert jobs[1].log_tail == READ_TIMEOUT
+    assert video.state is VideoState.FAILED and video.resume_format is None
+    assert not (settings.incoming_root / "v1").exists()
+    assert _events(caplog, "job.interrupted") == []
+    assert len(_events(caplog, "job.failed")) == 1
+
+
+@pytest.mark.anyio
+async def test_a_block_with_a_network_error_text_pauses_downloads(settings, caplog):
+    import logging
+
+    message = "ERROR: HTTP Error 429: Too Many Requests. Read timed out."
+    _job_rows(settings, "SELECT setval('job_id_seq', 200)")
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _Steps(_network_step(message)))
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert history.log_tail == f"blocked by YouTube: {message}"
+    assert _block_state(settings)[0] == 1
+    [line] = _events(caplog, "job.interrupted")
+    assert _fields(line)["reason"] == "blocked by YouTube"
+
+
+@pytest.mark.anyio
+async def test_an_http_403_still_fails_the_archive_job(settings):
+    message = "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    jobs, video = await _run_steps(settings, _Steps(_network_step(message)))
+    assert list(jobs) == [1]
+    assert (jobs[1].state, jobs[1].attempts, jobs[1].log_tail) == (JobState.FAILED, 1, message)
+    assert video.resume_format is None
+    assert not (settings.incoming_root / "v1").exists()
+
+
+def _job_ids(settings):
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        ids = list(c.execute(sa.text("SELECT id FROM job")).scalars())
+    engine.dispose()
+    return ids
+
+
 @pytest.mark.anyio
 async def test_dispatch_sends_nothing_while_blocked_then_one_probe(settings):
     _waiting_rows(

@@ -48,7 +48,14 @@ from savetube.logs import emit, human_bytes, human_duration
 from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
 from savetube.poll import MAX_ARCHIVE_ATTEMPTS
 from savetube.storage import dir_size
-from savetube.ytdl import DEFAULT_FORMAT, build_params, download, video_url, youtube_block
+from savetube.ytdl import (
+    DEFAULT_FORMAT,
+    build_params,
+    download,
+    network_error,
+    video_url,
+    youtube_block,
+)
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +88,11 @@ FORMAT_GONE = "Requested format is not available"
 # A partial directory no queued or running job wants is deleted after this.
 ORPHAN_DAYS = 7
 BLOCKED_LOG = "blocked by YouTube"
+# The `log_tail` prefix of a run a network error interrupted.
+NETWORK_LOG = "network error"
+# Network interruptions of one video since its last failed or succeeded
+# archive job. The next network error after these is a failure.
+MAX_NETWORK_INTERRUPTS = 5
 NO_MEMBER = "no cookie profile is a confirmed member of the channel"
 
 
@@ -673,6 +685,29 @@ async def run(
                 )
                 setattr(e, _RECORDED, True)
                 raise
+            if (
+                not live
+                and isinstance(e, DownloadFailed)
+                and network_error(str(e))
+                and await _network_interrupts(sessionmaker, video_id) < MAX_NETWORK_INTERRUPTS
+            ):
+                async with sessionmaker() as session:
+                    job = await session.get(Job, job_id)
+                    await _interrupt(session, job, f"{NETWORK_LOG}: {e}"[:LOG_TAIL_CHARS])
+                    await session.commit()
+                emit(
+                    log,
+                    logging.WARNING,
+                    "job.interrupted",
+                    job=job_id,
+                    video=video_id,
+                    **described,
+                    took=human_duration(time.monotonic() - started),
+                    present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
+                    reason=NETWORK_LOG,
+                )
+                setattr(e, _RECORDED, True)
+                raise
             # A retry after a real failure starts over, so the parts would
             # otherwise stay on the dataset for good.
             shutil.rmtree(workdir, ignore_errors=True)
@@ -733,6 +768,29 @@ async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFai
             job=job_id,
             video=job.video_id,
             reason=logs.cut(str(e)),
+        )
+
+
+async def _network_interrupts(sessionmaker: async_sessionmaker, video_id: str) -> int:
+    """The video's network interruptions since its last failed or succeeded
+    archive job. Ordered by `finished_at`, because a failed job keeps the id
+    it had before its interrupted rows."""
+    archive = (Job.video_id == video_id) & (Job.kind == JobKind.ARCHIVE)
+    last_end = (
+        select(func.max(Job.finished_at))
+        .where(archive, Job.state.in_([JobState.FAILED, JobState.SUCCEEDED]))
+        .scalar_subquery()
+    )
+    async with sessionmaker() as session:
+        return await session.scalar(
+            select(func.count())
+            .select_from(Job)
+            .where(
+                archive,
+                Job.state == JobState.INTERRUPTED,
+                Job.log_tail.startswith(f"{NETWORK_LOG}: ", autoescape=True),
+                (Job.finished_at > last_end) | last_end.is_(None),
+            )
         )
 
 

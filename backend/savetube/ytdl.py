@@ -38,6 +38,16 @@ WAIT_FOR_VIDEO = (30, 120)
 # reads "Sign in to confirm you’re not a bot", with a straight or curly
 # apostrophe, so no part includes it.
 BLOCK_MARKERS = (("confirm you", "not a bot"), ("http error 429",))
+# yt-dlp's text when the connection to the media host drops or times out, in
+# the same groups as BLOCK_MARKERS. "4392287 bytes read, 5689076 more expected"
+# is a body cut short.
+NETWORK_MARKERS = (
+    ("read timed out",),
+    ("bytes read", "more expected"),
+    ("connection reset",),
+    ("remote end closed",),
+    ("incompleteread",),
+)
 # YouTube's text for a members-only video the account may not watch, in both
 # forms: "Join this channel to get access to members-only content like this
 # video, and other exclusive perks." and "This video is available to this
@@ -50,6 +60,12 @@ def youtube_block(message: str) -> bool:
     """Whether a failure is YouTube refusing this client."""
     text = message.lower()
     return any(all(part in text for part in group) for group in BLOCK_MARKERS)
+
+
+def network_error(message: str) -> bool:
+    """Whether a failure is a dropped or timed-out connection."""
+    text = message.lower()
+    return any(all(part in text for part in group) for group in NETWORK_MARKERS)
 
 
 def members_only(message: str) -> bool:
