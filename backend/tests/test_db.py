@@ -4402,3 +4402,125 @@ def test_api_pauses_and_resumes_archive_downloads(settings, caplog):
     [paused] = _events(caplog, "dispatch.paused")
     [resumed] = _events(caplog, "dispatch.resumed")
     assert paused.levelno == resumed.levelno == logging.INFO
+
+
+async def _work(settings, monkeypatch, step, *, reclaim):
+    """A real worker takes job 1's queue job. With `reclaim`, the run first
+    plays the scheduler's reclaim, which fails that queue job, and a second
+    run's start. Returns the queue job's id."""
+    from procrastinate import PsycopgConnector
+    from procrastinate.jobs import Status
+
+    from savetube import jobs as jobs_module
+    from savetube.db import PSYCOPG_CONNECT_ARGS
+    from savetube.queue import ARCHIVE_QUEUE, app, archive
+
+    real_run = jobs_module.run
+    engine = make_engine(settings.sqlalchemy_url)
+
+    async def first(params, report):
+        if reclaim:
+            await app.job_manager.finish_job_by_id_async(
+                queue_job_id, status=Status.FAILED, delete_job=False
+            )
+            await _reclaim_and_start_again(settings)
+        return await step(params, report)
+
+    async def run(job_id, _settings, *, live, runner):
+        await real_run(
+            job_id,
+            settings,
+            live=live,
+            runner=_Steps(first),
+            sessionmaker=make_sessionmaker(engine),
+            tools=_FakeTools(),
+        )
+
+    monkeypatch.setattr(jobs_module, "run", run)
+    connector = PsycopgConnector(conninfo=settings.conninfo, kwargs=PSYCOPG_CONNECT_ARGS)
+    with app.replace_connector(connector):
+        async with app.open_async():
+            queue_job_id = await archive.defer_async(job_id=1)
+            _sql(settings, f"UPDATE job SET queue_job_id = {queue_job_id} WHERE id = 1")
+            # The worker settings of savetube.cli.
+            await asyncio.wait_for(
+                app.run_worker_async(
+                    queues=[ARCHIVE_QUEUE],
+                    wait=False,
+                    listen_notify=False,
+                    delete_jobs="successful",
+                    install_signal_handlers=False,
+                ),
+                10,
+            )
+    await engine.dispose()
+    return queue_job_id
+
+
+def _errors(caplog):
+    import logging
+
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["done", "failed"])
+async def test_a_worker_ends_a_reclaimed_queue_job_without_an_error(
+    settings, caplog, monkeypatch, outcome
+):
+    import gc
+    import logging
+
+    from savetube.jobs import DownloadFailed
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    finished = _finished()
+
+    async def step(params, report):
+        if outcome == "failed":
+            _part(params)
+            raise DownloadFailed("ERROR: something broke")
+        return await finished(params, report)
+
+    with caplog.at_level(logging.DEBUG):
+        queue_job_id = await _work(settings, monkeypatch, step, reclaim=True)
+        # An unretrieved task exception logs when the task is collected.
+        gc.collect()
+
+    assert _errors(caplog) == []
+    assert [_fields(r)["job"] for r in _events(caplog, "job.disowned")] == [1]
+    rows = _sql_rows(settings, f"SELECT status FROM procrastinate_jobs WHERE id = {queue_job_id}")
+    assert rows == [("failed",)]
+
+
+@pytest.mark.anyio
+async def test_a_worker_still_ends_its_own_queue_job(settings, caplog, monkeypatch):
+    import gc
+    import logging
+
+    from procrastinate import PsycopgConnector
+    from procrastinate.exceptions import ConnectorException
+    from procrastinate.jobs import Job as QueueJob
+    from procrastinate.jobs import Status
+
+    from savetube.db import PSYCOPG_CONNECT_ARGS
+    from savetube.queue import app
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    with caplog.at_level(logging.DEBUG):
+        queue_job_id = await _work(settings, monkeypatch, _finished(), reclaim=False)
+        gc.collect()
+
+    assert _errors(caplog) == []
+    assert [_fields(r)["job"] for r in _events(caplog, "job.done")] == [1]
+    rows = _sql_rows(settings, f"SELECT id FROM procrastinate_jobs WHERE id = {queue_job_id}")
+    assert rows == []
+
+    # Only a queue job the reclaim failed counts as already ended.
+    ended = _queue_row(settings, "succeeded")
+    job = QueueJob(id=ended, queue="archive", lock=None, queueing_lock=None, task_name="archive")
+    connector = PsycopgConnector(conninfo=settings.conninfo, kwargs=PSYCOPG_CONNECT_ARGS)
+    with app.replace_connector(connector):
+        async with app.open_async():
+            with pytest.raises(ConnectorException):
+                await app.job_manager.finish_job(job, Status.SUCCEEDED, delete_job=True)
