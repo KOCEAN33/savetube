@@ -2,14 +2,14 @@
 
 ## Goal
 
-Ship what develop holds since `v0.7.0` when the user approves, then in-browser playback.
+Confirm `v0.8.0` in production, then in-browser playback.
 
 ## Current progress
 
-- Running in `savetube-prod`: `v0.7.0`, chart `v0.7.0`, migrations `0001`-`0011`. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning).
+- Running in `savetube-prod`: `v0.8.0`, chart `v0.8.0`, migrations `0001`-`0012`, deployed 23:08 KST on 2026-10-21 through PR #33. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning).
 - The general cookie profile is `burner`, `max_concurrent` is 1. No bot check has returned since 18:39 KST on 2026-10-21.
-- Production still fails a download on every dropped googlevideo connection, because `v0.7.0` passes no `retries` to yt-dlp. As a library, yt-dlp then retries 0 times. Develop fixes it (PR #18). The follow-ups the user wanted cleared before the deploy are merged.
-- Develop holds, not deployed (PRs #17-#31):
+- Checked after the deploy: no `failed` video has a queued archive job, and the first job resumed from its `.part` file. No dropped connection had happened yet, so yt-dlp "Retrying" lines are not seen.
+- `v0.8.0` added (PRs #17-#32):
   - yt-dlp retries: `retries` 10, `fragment_retries` 10, `extractor_retries` 3, `file_access_retries` 3. A local test server that stops halfway reproduces the production error without them.
   - Network interrupts count toward the cap of 5 only when a run added no bytes, so a download that moves on is retried until it ends.
   - Migration `0012` sets `failed` videos with a queued archive job back to `pending`, and the poll now does that when it queues.
@@ -21,8 +21,8 @@ Ship what develop holds since `v0.7.0` when the user approves, then in-browser p
   - The worker ends a queue job the reclaim already failed without a procrastinate error.
   - The channel page "Queued (N)" counts from `GET /api/jobs/counts`. The Home chart and recharts load lazily: dashboard chunk 382.75 kB to 57.30 kB.
   - Home shows a "Sources waiting" card while a source has no channel: before its first poll, after a failed first poll, or disabled.
-- Verified in production on `v0.7.0`: resume from `.part` files after a deploy, and `size`, `probe`, `packets` on the resumed file.
   - Channel library layout (PR #25), the variant the user picked from a three-variant prototype: sidebar channel list with filter, channel header row, tabs with counts, Playlists through the new `source_id` filter on `GET /api/videos`, no global search. `docs/plan/frontend.md` holds the rules.
+- Verified in production on `v0.7.0`: resume from `.part` files after a deploy, and `size`, `probe`, `packets` on the resumed file.
 - `savetube_proto` on pg-dev holds seeded demo data. `/tmp/savetube-library/serve.sh` serves a production build of a worktree against it, login skipped. Drop the database when no longer needed.
 - CULUA is the one production channel.
 
@@ -51,7 +51,7 @@ Ship what develop holds since `v0.7.0` when the user approves, then in-browser p
 
 ## Next steps
 
-1. Deploy develop when the user approves: merge develop into main, then check that 0012 ran, the 105 videos turned `pending`, and the worker logs yt-dlp "Retrying" lines instead of job errors.
+1. Check the worker logs for yt-dlp "Retrying" lines instead of job errors once a googlevideo connection drops.
 2. The user checks the dashboard Downloads card and the header pause switch in production.
 3. The user checks the channel library layout after the deploy.
 4. The user checks the "Sources waiting" card after the deploy. Its "Poll now" button is not clicked in any test.
