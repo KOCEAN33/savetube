@@ -2,89 +2,72 @@
 
 ## Goal
 
-Clear the follow-ups from the `v0.7.0` downloads-control release, then build in-browser playback.
+Ship what develop holds since `v0.7.0`, then build the channel page redesign from the variant the user picks.
 
 ## Current progress
 
-- Running in `savetube-prod`: `v0.7.0`, chart `v0.7.0`. Migrations `0001`-`0011` applied. The deploy job moves `image.tag` and `chartRevision` together (`docs/plan/operations.md` Versioning). A merge to develop deploys nothing; a merge of develop into main releases and deploys.
-- Downloads run again. The general cookie profile is `burner`, `max_concurrent` is 1, and no bot check has returned since 18:39 KST on 2026-10-21. `download_settings.block_count` is 0.
-- Archive jobs at 19:30 KST:
-
-  | state | count |
-  |---|---|
-  | succeeded | 133 |
-  | queued | 106 |
-  | interrupted | 112 |
-  | failed | 35 |
-  | cancelled | 14 |
-  | running | 1 |
-
-- Released `v0.7.0` (PR #14 into develop, PR #15 into main):
-  - Network errors interrupt an archive run instead of failing it: parts and pin stay, no attempt counts, at most 5 in a row per video (`NETWORK_MARKERS` in `savetube.ytdl`). Not yet seen on a real production failure.
-  - Global pause: `download_settings.paused` (migration `0011`), a switch in the site header and on Settings. It stops dispatch and interrupts running archive downloads within about 5 s. Lives ignore it. The per-channel pause (source `archiving`) stays.
-  - Dashboard Downloads card: running downloads with progress, the queue count, recent failed and interrupted jobs with a one-line `reason`. `GET /api/jobs` carries `channel_name`, `log_tail`, `reason`.
-  - Hourly database cleanup (`savetube.cleanup`): clears `job.progress` on finished jobs, deletes finished procrastinate jobs older than 30 days, deletes `interrupted` rows of videos whose latest success is older than 30 days. The `.incoming` cleanup also clears the pin of a directory it deletes.
-- Verified in production: the `v0.7.0` deploy interrupted job 293 (video `DJlgq6Fja2M`), and the new worker resumed it from 1.22 GiB of `.part` files. It passed `size`, `probe` and `packets`.
-- Not verified: the dashboard card and the header switch in the production UI. Nobody has looked at them there.
-- CULUA is the one production channel: Videos and Live tabs, 5 playlists, words `歌枠`, `歌ってみた`, `Official Music Video`.
-- Argo CD webhooks: savetube, homelab-workloads and homelab-platform push to `https://argocd.hiriri.com/api/webhook`. The secret is field `github-secret` of the 1Password item `argocd-webhook` in the Homelab vault.
-- The user's design decisions are rules in `docs/plan/`.
+- Running in `savetube-prod`: `v0.7.0`, chart `v0.7.0`, migrations `0001`-`0011`. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning).
+- The general cookie profile is `burner`, `max_concurrent` is 1. No bot check has returned since 18:39 KST on 2026-10-21.
+- Production still fails a download on every dropped googlevideo connection, because `v0.7.0` passes no `retries` to yt-dlp. As a library, yt-dlp then retries 0 times. Develop fixes it (PR #18). The user chose to clear follow-ups before deploying.
+- Develop holds, not deployed (PRs #17-#23):
+  - yt-dlp retries: `retries` 10, `fragment_retries` 10, `extractor_retries` 3, `file_access_retries` 3. A local test server that stops halfway reproduces the production error without them.
+  - Network interrupts count toward the cap of 5 only when a run added no bytes, so a download that moves on is retried until it ends.
+  - Migration `0012` sets `failed` videos with a queued archive job back to `pending`, and the poll now does that when it queues.
+  - Run ownership: a run whose job a reclaim took stops and writes nothing (`job.disowned`). The reclaim waits 300 s without a heartbeat.
+  - Title-word narrowing cancels a queued job unless another archiving source still wants the video. A resumed run skips a finished chat replay. `job.progress` clears to SQL NULL.
+  - UI: header pause refetch, `GET /api/jobs/counts`, the other-channels choice in the add-channel summary and before the first playlist, per-channel statistics by the channel list rule.
+  - Image 1.22 GB to 1.17 GB, entry chunk 1,001 kB to 376 kB through route `lazy`. Route loading is not clicked through in a browser.
+  - Tests: each run creates and drops `savetube_test_<random>`, and the health test no longer leaks a transport.
+- Verified in production on `v0.7.0`: resume from `.part` files after a deploy, and `size`, `probe`, `packets` on the resumed file.
+- Channel page redesign prototype, uncommitted, in worktree `../savetube-wt-proto` (branch `prototype/channel-redesign`). `/tmp/savetube-proto/serve.sh` builds and serves it against database `savetube_proto` on pg-dev, login skipped, and prints the URL. `?variant=a|b|c` and ←/→ switch. The user's decisions: tabs Videos, Shorts, Live, Playlists, Downloads; Downloads holds the archive settings and job lists; Home shows running downloads; the sidebar lists channels below Home, Live, Videos, Settings and replaces the Channels page. The three variants differ on search: a header search bar, a sidebar filter with per-tab search, or a ⌘K palette.
+- CULUA is the one production channel.
 
 ## What worked
 
-- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first. URL-quote the password, and point `sslrootcert` at `~/.postgresql/postgres-dev-ca.crt`. A script file works where the permission classifier refuses the inline subshell.
-- Local end-to-end check: a throwaway database `savetube_e2e` on pg-dev (exists, sources disabled), `SAVETUBE_ARCHIVE_ROOT` under `/tmp`, `SAVETUBE_STATIC_DIR=frontend/dist`, and a uvicorn script that sets `app.dependency_overrides[current_user]` to skip login. Run `savetube scheduler` and `savetube worker` beside it, each with its own `SAVETUBE_METRICS_PORT` and `SAVETUBE_HEALTH_PORT`. macmon holds 9090 on this Mac. Use the channel quality `wa[ext=m4a]/wa`, because this Mac has no ffmpeg.
-- Production reads without the UI: `kubectl --context homelab-tailnet -n postgres exec postgres-2 -c postgres -- psql -d savetube -c "set default_transaction_read_only=on; ..."`. One query per call passes. Writes through this path are denied by the permission classifier. Use the UI's buttons, such as Poll now.
-- Screenshots of a local build: Playwright through `uvx --with playwright python -I <script>` with `channel="chrome"`. Frontend uses pnpm.
-- yt-dlp with browser cookies on this Mac needs `--js-runtimes node`, because Deno is not installed.
-- Parallel agents in worktrees: tell them to branch from `develop`. The harness worktree started from an old main merge commit, so this session cherry-picked each commit onto a branch from develop.
+- DB tests: `bash /tmp/savetube-testdb/run-tests.sh <repo root> make check`. The script reads `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` and the password from `op read 'op://Homelab/savetube-dev-db/password'`, URL-quoted, with `sslrootcert` `~/.postgresql/postgres-dev-ca.crt`. It prints no secret. Parallel runs are safe.
+- Parallel agents: make the worktrees yourself with `git worktree add -b <branch> ../savetube-wt-<name> develop`, give each a file boundary, and merge one PR per worktree.
+- Production reads: `kubectl --context homelab-tailnet -n postgres exec postgres-2 -c postgres -- psql -d savetube -c "set default_transaction_read_only=on;" -c "<one query>"`. One query per call passes the permission classifier.
+- Local UI checks: Playwright through `uvx --with playwright python -I <script>` with `channel="chrome"`. Frontend uses pnpm.
+- yt-dlp with browser cookies on this Mac needs `--js-runtimes node`.
 
 ## What did not work
 
-- An Argo CD refresh annotation (`kubectl annotate application`) is denied by the permission classifier. The webhooks make it unnecessary.
-- A background loop polling production with kubectl is denied by the permission classifier as "Production Deploy". Check once per call instead.
-- `bsk` on `savetube.lab.hiriri.com` fails: Chrome blocks access because the page holds another extension's frame. The user checks the production UI.
-- Parallel DB test runs break each other, because `backend/tests/test_db.py:35` fixes the database name `savetube_test`.
-- respx cannot mock Authlib or Starlette's TestClient, because both use `httpx2`. `tests/test_auth.py` patches `httpx2.AsyncHTTPTransport`.
+- The harness `isolation: worktree` starts from an old main merge commit, not develop.
+- A background loop polling production with kubectl is denied by the permission classifier as "Production Deploy".
+- `bsk` on `savetube.lab.hiriri.com` fails: the page holds another extension's frame. The user checks the production UI.
+- An Argo CD refresh annotation is denied by the permission classifier. The webhooks make it unnecessary.
+- respx cannot mock Authlib or Starlette's TestClient, because both use `httpx2`.
 - `make talos-config` fails off the home LAN. Use `talosctl patch mc --mode no-reboot` over the tailnet.
 
 ## Open questions
 
-- Which mitigation clears the bot check if it returns through `burner`: the bgutil PO token (does a token reach a request at all?), `curl-cffi` impersonation, `-t sleep` intervals, or waiting it out? `docs/plan/background.md` notes the ban risk for a logged-in account.
-- Why googlevideo cuts connections mid-chunk ("N bytes read, M more expected") on about half of the downloads since 18:44 KST on 2026-10-21. Throttling of the home IP is a guess, unverified.
+- Which variant, or mix, of the channel page prototype the user picks.
+- Which tab holds members-only videos in the redesign. No tab shows them yet.
+- Whether googlevideo still drops connections once yt-dlp retries in place.
 
 ## Next steps
 
-The user asked for every follow-up below to be fixed.
-
-1. The user checks the dashboard Downloads card and the header pause switch in production.
-2. Test database name: derive it per run, such as from the pid or an env variable, so parallel runs stop colliding (`backend/tests/test_db.py:35`).
-3. `backend/savetube/jobs.py:329` sets `job.progress = None`, which probably writes JSON `null`, not SQL NULL. Use `sqlalchemy.null()` as `savetube.cleanup` does. Unverified.
-4. `docs/plan/operations.md` Logging lists `dispatch.blocked` and `dispatch.unblocked` but not `dispatch.paused`, `dispatch.resumed`, `cleanup.done`, or `job.pause_check_failed`.
-5. 114 videos are in state `failed` while their archive job is `queued`. Find where the video state misses the requeue and fix it, with a migration for the existing rows if needed.
-6. The header pause switch reads the flag on page load and window focus only. Refetch it on an interval, so another tab's change shows.
-7. A locked harness worktree remains at `.claude/worktrees/agent-a2c804c8bef62b13a` with branch `worktree-agent-a2c804c8bef62b13a`. Its commit is in develop. Remove both once the lock clears.
-8. The network-interrupt branch in the archive run repeats the `job.interrupted` emit of the block branch. Share one helper.
-9. The dashboard queued count comes from a list capped at 500 and shows "500+". Use a server-side count.
-10. Earlier follow-ups:
-    - The add-channel step 4 summary omits the other-channels choice.
-    - The channel page has no way to set other-channels before a playlist exists.
-    - The dashboard's per-channel statistics count by uploader and include uploader-only channels.
-    - Narrowing words does not cancel a queued job whose video another source also lists.
-    - Chat replay downloads again on every resume.
-    - If procrastinate marks a live worker stalled, two downloads can share `.incoming/<video id>/`.
-    - An intermittent `PytestUnraisableExceptionWarning` (an asyncio server transport collected late, probably the health server in a test) shows in about 1 of 6 runs.
-    - The image is 1.22 GB. The frontend bundle is about 1 MB.
-11. In-browser playback, which the user approved: mount `tank/youtube` read-only in the web pod, serve media with HTTP Range, add a `<video>` element on the video page. Chrome and Firefox play the stored mkv with VP9 or AV1 and Opus. Safari needs mp4 or WebM, so store WebM when the codecs allow or remux on the fly.
-12. Review live recording with the user before building the recorder path.
+1. Deploy develop when the user approves: merge develop into main, then check that 0012 ran, the 105 videos turned `pending`, and the worker logs yt-dlp "Retrying" lines instead of job errors.
+2. The user checks the dashboard Downloads card and the header pause switch in production.
+3. The user picks a prototype variant. Rebuild the winner as real code with tests, delete the losing variants and the switcher, drop `savetube_proto`, remove `../savetube-wt-proto`, and update `docs/plan/frontend.md`.
+4. Add a `source_id` filter to `GET /api/videos`, so the Playlists tab shows stored videos instead of listing entries.
+5. Follow-ups:
+   - The worker logs a procrastinate error when it finishes a queue job a reclaim already failed.
+   - The channel page "Queued (N)" still counts from a list capped at 500. Use `GET /api/jobs/counts?channel_id=`.
+   - A killed test run leaves its `savetube_test_<random>` database behind.
+   - The `/` route loads recharts on first paint. Lazy-load the chart.
+   - ffmpeg is about 180-210 MB of the image. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
+6. In-browser playback, which the user approved: mount `tank/youtube` read-only in the web pod, serve media with HTTP Range, add a `<video>` element on the video page. Safari needs mp4 or WebM.
+7. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
+8. Later: i18n with Korean added beside English.
 
 ## Suggested skills
 
-`tdd` for new seams, `diagnosing-bugs` for the failed-state mismatch, `gh-cli` for workflow runs.
+`tdd` for new seams, `prototype` cleanup after the pick, `gh-cli` for workflow runs.
 
 ## Pointers
 
 - `docs/plan/README.md`: design index, then only the topic files the task touches
-- `docs/plan/operations.md` Logging: the logfmt event policy
-- `docs/plan/archive.md`: dispatch, pausing, members-only rule, resume and integrity, cleanup
+- `docs/plan/archive.md`: dispatch, pausing, retries, ownership, resume and integrity, cleanup
+- `docs/plan/frontend.md`: pages, dashboard, API
 - homelab-workloads `savetube/appset.yaml` (`chartRevision`) and `savetube/envs/prod.yaml` (`image.tag`)
