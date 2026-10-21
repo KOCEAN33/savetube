@@ -96,14 +96,40 @@ def test_rendered_cronjob_makes_a_recorder_job():
     assert archive["persistentVolumeClaim"]["claimName"] == "savetube-archive"
 
     env = {e["name"]: e for e in recorder["env"]}
-    cookie_path = Path(env["SAVETUBE_COOKIES_FILE"]["value"])
-    (cookie_mount,) = [
-        m for m in recorder["volumeMounts"] if m["mountPath"] == str(cookie_path.parent)
-    ]
+    cookie_mount = mounts[env["SAVETUBE_COOKIES_DIR"]["value"]]
     assert cookie_mount.get("readOnly") is True
-    cookie_volume = volumes[cookie_mount["name"]]
-    assert cookie_volume["secret"]["secretName"] == "savetube-cookies"
-    assert [i["path"] for i in cookie_volume["secret"]["items"]] == [cookie_path.name]
+    # The whole Secret: each key is a profile.
+    assert volumes[cookie_mount["name"]]["secret"] == {"secretName": "savetube-cookies"}
+
+
+# Every yt-dlp pod reads the profiles. The internet-facing web pod never mounts them.
+def test_only_the_yt_dlp_pods_mount_the_cookie_profiles():
+    def cookie_parts(spec):
+        env = [e["name"] for c in spec["containers"] for e in c.get("env", [])]
+        mounts = [m["mountPath"] for c in spec["containers"] for m in c.get("volumeMounts", [])]
+        secrets = [v["secret"] for v in spec["volumes"] if "secret" in v]
+        return env, mounts, secrets
+
+    for role, obj in workloads(render()).items():
+        env, mounts, secrets = cookie_parts(pod_spec(obj))
+        if role == "web":
+            assert "SAVETUBE_COOKIES_DIR" not in env
+            assert "/secrets/cookies" not in mounts
+            assert {"secretName": "savetube-cookies"} not in secrets
+            continue
+        spec = pod_spec(obj)
+        (c,) = [c for c in spec["containers"] if c["name"] in (role, RECORDER_CONTAINER)]
+        values = {e["name"]: e.get("value") for e in c["env"]}
+        mount = {m["mountPath"]: m for m in c["volumeMounts"]}[values["SAVETUBE_COOKIES_DIR"]]
+        assert mount["readOnly"] is True, role
+        volumes = {v["name"]: v for v in spec["volumes"]}
+        # The whole Secret: each key is a profile.
+        assert volumes[mount["name"]]["secret"] == {"secretName": "savetube-cookies"}, role
+
+    without = render(VALUES | {"cookies": {"existingSecret": ""}})
+    for role, obj in workloads(without).items():
+        env, mounts, _ = cookie_parts(pod_spec(obj))
+        assert "SAVETUBE_COOKIES_DIR" not in env and "/secrets/cookies" not in mounts, role
 
 
 # Anchor 3: least privilege and a single migrator.

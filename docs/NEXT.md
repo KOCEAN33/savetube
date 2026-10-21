@@ -2,84 +2,73 @@
 
 ## Goal
 
-The user tries the add-channel flow of `v0.3.0` in production and gives feedback, then review live recording with the user before building the recorder path.
+Get production downloading again after YouTube's bot check blocked it, ship the resume and integrity work already on `develop`, then build in-browser playback.
 
 ## Current progress
 
-- The repository is public under MIT. A gitleaks pass over the full history found no secret before the switch.
-- Branches: work lands on `develop`, the default branch. main changes only through a merged pull request: the ruleset `main` allows no direct push, no force push, no bypass, and the merge-commit method only. A merge to main is a release and a deploy.
-- Deploy: the `deploy` job in `image.yml` writes the new image tag into homelab-workloads `savetube/envs/prod.yaml` `image.tag` and pushes as the `kocean33-homelab-ci` App. Argo CD rolls it out. The job reads the variable `HOMELAB_APP_CLIENT_ID` and the secret `HOMELAB_APP_PRIVATE_KEY`, PKCS#8 from the 1Password item `kocean33-homelab-ci` in the Private vault. The `proxmox-talos-lab-op` service account cannot read that vault. The key field is labeled `개인 키`, so `op read` takes its field id `private_key`.
-- actionlint reports `client-id` on `create-github-app-token@v3` as unknown. Its bundled metadata is stale, and v3 accepts the input.
-- Build: `.github/workflows/image.yml` runs on a GitHub-hosted runner on every push to main. python-semantic-release (`releaserc.toml`) first tags the next `vX.Y.Z` and creates a GitHub Release. The image gets `X.Y.Z`, `X.Y` and the full commit sha. Every commit type bumps at least patch. Only a run with no new commit, such as a manual rerun, releases nothing and deploys the sha. The GHCR package is public, and the node pulls it through Harbor's `ghcr.io` pull-through cache with no pull secret.
-- The app does not know its own version. The image carries it only as the OCI label `org.opencontainers.image.version`.
-- Deploy: homelab-workloads `savetube/` holds the ApplicationSet, `envs/default.yaml`, `envs/prod.yaml`, and `manifests/prod/` with the ExternalSecrets `savetube-db` and `savetube-session` plus the static PV and PVC `savetube-archive`. Application and namespace are `savetube-prod`, and the release name is `savetube`.
-- The chart is pinned: the ApplicationSet element's `chartRevision` names a savetube release tag, now `v0.2.0`. A release moves only `image.tag`. Raise `chartRevision` by hand when the chart changes, after the image the new chart needs is running. Before the pin, the chart tracked main: the `v0.2.0` merge synced the new livenessProbe onto the `0.1.2` image, and worker and scheduler restarted for about five minutes until the tag commit landed.
-- savetube, homelab-workloads and homelab-platform each send push events to the Argo CD webhook `https://argocd.hiriri.com/api/webhook`. The secret is field `github-secret` of the 1Password item `argocd-webhook` in the Homelab vault.
-- Running in `savetube-prod`: `v0.3.0` web, worker and scheduler. Migrations `0001`-`0005` applied. `https://savetube.lab.hiriri.com/healthz` answers 200, and `/auth/login` redirects to Zitadel with PKCE.
-- A browser login has not been tried end to end.
-- Zitadel: project `savetube`, Web application with PKCE (auth method `None`), grant type Authorization Code, client ID `395908165327192123` in `envs/prod.yaml`.
-- Postgres: the production role and `Database` `savetube` on Cluster `postgres` (homelab-platform `manifest/postgres/`). 1Password items `savetube-db` and `savetube-session`, each one field (`password`, `secret`).
-- Storage: `tank/youtube` (proxmox-talos-lab inventory), mounted rw at `/var/mnt/youtube`, root owned by 1000.
-- Built and checked locally end to end: the Rules and Sources pages create and edit rules and sources, the scheduler polls due sources, the worker downloads into the tree. In production these are deployed and not yet exercised.
-- Live detection runs in the scheduler and queues `record` jobs. A check against real channels found two live and two upcoming streams on NASA and none on VESPERBELL. Nothing records them yet.
-- Not built: recorder Job creation, Discord notifications, job-state metrics, cancel, a manual retry, the `missed` reconciliation, ServiceMonitor, canary CronJob.
-- Released in `v0.2.0` through pull request #4, checked locally against real VESPERBELL listings: channel playlists, title words at global, channel and source level, listing before downloading, download limits, stalled-job reclaim, `/healthz` with livenessProbe. The design is in `docs/plan/archive.md`.
-- Released in `v0.3.0` through pull request #5: per-channel settings replace rules, and adding a channel is one modal (`docs/plan/frontend.md`). The "record lives" checkbox turns on detection only, because no recorder exists.
-- UI rough edges seen in the `v0.3.0` screenshots: the channel page repeats the tabs as a "Tab sources" list, shows per-tab words ("Words for Live (past streams) only"), the scan step shows counts but no titles, and labels read "1 videos" and "Last 0 job(s)".
-- No CI runs on a pull request, because `image.yml` triggers only on a push to main.
-- The user's decisions behind the design, which the plan states as rules: word lists merge by union with no per-source opt-out, a global include word restricts every source on purpose, words apply to live detection too, children of a "track all" source are disabled and never deleted, health is Kubernetes' job and job ownership stays in the Postgres lease, limits are global only and the rate limit is per download, a download running at the window end finishes.
+- **Production is blocked by YouTube's bot check since 2026-10-21 13:44 KST.** Archive jobs fail in 2-3 s with "Sign in to confirm you're not a bot" (111 log lines in 30 min). In those 30 min, 20 jobs succeeded and 113 failed. The same check hit local e2e runs from this Mac at about 13:40, so the home egress IP is the likely target. Likely triggers: max_concurrent 5 in production plus local e2e traffic. Unverified.
+- Each bot-check failure counts as an attempt (`MAX_ARCHIVE_ATTEMPTS` 3). At the last check, 92 videos had 1 failed attempt and 25 had 2. A third failure gives a video up for good.
+- The user was asked to close the download window in Settings (for example 03:00-03:01) to stop dispatch. Whether they did is unchecked.
+- Running in `savetube-prod`: `v0.5.0`. Migrations `0001`-`0007` applied. Chart pinned at `chartRevision: v0.4.0` in homelab-workloads `savetube/appset.yaml`.
+- `develop` is 2 commits ahead of main and pushed, not released:
+  - `258eaf7` resume and integrity: interrupted downloads become `interrupted` rows that attempt counting ignores, partial files stay in `.incoming/<video id>/` and resume with the pinned format, SIGTERM marks jobs interrupted, integrity checks (exact filesize, ffprobe duration and streams, `ffmpeg -c copy -f null` after a resume). Migration `0008`. Chart change: worker `terminationGracePeriodSeconds: 30`. Design in `docs/plan/archive.md` "Resuming and verifying downloads".
+  - `8d67370` the channel page's queued and finished job lists show 10 and grow by 10.
+- Resume was shown locally: SIGTERM at 351,516 bytes, the next worker resumed from there with attempts unchanged (`/tmp/savetube-shots/resume-log.txt`, gone after reboot). A resumed download reaching `download.verified` was not shown, because the bot check started. ffprobe and ffmpeg checks have never run on a real file: this Mac has neither.
+- Released this session: `v0.3.0` per-channel settings and the add-channel modal, `v0.3.1` scheduler dispatch (no procrastinate row per waiting job) and members-only skip without cookies, `v0.4.0` logfmt logging, channel avatar, download progress, channel videos, `v0.5.0` playlist videos from other channels (checkbox, default on for new channels) and `tracked` channels.
+- CULUA is the one production channel: Videos and Live tabs, 5 playlists, words `歌枠`, `歌ってみた`, `Official Music Video`, cookies off. Its 5 playlists still have other-channels off unless the user turned the checkbox on.
+- Chart pin rule: a release moves only `image.tag`. When a release changes `charts/`, raise `chartRevision` in homelab-workloads after the new image runs. `v0.5.0` to the next release changes the chart.
+- Every deploy so far killed running downloads. `v0.5.0` and older count them as failed attempts. The resume release fixes that from its own deploy on, but the deploy that ships it still kills the old workers' downloads the old way.
+- Argo CD webhooks: savetube, homelab-workloads and homelab-platform push to `https://argocd.hiriri.com/api/webhook`. The secret is field `github-secret` of the 1Password item `argocd-webhook` in the Homelab vault.
+- Deploy pipeline, Zitadel, Postgres, storage: unchanged, see `docs/plan/operations.md` and homelab-workloads `savetube/`.
+- The user's design decisions are rules in `docs/plan/`. This session's: no separate rule concept, settings live on the channel. One modal adds a channel. Sidebar Dashboard, Channels, Live, Settings, Videos. Centered modals, never side sheets. Playlist videos from other channels download once under the uploader's folder.
 
 ## What worked
 
-
-- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first. URL-quote the password, and point `sslrootcert` at `~/.postgresql/postgres-dev-ca.crt`. No `.env` is needed.
-- `SAVETUBE_ENV_FILE=<file> docker compose up` points the stack at another env file, without touching `.env`.
-- Chart tests render with `helm template` and feed the rendered CronJob into the real `recorder_job()`.
-- Off the home LAN, the Talos API answers only on the tailnet: `talosctl --talosconfig talos/generated/talosconfig -e talos-pve1.taila166d5.ts.net -n 192.168.33.20`. `make restore` refreshes that talosconfig. Ansible reaches pve1 with `ARGS='-e ansible_host=100.69.133.35'`.
-
-- Local end-to-end check: a throwaway database `savetube_e2e` on pg-dev, `SAVETUBE_ARCHIVE_ROOT` under `/tmp`, `SAVETUBE_STATIC_DIR=frontend/dist`, and a uvicorn script that sets `app.dependency_overrides[current_user]` to skip login. Run `savetube scheduler` and `savetube worker` beside it, each with its own `SAVETUBE_METRICS_PORT` and `SAVETUBE_HEALTH_PORT`, because both default to 9090 and 8081, and macmon holds 9090 on this Mac. Set the channel's quality to the custom format `wa[ext=m4a]/wa` on this Mac.
-- Rate limit check: `du -sk` of `.incoming/<job id>/` twice, 20 s apart. A limit of 50,000 bytes/s measured 39 KiB/s.
-- Screenshots without the browser extension: Playwright through `uvx --with playwright python -I <script>` with `channel="chrome"`, which uses the installed Chrome.
-- Off the home LAN, `kubectl --context homelab-tailnet` reaches the cluster. The postgres-dev CA comes from Secret `postgres-dev-ca` in `postgres-dev`.
+- DB tests against pg-dev: export `SAVETUBE_TEST_DATABASE_URL` in a subshell, with the password from `op read 'op://Homelab/savetube-dev-db/password'`. Take `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` first. URL-quote the password, and point `sslrootcert` at `~/.postgresql/postgres-dev-ca.crt`.
+- Local end-to-end check: a throwaway database `savetube_e2e` on pg-dev (exists, sources disabled), `SAVETUBE_ARCHIVE_ROOT` under `/tmp`, `SAVETUBE_STATIC_DIR=frontend/dist`, and a uvicorn script that sets `app.dependency_overrides[current_user]` to skip login. Run `savetube scheduler` and `savetube worker` beside it, each with its own `SAVETUBE_METRICS_PORT` and `SAVETUBE_HEALTH_PORT`. macmon holds 9090 on this Mac. Use the channel quality `wa[ext=m4a]/wa`, because this Mac has no ffmpeg.
+- Production reads without the UI: `kubectl --context homelab-tailnet -n postgres exec postgres-2 -c postgres -- psql -d savetube -c "set default_transaction_read_only=on; ..."`. Writes through this path are denied by the permission classifier. Use the UI's buttons, such as Poll now.
+- Screenshots: Playwright through `uvx --with playwright python -I <script>` with `channel="chrome"`.
+- yt-dlp with browser cookies on this Mac needs `--js-runtimes node`, because Deno is not installed.
+- Parallel agents: give file-disjoint work to separate agents, or use worktrees. Two agents on `jobs.py`, `api.py` or the channel page collide, and two new migrations collide on the number.
 
 ## What did not work
 
-- respx cannot mock Authlib or Starlette's TestClient, because both use `httpx2`. `tests/test_auth.py` `FakeIssuer` patches `httpx2.AsyncHTTPTransport` instead.
-- Without `relationship()`, SQLAlchemy does not order inserts by FK, so `tests/test_db.py` flushes parents first.
-- `make talos-config` connects to the node's LAN address only, so it fails off the home LAN. A single new document goes in with `talosctl patch mc --mode no-reboot` over the tailnet, after a `--dry-run` that shows the diff.
-- This Mac has no ffmpeg, so a local download that merges video and audio fails. A single-file format such as `wa[ext=m4a]/wa` works. YouTube serves no combined format for some videos, so `worst` fails too.
-- `make tank ARGS='--check'` fails at the SMART report: check mode skips `smartctl`, and `from_json` gets empty output.
+- An Argo CD refresh annotation (`kubectl annotate application`) is denied by the permission classifier. The webhooks make it unnecessary.
+- respx cannot mock Authlib or Starlette's TestClient, because both use `httpx2`. `tests/test_auth.py` patches `httpx2.AsyncHTTPTransport`.
+- `make talos-config` fails off the home LAN. Use `talosctl patch mc --mode no-reboot` over the tailnet.
 
 ## Open questions
 
-- Should yt-dlp get the `curl-cffi` extra? The worker logs "no impersonate target is available".
-- Did a PO token reach a request? `bgutil:http-2.0.2` registered as available, but no log line shows a token being fetched.
-- The image is 1.22 GB.
-- The pot-provider sidecar runs without `readOnlyRootFilesystem`. Whether the image writes to its root filesystem is unchecked.
-- The frontend bundle is 930 kB, and `frontend/README.md` is still the Vite template.
-- The tests in `test_layout`, `test_ytdl`, `test_auth`, `test_k8s` and `test_db` were written beside the code, not test-first. A mutation pass would show what they miss.
-- `docs/plan/operations.md` § Homelab deployment was meant to move to homelab-workloads before the repository went public. It holds hostnames and infrastructure layout, no secrets.
+- Which mitigation clears the bot check: cookies from a separate account, the bgutil PO token (does a token reach a request at all?), `curl-cffi` impersonation, lower concurrency with `-t sleep` intervals, or waiting it out? `docs/plan/background.md` notes the ban risk for a logged-in account.
+- An intermittent `PytestUnraisableExceptionWarning` (an asyncio server transport collected late, probably the health server in a test) shows in about 1 of 6 runs.
+- Chat replay downloads again on every resume.
+- If procrastinate marks a live worker stalled, two downloads can share `.incoming/<video id>/`.
+- The image is 1.22 GB. The frontend bundle is 993 kB.
 
 ## Next steps
 
-1. Log in through a browser at `https://savetube.lab.hiriri.com` as a user holding `savetube-admin`, add a source, start its downloads, and watch the first archive job in production. Check the worker and scheduler livenessProbes stay green.
-2. Follow-ups:
-   - `JobOut` omits `log_tail`, so the reclaim reason "worker stopped during the download" shows only in the database.
-   - A new child's `last_polled_at` is backdated to spread polls, so the UI shows a "Last sync" time for a playlist never polled.
-   - The UI cannot edit a source's poll interval.
+1. Bot check, before anything else:
+   1. Read production logs and the DB to confirm downloads stopped and whether the bot check still answers.
+   2. Treat "Sign in to confirm you're not a bot" (and similar blocks) as not an attempt, and pause all dispatch with a growing backoff while it lasts. Log it as `dispatch.blocked`.
+   3. Give back the attempts the bot check used: failed archive jobs whose `log_tail` holds the bot text become `interrupted` (a migration or a one-off script the user runs).
+   4. Pick a mitigation with the user. The open question above lists them.
+2. Release `develop` (resume, integrity, job paging): PR to main, merge, watch the rollout and migration `0008`, then raise `chartRevision` to the new tag. Check ffprobe and ffmpeg run on a real file in the worker pod, and that a later deploy resumes a running download.
+3. In-browser playback, which the user approved: mount `tank/youtube` read-only in the web pod, serve media with HTTP Range, add a `<video>` element on the video page. Chrome and Firefox play the stored mkv with VP9 or AV1 and Opus. Safari needs mp4 or WebM, so store WebM when the codecs allow or remux on the fly.
+4. Follow-ups:
+   - The add-channel step 4 summary omits the other-channels choice.
+   - The channel page has no way to set other-channels before a playlist exists.
+   - `JobOut` omits `log_tail`, so interrupted and failed reasons show only in the database.
+   - The dashboard's per-channel statistics count by uploader and include uploader-only channels.
    - Narrowing words does not cancel a queued job whose video another source also lists.
-   - A word change does not cancel a running download, and turning `archiving` off cancels nothing.
-   - The title preview returns every listed title with no pagination.
-3. Review live recording with the user before building the recorder path.
+5. Review live recording with the user before building the recorder path.
 
 ## Suggested skills
 
-`tdd` for new seams, `gh-cli` for workflow runs and repo checks.
+`diagnosing-bugs` for the bot check, `tdd` for new seams, `gh-cli` for workflow runs.
 
 ## Pointers
 
-- `docs/plan/README.md`: design index, requirements and Build order
-- `charts/savetube/values.yaml`
-- homelab-workloads `savetube/`
-- `.env.sample` and `Makefile`
-- homelab-platform `docs/deploying-to-kubernetes.md`
+- `docs/plan/README.md`: design index, then only the topic files the task touches
+- `docs/plan/operations.md` Logging: the logfmt event policy
+- `docs/plan/archive.md`: dispatch, members-only rule, resume and integrity
+- homelab-workloads `savetube/appset.yaml` (`chartRevision`) and `savetube/envs/prod.yaml` (`image.tag`)

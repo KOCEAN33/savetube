@@ -7,21 +7,32 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
   api,
   mutations,
   type DownloadSettings,
+  type CookieProfile,
   type DownloadSettingsIn,
   type TitleWords,
 } from "@/lib/api"
 import { EXCLUDE_HINT, INCLUDE_HINT } from "@/lib/words"
 
 const BYTES_PER_MB = 1_000_000
+// A Select item needs a non-empty value, so "no profile" gets its own.
+const NO_PROFILE = "__none__"
 
 interface FormState {
   max_concurrent: number
   rate_mb: string
   window_start: string
   window_end: string
+  cookie_profile: string | null
 }
 
 function toForm(s: DownloadSettings): FormState {
@@ -30,6 +41,7 @@ function toForm(s: DownloadSettings): FormState {
     rate_mb: s.rate_limit_bytes === null ? "" : String(s.rate_limit_bytes / BYTES_PER_MB),
     window_start: s.window_start ?? "",
     window_end: s.window_end ?? "",
+    cookie_profile: s.cookie_profile,
   }
 }
 
@@ -48,10 +60,22 @@ function toBody(f: FormState): DownloadSettingsIn | string {
   if ((start === null) !== (end === null))
     return "Set both window start and end, or leave both empty."
   if (start !== null && start === end) return "Window start and end must differ."
-  return { max_concurrent: f.max_concurrent, rate_limit_bytes: rate, window_start: start, window_end: end }
+  return {
+    max_concurrent: f.max_concurrent,
+    rate_limit_bytes: rate,
+    window_start: start,
+    window_end: end,
+    cookie_profile: f.cookie_profile,
+  }
 }
 
-function DownloadSettingsForm({ settings }: { settings: DownloadSettings }) {
+function DownloadSettingsForm({
+  settings,
+  profiles,
+}: {
+  settings: DownloadSettings
+  profiles: CookieProfile[]
+}) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState(() => toForm(settings))
   const [invalid, setInvalid] = useState<string | null>(null)
@@ -125,6 +149,34 @@ function DownloadSettingsForm({ settings }: { settings: DownloadSettings }) {
           />
         </div>
       </fieldset>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="dl-cookie-profile">General cookie profile</Label>
+        <p className="text-xs text-muted-foreground">
+          Every poll, live check and download that is not members-only uses this profile. Use a
+          throwaway account: a bot check costs that account at worst. Members-only videos use a
+          profile whose membership a check confirmed, whatever this choice.
+        </p>
+        <Select
+          value={form.cookie_profile ?? NO_PROFILE}
+          onValueChange={(v) => setForm({ ...form, cookie_profile: v === NO_PROFILE ? null : v })}
+        >
+          <SelectTrigger id="dl-cookie-profile" className="w-64">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_PROFILE}>None (cookie-free)</SelectItem>
+            {profiles.map((p) => (
+              <SelectItem key={p.name} value={p.name}>
+                {p.name}
+              </SelectItem>
+            ))}
+            {form.cookie_profile !== null &&
+              !profiles.some((p) => p.name === form.cookie_profile) && (
+                <SelectItem value={form.cookie_profile}>{form.cookie_profile} (missing)</SelectItem>
+              )}
+          </SelectContent>
+        </Select>
+      </div>
       {invalid && <ErrorBox error={new Error(invalid)} />}
       {save.isError && <ErrorBox error={save.error} />}
       <div className="flex items-center gap-2">
@@ -185,6 +237,7 @@ function GlobalWordsForm({ initial }: { initial: TitleWords }) {
 
 export function SettingsPage() {
   const settings = useQuery({ queryKey: ["download-settings"], queryFn: api.downloadSettings })
+  const profiles = useQuery({ queryKey: ["cookie-profiles"], queryFn: api.cookieProfiles })
   const words = useQuery({ queryKey: ["words"], queryFn: api.globalWords })
   return (
     <Page>
@@ -193,7 +246,11 @@ export function SettingsPage() {
       </PageSection>
       <PageSection title="Download limits">
         <QueryState query={settings}>
-          {(data) => <DownloadSettingsForm settings={data} />}
+          {(data) => (
+            <QueryState query={profiles}>
+              {(list) => <DownloadSettingsForm settings={data} profiles={list} />}
+            </QueryState>
+          )}
         </QueryState>
       </PageSection>
     </Page>

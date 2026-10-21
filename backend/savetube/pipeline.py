@@ -32,15 +32,15 @@ def prepare_incoming(incoming_root: Path, job_id: int) -> Path:
 
 
 async def settings_channel(session: AsyncSession, video_id: str) -> Channel | None:
-    """The channel of a source referencing the video, preferring one that uses
-    cookies. Its format and cookie use apply to the download. A detected live
-    no source lists yet takes its uploader's channel."""
+    """The channel of the oldest source referencing the video. Its format
+    applies to the download. A detected live no source lists yet takes its
+    uploader's channel."""
     q = (
         select(Channel)
         .join(Source, Source.channel_id == Channel.id)
         .join(VideoSource, VideoSource.source_id == Source.id)
         .where(VideoSource.video_id == video_id)
-        .order_by(Channel.use_cookies.desc(), Source.id)
+        .order_by(Source.id)
         .limit(1)
     )
     return await session.scalar(q) or await session.scalar(

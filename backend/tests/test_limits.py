@@ -1,7 +1,7 @@
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from savetube.limits import next_window_start
+from savetube.limits import backoff, next_window_start
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -39,3 +39,8 @@ def test_the_window_is_read_in_seoul_time_whatever_the_clock_zone():
     assert next_window_start(datetime(2026, 10, 21, 14, 30, tzinfo=UTC), start, end) is None
     # 21:00 UTC is 06:00 the next day in Seoul, so the window opens at 23:00 Seoul.
     assert next_window_start(datetime(2026, 10, 21, 21, 0, tzinfo=UTC), start, end) == kst(22, 23)
+
+
+def test_the_block_backoff_doubles_from_30_minutes_up_to_12_hours():
+    hours = [backoff(n) / timedelta(hours=1) for n in range(1, 8)]
+    assert hours == [0.5, 1, 2, 4, 8, 12, 12]

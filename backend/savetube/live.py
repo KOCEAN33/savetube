@@ -17,17 +17,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from yt_dlp.utils import DownloadError
 
-from savetube import logs, words
+from savetube import cookies, logs, words
 from savetube.db.models import Channel, Job, JobKind, Source, SourceKind, Video, VideoState
-from savetube.layout import VideoType
+from savetube.layout import VideoType, classify
 from savetube.limits import TIMEZONE
 from savetube.logs import emit
 from savetube.pipeline import get_or_create_channel
+from savetube.ytdl import members_only
 
 log = logging.getLogger(__name__)
 
 FetchFeed = Callable[[str], str]
 Probe = Callable[[str], dict[str, Any]]
+# Probes a video id with the named cookie profile.
+MemberProbe = Callable[[str, str], dict[str, Any]]
 # Per scheduler process: a probed id and what the probe found, None when it
 # failed. The words are applied on every tick, so a word change needs no probe.
 Seen = dict[str, dict[str, Any] | None]
@@ -48,6 +51,7 @@ _KEPT = (
     "uploader_id",
     "live_status",
     "release_timestamp",
+    "availability",
 )
 
 
@@ -105,7 +109,8 @@ async def _record(session: AsyncSession, info: dict[str, Any]) -> Job | None:
             Video(
                 id=video_id,
                 channel_id=info["channel_id"],
-                type=VideoType.LIVES,
+                # A members-only live records with a member profile (savetube.jobs).
+                type=VideoType.MEMBERS if classify(info) is VideoType.MEMBERS else VideoType.LIVES,
                 title=info.get("title") or video_id,
                 state=VideoState.PENDING,
             )
@@ -135,9 +140,15 @@ async def check_channel(
     probe_live: Probe,
     list_streams: Probe,
     seen: Seen,
+    member_probe: MemberProbe | None = None,
+    profiles: list[str] | None = None,
 ) -> list[int]:
     """Probe unseen ids from the feed and the Live tab, and the `/live` page;
     return new record job ids.
+
+    `probe` reads with the general profile. A members-only refusal is probed
+    once more through `member_probe` with the channel's member profile among
+    the present `profiles`, if one exists.
 
     `seen` lives in the scheduler process, so a restart probes each feed's
     ids once more. The record job, not `seen`, keeps detections unique.
@@ -154,7 +165,20 @@ async def check_channel(
     for video_id in dict.fromkeys(candidates):
         if video_id not in seen:
             try:
-                info = await asyncio.to_thread(probe, video_id)
+                try:
+                    info = await asyncio.to_thread(probe, video_id)
+                except DownloadError as e:
+                    profile = None
+                    if member_probe is not None and members_only(str(e)):
+                        async with sessionmaker() as session:
+                            profile = await cookies.member_profile(
+                                session, channel_id, profiles or []
+                            )
+                    if profile is None:
+                        raise
+                    info = await asyncio.to_thread(member_probe, video_id, profile)
+                    # The general probe's refusal proves the video members-only.
+                    info = {**info, "availability": "subscriber_only"}
                 seen[video_id] = {k: info.get(k) for k in _KEPT}
             except DownloadError as e:
                 # A members-only or private video stays unreadable, so it is not

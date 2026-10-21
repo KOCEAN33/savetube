@@ -4,6 +4,7 @@ role has CREATEDB. Each run creates and drops its own database, savetube_test.""
 import asyncio
 import os
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
@@ -249,6 +250,7 @@ async def test_poll_queues_unstored_videos_once(settings):
         settings,
         lister=lambda url, c: TAB_LISTING,
         cancel=_cancel,
+        prober=_no_probe,
     )
 
     async with sessionmaker() as session:
@@ -282,6 +284,7 @@ async def test_poll_queues_unstored_videos_once(settings):
         settings,
         lister=lambda url, c: TAB_LISTING,
         cancel=_cancel,
+        prober=_no_probe,
     )
     async with sessionmaker() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Job)) == 9
@@ -300,6 +303,7 @@ async def test_poll_queues_unstored_videos_once(settings):
         settings,
         lister=lambda url, c: playlist,
         cancel=_cancel,
+        prober=_no_probe,
     )
     async with sessionmaker() as session:
         assert (await session.get(Channel, "UC2")).dir_name == "Two [UC2]"
@@ -312,7 +316,7 @@ async def test_poll_queues_unstored_videos_once(settings):
     def fails(url, cookiefile):
         raise RuntimeError("HTTP Error 429")
 
-    await poll_source(sessionmaker, 2, settings, lister=fails, cancel=_cancel)
+    await poll_source(sessionmaker, 2, settings, lister=fails, cancel=_cancel, prober=_no_probe)
     async with sessionmaker() as session:
         assert (await session.get(Source, 2)).last_error == "RuntimeError: HTTP Error 429"
     await engine.dispose()
@@ -558,7 +562,9 @@ async def test_a_detected_live_is_archived_once_it_ends(settings):
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
 
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     async with sessionmaker() as session:
         kinds = sorted(
             await session.scalars(sa.select(Job.kind).where(Job.video_id == "B_eFxgIWdXo"))
@@ -611,6 +617,64 @@ async def test_one_unreadable_feed_video_does_not_stop_detection(settings):
         "M3HKLzjvKPc",
         "pAKqJxuxDgk",
     ]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_members_only_live_is_probed_again_with_a_member_profile(settings):
+    from yt_dlp.utils import DownloadError
+
+    from savetube.live import check_channel
+
+    _watch(settings)
+    _sql(
+        settings,
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        f" ('{NASA}', 'alt', false, now(), 'm0'), ('{NASA}', 'main', true, now(), 'm0')",
+    )
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    members_live = UPCOMING | {"id": "memlive", "title": "Members stream"}
+    retried = []
+
+    def probe(video_id):
+        if video_id == "memlive":
+            raise DownloadError(MEMBERS_ONLY_ERROR)
+        if video_id == "private":
+            raise DownloadError("ERROR: [youtube] private: Private video")
+        return LIVE_NOW
+
+    def member_probe(video_id, profile):
+        retried.append((video_id, profile))
+        return members_live
+
+    async def check(profiles):
+        await check_channel(
+            sessionmaker,
+            NASA,
+            fetch_feed=lambda c: _feed("memlive", "private", LIVE_NOW["id"]),
+            probe=probe,
+            probe_live=_not_live,
+            list_streams=_no_streams,
+            seen={},
+            member_probe=member_probe,
+            profiles=profiles,
+        )
+
+    # The member profile is not present: no second probe, as before.
+    await check(["alt"])
+    assert retried == []
+    assert [j.video_id for j in await _record_jobs(sessionmaker)] == [LIVE_NOW["id"]]
+
+    # Only the members-only refusal is probed again, with the member profile.
+    await check(["alt", "main"])
+    assert retried == [("memlive", "main")]
+    jobs = {j.video_id: j for j in await _record_jobs(sessionmaker)}
+    assert sorted(jobs) == [LIVE_NOW["id"], "memlive"]
+    async with sessionmaker() as session:
+        video = await session.get(Video, "memlive")
+    # Its recording takes a member profile (savetube.jobs).
+    assert video.type is VideoType.MEMBERS
     await engine.dispose()
 
 
@@ -683,6 +747,10 @@ async def _cancel(queue_job_id):
     return True
 
 
+def _no_probe(video_id, cookiefile):
+    pytest.fail("no membership check expected")
+
+
 async def _archive_jobs(sessionmaker):
     async with sessionmaker() as session:
         return sorted(
@@ -713,7 +781,9 @@ async def test_poll_keeps_the_full_listing_and_archives_titles_the_words_pass(se
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     assert await _archive_jobs(sessionmaker) == ["B_eFxgIWdXo"]
 
     with _api(settings) as client:
@@ -749,7 +819,9 @@ async def test_poll_keeps_the_full_listing_and_archives_titles_the_words_pass(se
     async with sessionmaker() as session:
         await session.execute(sa.update(Source).values(last_polled_at=None))
         await session.commit()
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     with _api(settings) as client:
         preview = client.post(
             "/api/sources/1/title-preview", json={"include_words": [], "exclude_words": []}
@@ -789,6 +861,7 @@ async def test_playlists_source_makes_a_child_per_new_playlist_and_archives_noth
             settings,
             lister=lambda u, c: PLAYLISTS_LISTING,
             cancel=_cancel,
+            prober=_no_probe,
         )
     assert await _archive_jobs(sessionmaker) == []
 
@@ -863,12 +936,16 @@ async def test_playlist_source_skips_other_channels_unless_allowed(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(sessionmaker, 2, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 2, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     assert await _archive_jobs(sessionmaker) == ["own"]
     async with sessionmaker() as session:
         assert (await session.get(Source, 2)).channel_id == VESP
 
-    await poll_source(sessionmaker, 3, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 3, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     assert await _archive_jobs(sessionmaker) == ["EoPQm9SemWw", "own"]
     await engine.dispose()
 
@@ -1031,7 +1108,9 @@ async def test_poll_and_preview_merge_global_channel_and_source_words(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     assert await _archive_jobs(sessionmaker) == ["cover", "utawaku"]
 
     with _api(settings) as client:
@@ -1143,7 +1222,7 @@ def _parent(settings, *extra, enabled="true", other_channels="false"):
     )
 
 
-async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel):
+async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel, prober=_no_probe):
     from savetube.poll import poll_source
 
     await poll_source(
@@ -1152,6 +1231,7 @@ async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel):
         settings,
         lister=lambda u, c: listing,
         cancel=cancel,
+        prober=prober,
     )
 
 
@@ -1403,8 +1483,33 @@ async def test_poll_links_every_stored_video_and_cancels_queued_jobs_the_words_d
     await engine.dispose()
 
 
+def _profiles(settings, *names):
+    """Settings whose SAVETUBE_COOKIES_DIR holds a file per name, its content `# <name>`."""
+    root = settings.archive_root.parent / "cookies"
+    root.mkdir(exist_ok=True)
+    for name in names:
+        (root / f"{name}.txt").write_text(f"# {name}\n")
+    # A Secret mount's own entries are no profiles.
+    (root / "..data").mkdir(exist_ok=True)
+    return settings.model_copy(update={"cookies_dir": root})
+
+
+MEMBERS_ONLY_ERROR = (
+    "ERROR: [youtube] member: Join this channel to get access to members-only content"
+    " like this video, and other exclusive perks."
+)
+BOT_CHECK_ERROR = (
+    "ERROR: [youtube] member: Sign in to confirm you’re not a bot."
+    " Use --cookies-from-browser or --cookies for the authentication."
+)
+
+
 @pytest.mark.anyio
-async def test_members_only_videos_wait_for_the_channels_cookies(settings):
+async def test_members_only_videos_wait_for_a_confirmed_member_profile(settings, caplog):
+    import logging
+
+    from yt_dlp.utils import DownloadError
+
     _sql(
         settings,
         "INSERT INTO channel (id, name, dir_name) VALUES"
@@ -1418,6 +1523,7 @@ async def test_members_only_videos_wait_for_the_channels_cookies(settings):
         " (101, 'archive', 'queued', 'queued_member', 0)",
         "SELECT setval('job_id_seq', 200)",
     )
+    settings = _profiles(settings, "main", "alt")
 
     def e(video_id, availability):
         return {
@@ -1438,6 +1544,15 @@ async def test_members_only_videos_wait_for_the_channels_cookies(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
+    probed = []
+    errors = {"alt": MEMBERS_ONLY_ERROR}
+
+    def prober(video_id, cookiefile):
+        profile = cookiefile.read_text().removeprefix("# ").strip()
+        probed.append((video_id, profile))
+        if profile in errors:
+            raise DownloadError(errors[profile])
+        return {"id": video_id, "formats": [{"format_id": "251"}]}
 
     async def queued():
         async with sessionmaker() as session:
@@ -1445,7 +1560,22 @@ async def test_members_only_videos_wait_for_the_channels_cookies(settings):
                 await session.scalars(sa.select(Job.video_id).where(Job.state == JobState.QUEUED))
             )
 
-    await _poll(sessionmaker, settings, 1, listing)
+    def memberships():
+        engine = sa.create_engine(settings.sqlalchemy_url)
+        with engine.connect() as c:
+            rows = c.execute(
+                sa.text(
+                    "SELECT channel_id, profile, is_member, video_id, checked_at FROM membership"
+                    " ORDER BY profile"
+                )
+            ).all()
+        engine.dispose()
+        return rows
+
+    # No result yet: the poll skips the members-only videos, then checks
+    # each profile with the first one it listed.
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await _poll(sessionmaker, settings, 1, listing, prober=prober)
     assert await queued() == ["public"]
     async with sessionmaker() as session:
         assert (await session.get(Job, 101)).state is JobState.CANCELLED
@@ -1453,12 +1583,51 @@ async def test_members_only_videos_wait_for_the_channels_cookies(settings):
         linked = set(await session.scalars(sa.select(VideoSource.video_id)))
     assert listed == {"public", "member", "queued_member"}
     assert linked == {"public", "queued_member"}
+    assert probed == [("member", "alt"), ("member", "main")]
+    assert [tuple(r)[:4] for r in memberships()] == [
+        (VESP, "alt", False, "member"),
+        (VESP, "main", True, "member"),
+    ]
+    checked = [_fields(r) for r in caplog.records if r.getMessage() == "membership.checked"]
+    assert [(f["channel"], f["profile"], f["member"]) for f in checked] == [
+        ("VESPERBELL", "alt", "no"),
+        ("VESPERBELL", "main", "yes"),
+    ]
 
-    _sql(settings, f"UPDATE channel SET use_cookies = true WHERE id = '{VESP}'")
-    cookie_file = settings.archive_root.parent / "cookies.txt"
-    cookie_file.write_text("# Netscape HTTP Cookie File\n")
-    await _poll(sessionmaker, settings.model_copy(update={"cookies_file": cookie_file}), 1, listing)
+    # A confirmed member lets them pass. Fresh results are not checked again.
+    await _poll(sessionmaker, settings, 1, listing, prober=prober)
     assert await queued() == ["member", "public", "queued_member"]
+    assert len(probed) == 2
+
+    # Stale results wait while a YouTube block pauses downloads.
+    _sql(
+        settings,
+        "UPDATE membership SET checked_at = now() - interval '25 hours'",
+        "UPDATE download_settings SET blocked_until = now() + interval '1 hour'",
+    )
+    await _poll(sessionmaker, settings, 1, listing, prober=prober)
+    assert len(probed) == 2
+
+    # A bot check keeps the previous result and stops the checks after it.
+    _sql(settings, "UPDATE download_settings SET blocked_until = NULL")
+    before = memberships()
+    errors["alt"] = BOT_CHECK_ERROR
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await _poll(sessionmaker, settings, 1, listing, prober=prober)
+    assert probed[2:] == [("member", "alt")]
+    assert memberships() == before
+    [failed] = [r for r in caplog.records if r.getMessage() == "membership.check_failed"]
+    assert failed.levelno == logging.WARNING
+    assert (_fields(failed)["profile"], _fields(failed)["video"]) == ("alt", "member")
+    assert "not a bot" in _fields(failed)["reason"]
+    assert "# alt" not in caplog.text and "# main" not in caplog.text
+
+    # Without a present member profile, the members-only videos are skipped again.
+    (settings.cookies_dir / "main.txt").unlink()
+    errors["alt"] = MEMBERS_ONLY_ERROR
+    await _poll(sessionmaker, settings, 1, listing, prober=prober)
+    assert await queued() == ["public"]
     await engine.dispose()
 
 
@@ -1842,17 +2011,22 @@ def test_api_download_settings_and_job_deferral(settings):
             "rate_limit_bytes": None,
             "window_start": None,
             "window_end": None,
+            "cookie_profile": None,
             "timezone": "Asia/Seoul",
+            "blocked_until": None,
+            "block_count": 0,
         }
         body = {
             "max_concurrent": 3,
             "rate_limit_bytes": 2000000,
             "window_start": "23:00",
             "window_end": "05:00",
+            "cookie_profile": None,
         }
         put = client.put("/api/download-settings", json=body)
         assert put.status_code == 200
-        assert put.json() == body | {"timezone": "Asia/Seoul"}
+        unblocked = {"blocked_until": None, "block_count": 0}
+        assert put.json() == body | {"timezone": "Asia/Seoul"} | unblocked
         assert client.get("/api/download-settings").json() == put.json()
         for bad in (
             body | {"window_end": None},
@@ -1868,6 +2042,59 @@ def test_api_download_settings_and_job_deferral(settings):
 
         [job] = client.get("/api/jobs").json()
         assert job["deferred_until"] == "2026-10-21T14:00:00Z"
+
+
+def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplog):
+    import logging
+
+    _sql(
+        settings,
+        f"INSERT INTO channel (id, name, dir_name) VALUES ('{VESP}', 'V', 'V [{VESP}]')",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        f" ('{VESP}', 'main', true, '2026-10-21T01:00:00Z', 'm1'),"
+        f" ('{VESP}', 'alt', false, '2026-10-21T02:00:00Z', 'm1')",
+    )
+    with _api(settings) as client:
+        assert client.get("/api/cookie-profiles").json() == []
+        assert (
+            client.put("/api/download-settings", json={"cookie_profile": "main"}).status_code == 422
+        )
+        [channel] = client.get("/api/channels").json()
+        assert channel["memberships"] == [
+            {"profile": "alt", "is_member": False, "checked_at": "2026-10-21T02:00:00Z"},
+            {"profile": "main", "is_member": True, "checked_at": "2026-10-21T01:00:00Z"},
+        ]
+        patched = client.patch(f"/api/channels/{VESP}", json={"watch_lives": True}).json()
+        assert patched["memberships"] == channel["memberships"]
+
+    # The scheduler records what its mount holds. The web reads only the table.
+    from savetube.cookies import profiles, record_profiles
+
+    async def record(names):
+        engine = make_engine(settings.sqlalchemy_url)
+        async with make_sessionmaker(engine)() as session:
+            await record_profiles(session, names, datetime.now(UTC))
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(record(["gone", "main"]))
+    asyncio.run(record(profiles(_profiles(settings, "main", "throwaway"))))
+    with _api(settings) as client:
+        assert settings.cookies_dir is None
+        assert client.get("/api/cookie-profiles").json() == [
+            {"name": "main"},
+            {"name": "throwaway"},
+        ]
+        with caplog.at_level(logging.INFO, logger="savetube"):
+            put = client.put("/api/download-settings", json={"cookie_profile": "throwaway"})
+        assert put.status_code == 200 and put.json()["cookie_profile"] == "throwaway"
+        assert client.get("/api/download-settings").json()["cookie_profile"] == "throwaway"
+        assert "# throwaway" not in caplog.text and "# throwaway" not in put.text
+        [line] = [r for r in caplog.records if r.getMessage() == "settings.download"]
+        assert _fields(line)["cookie_profile"] == "throwaway"
+        put = client.put("/api/download-settings", json={"cookie_profile": "gone"})
+        assert put.status_code == 422
+        assert client.put("/api/download-settings", json={}).json()["cookie_profile"] is None
 
 
 @pytest.mark.anyio
@@ -1936,20 +2163,21 @@ async def test_a_parent_passes_archiving_to_its_children(settings):
 
 
 @pytest.mark.anyio
-async def test_reclaim_fails_the_jobs_of_a_dead_worker(settings):
-    from savetube.jobs import STALLED_LOG, reclaim_stalled
+async def test_reclaim_interrupts_the_jobs_of_a_dead_worker_and_keeps_their_parts(settings):
+    from savetube.jobs import reclaim_stalled
 
     _job_rows(
         settings,
-        "UPDATE job SET state = 'running', attempts = 1 WHERE id = 1",
+        "UPDATE job SET state = 'running', attempts = 1, started_at = now() WHERE id = 1",
         "UPDATE video SET state = 'downloading' WHERE id = 'v1'",
         "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id) VALUES"
         " (2, 'archive', 'queued', 'busy1', 0, 701),"
         " (3, 'archive', 'running', 'busy2', 1, 702)",
+        "SELECT setval('job_id_seq', 200)",
     )
-    incoming = settings.incoming_root / "1"
+    incoming = settings.incoming_root / "v1" / ".tmp"
     incoming.mkdir(parents=True)
-    (incoming / "v1.mkv.part").write_bytes(b"x")
+    (incoming / "v1.f251.webm.part").write_bytes(b"x")
     finished = []
 
     async def stalled():
@@ -1964,13 +2192,18 @@ async def test_reclaim_fails_the_jobs_of_a_dead_worker(settings):
     async with sessionmaker() as session:
         jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
         video = await session.get(Video, "v1")
-    assert STALLED_LOG == "worker stopped during the download"
-    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, STALLED_LOG)
-    assert jobs[1].finished_at is not None
-    assert jobs[2].state is JobState.FAILED
+    # The stopped run is a row of its own. The job waits for the dispatcher again.
+    [history] = [j for j in jobs.values() if j.id not in (1, 2, 3)]
+    assert (history.state, history.video_id, history.kind) == ("interrupted", "v1", JobKind.ARCHIVE)
+    assert history.log_tail == "worker stopped during the download"
+    assert history.attempts == 1
+    assert history.started_at is not None and history.finished_at is not None
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    # A dispatched job no worker ran goes back to waiting, with no history row.
+    assert (jobs[2].state, jobs[2].queue_job_id) == (JobState.QUEUED, None)
     assert jobs[3].state is JobState.RUNNING
-    assert video.state is VideoState.FAILED
-    assert not incoming.exists()
+    assert video.state is VideoState.PENDING
+    assert (incoming / "v1.f251.webm.part").read_bytes() == b"x"
     assert finished == [700, 701]
     await engine.dispose()
 
@@ -2030,7 +2263,7 @@ def test_migration_0005_moves_rule_settings_onto_channels(settings):
         "        (4, 'https://www.youtube.com/@b/streams', 'tab', 'UC2', 1, true, 360),"
         "        (5, 'https://www.youtube.com/playlist?list=PL1', 'playlist', NULL, 2, true, 360)",
     )
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0009")
     with engine.connect() as c:
         rows = c.execute(
             sa.text(
@@ -2189,7 +2422,6 @@ def _channel_body(**extra):
         "exclude_words": ["告知"],
         "date_after": "2026-01-01",
         "format": "wa",
-        "use_cookies": True,
     } | extra
 
 
@@ -2205,12 +2437,12 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
             "dir_name": f"VESPERBELL [{VESP}]",
         }
         assert (body["include_words"], body["exclude_words"]) == (["歌枠"], ["告知"])
-        assert (body["date_after"], body["format"], body["use_cookies"], body["watch_lives"]) == (
+        assert (body["date_after"], body["format"], body["watch_lives"]) == (
             "2026-01-01",
             "wa",
             True,
-            True,
         )
+        assert body["memberships"] == []
         assert [
             (s["url"], s["kind"], s["title"], s["channel_id"], s["archiving"], s["include_words"])
             for s in body["sources"]
@@ -2241,15 +2473,11 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
 
         patched = client.patch(
             f"/api/channels/{VESP}",
-            json={"date_after": None, "format": "bv*+ba/b", "use_cookies": False},
+            json={"date_after": None, "format": "bv*+ba/b"},
         )
         assert patched.status_code == 200
         channel = patched.json()
-        assert (channel["date_after"], channel["format"], channel["use_cookies"]) == (
-            None,
-            "bv*+ba/b",
-            False,
-        )
+        assert (channel["date_after"], channel["format"]) == (None, "bv*+ba/b")
         # An omitted field stays.
         assert channel["watch_lives"] is True and channel["include_words"] == ["歌枠"]
         assert client.patch(f"/api/channels/{VESP}", json={"format": ""}).status_code == 422
@@ -2283,11 +2511,11 @@ def test_api_tracks_all_playlists_of_a_new_channel(settings):
 
 
 @pytest.mark.anyio
-async def test_a_poll_uses_cookies_only_for_a_channel_that_wants_them(settings):
+async def test_every_poll_takes_the_general_profile(settings):
     _sql(
         settings,
-        "INSERT INTO channel (id, name, dir_name, use_cookies) VALUES"
-        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', true)",
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
         "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
         f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360),"
         " (2, 'https://www.youtube.com/playlist?list=PLnew', 'playlist', NULL, true, 360)",
@@ -2297,42 +2525,43 @@ async def test_a_poll_uses_cookies_only_for_a_channel_that_wants_them(settings):
     cookies = []
 
     def lister(url, cookiefile):
-        cookies.append(cookiefile)
+        cookies.append(cookiefile.read_text() if cookiefile else None)
         return {"entries": []}
 
-    for source_id in (1, 2):
-        await poll_source_with(sessionmaker, settings, source_id, lister)
-    async with sessionmaker() as session:
-        errors = [(await session.get(Source, i)).last_error for i in (1, 2)]
-    # SAVETUBE_COOKIES_FILE is unset in the test settings.
-    assert errors == [
-        "RuntimeError: the channel uses cookies and SAVETUBE_COOKIES_FILE is unset",
-        None,
-    ]
+    # No general profile: cookie-free.
+    await poll_source_with(sessionmaker, settings, 1, lister)
     assert cookies == [None]
 
-    cookie_file = settings.archive_root.parent / "cookies.txt"
-    cookie_file.write_text("# Netscape HTTP Cookie File\n")
-    await poll_source_with(
-        sessionmaker, settings.model_copy(update={"cookies_file": cookie_file}), 1, lister
-    )
-    assert cookies[-1] is not None and cookies[-1].name == "cookies.txt"
+    _sql(settings, "UPDATE download_settings SET cookie_profile = 'throwaway'")
+    # The profile is not in SAVETUBE_COOKIES_DIR.
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    async with sessionmaker() as session:
+        assert (await session.get(Source, 1)).last_error == (
+            "RuntimeError: cookie profile throwaway is not in SAVETUBE_COOKIES_DIR"
+        )
+    assert cookies == [None]
+
+    with_profiles = _profiles(settings, "throwaway", "member")
+    for source_id in (1, 2):
+        await poll_source_with(sessionmaker, with_profiles, source_id, lister)
+    assert cookies == [None, "# throwaway\n", "# throwaway\n"]
     await engine.dispose()
 
 
 async def poll_source_with(sessionmaker, settings, source_id, lister):
     from savetube.poll import poll_source
 
-    await poll_source(sessionmaker, source_id, settings, lister=lister, cancel=_cancel)
+    await poll_source(
+        sessionmaker, source_id, settings, lister=lister, cancel=_cancel, prober=_no_probe
+    )
 
 
 @pytest.mark.anyio
-async def test_a_download_takes_format_and_cookies_from_its_sources_channel(settings):
+async def test_a_download_takes_format_from_its_sources_channel(settings):
     _job_rows(
         settings,
         "UPDATE channel SET format = 'wa' WHERE id = 'UC1'",
-        "INSERT INTO channel (id, name, dir_name, format, use_cookies) VALUES"
-        " ('UC2', 'B', 'B [UC2]', 'ba', true)",
+        "INSERT INTO channel (id, name, dir_name, format) VALUES ('UC2', 'B', 'B [UC2]', 'ba')",
         "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
         " (1, 'https://www.youtube.com/playlist?list=PLb', 'playlist', 'UC2', true, 360)",
     )
@@ -2340,20 +2569,73 @@ async def test_a_download_takes_format_and_cookies_from_its_sources_channel(sett
     job, runner, _ = await _run(settings)
     assert runner.params["format"] == "wa" and "cookiefile" not in runner.params
 
-    # Listed by a source of a channel that uses cookies, with no cookie file set.
     _sql(
         settings,
         "INSERT INTO video_source (video_id, source_id) VALUES ('v1', 1)",
         "UPDATE job SET state = 'queued' WHERE id = 1",
     )
-    with pytest.raises(RuntimeError):
-        await _run(settings)
-    engine = sa.create_engine(settings.sqlalchemy_url)
-    with engine.connect() as c:
-        job = c.execute(sa.text("SELECT state, log_tail FROM job WHERE id = 1")).one()
-    engine.dispose()
-    assert job.state == "failed"
-    assert job.log_tail == "the channel uses cookies and SAVETUBE_COOKIES_FILE is unset"
+    job, runner, _ = await _run(settings)
+    assert runner.params["format"] == "ba"
+
+
+class _CookieRunner(_Runner):
+    """Records the cookie file's content, which the run deletes afterwards."""
+
+    async def __call__(self, url, params, report):
+        path = params.get("cookiefile")
+        self.cookies = await asyncio.to_thread(Path(path).read_text) if path else None
+        return await super().__call__(url, params, report)
+
+
+@pytest.mark.anyio
+async def test_a_members_only_download_takes_a_member_profile_and_no_other(settings, caplog):
+    import logging
+
+    from savetube.jobs import NO_MEMBER, run
+
+    _job_rows(
+        settings,
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('m1', 'UC1', 'members', 'm', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'queued', 'm1', 0)",
+        "UPDATE download_settings SET cookie_profile = 'general'",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        " ('UC1', 'b_member', true, now(), 'm1'), ('UC1', 'c_member', true, now(), 'm1'),"
+        " ('UC1', 'a_gone', true, now(), 'm1'), ('UC1', 'general', false, now(), 'm1')",
+    )
+    settings = _profiles(settings, "general", "b_member", "c_member")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def run_job(job_id):
+        runner = _CookieRunner()
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="savetube"):
+            try:
+                await run(job_id, settings, live=False, runner=runner, sessionmaker=sessionmaker)
+            except Exception as e:
+                if type(e).__name__ != "DownloadFailed":
+                    raise
+        [start] = [r for r in caplog.records if r.getMessage() == "job.start"]
+        return getattr(runner, "cookies", "not run"), _fields(start)["cookies"]
+
+    # A public video takes the general profile, never a member one.
+    assert await run_job(1) == ("# general\n", "general")
+    # The first present member by name. `a_gone` has no file any more.
+    assert await run_job(2) == ("# b_member\n", "b_member")
+
+    # No member left: the job fails without a download, as one attempt.
+    _sql(
+        settings,
+        "UPDATE membership SET is_member = false",
+        "UPDATE job SET state = 'queued' WHERE id = 2",
+    )
+    assert await run_job(2) == ("not run", "none")
+    async with sessionmaker() as session:
+        job = await session.get(Job, 2)
+        assert (job.state, job.attempts, job.log_tail) == (JobState.FAILED, 2, NO_MEMBER)
+    await engine.dispose()
 
 
 def test_api_lists_a_channels_archive_jobs_with_titles(settings):
@@ -2478,7 +2760,7 @@ async def test_a_failed_archive_logs_its_attempt_and_the_third_is_an_error(setti
     events = {r.getMessage(): r for r in caplog.records if r.name == "savetube.jobs"}
     start = _fields(events["job.start"])
     assert (start["job"], start["video"], start["channel"], start["title"]) == (1, "v1", "A", "t")
-    assert start["attempt"] == "2/3" and start["cookies"] == "no"
+    assert start["attempt"] == "2/3" and start["cookies"] == "none"
     failed = events["job.failed"]
     assert failed.levelno == logging.WARNING
     assert _fields(failed)["attempt"] == "2/3"
@@ -2526,7 +2808,12 @@ async def test_poll_done_counts_each_skip_reason(settings, caplog):
     engine = make_engine(settings.sqlalchemy_url)
     with caplog.at_level(logging.INFO, logger="savetube"):
         await poll_source(
-            make_sessionmaker(engine), 1, settings, lister=lambda u, c: listing, cancel=_cancel
+            make_sessionmaker(engine),
+            1,
+            settings,
+            lister=lambda u, c: listing,
+            cancel=_cancel,
+            prober=_no_probe,
         )
     await engine.dispose()
     events = {r.getMessage(): _fields(r) for r in caplog.records}
@@ -2603,7 +2890,9 @@ async def test_a_tab_poll_gives_an_existing_channel_its_avatar(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     async with sessionmaker() as session:
         assert (await session.get(Channel, "UC1")).avatar_url == AVATAR
     await engine.dispose()
@@ -2738,3 +3027,556 @@ def test_api_marks_a_channel_tracked_only_when_a_source_names_it(settings):
         ("UC2", False, 1),
     ]
     assert patched["tracked"] is False
+
+
+class _Steps:
+    """A runner that plays one step per call and records each call's params."""
+
+    def __init__(self, *steps):
+        self.steps = list(steps)
+        self.calls = []
+
+    async def __call__(self, url, params, report):
+        self.calls.append(params)
+        return await self.steps.pop(0)(params, report)
+
+
+def _home(params):
+    return Path(params["paths"]["home"])
+
+
+def _part(params, name="v1.f251.webm.part", size=2048):
+    tmp = _home(params) / ".tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    (tmp / name).write_bytes(b"x" * size)
+
+
+AUDIO_INFO = {
+    "id": "v1",
+    "title": "t",
+    "channel_id": "UC1",
+    "channel": "A",
+    "upload_date": "20260315",
+    "duration": 60,
+    "format_id": "251",
+    "vcodec": "none",
+    "acodec": "opus",
+}
+
+
+def _finished(stream_size=5, expected=5):
+    """A step that downloads the whole audio file and reports its stream."""
+
+    async def step(params, report):
+        home = _home(params)
+        home.mkdir(parents=True, exist_ok=True)
+        media = home / "v1.webm"
+        media.write_bytes(b"m" * stream_size)
+        await report({"event": "format", "format_id": "251"})
+        await report(
+            {"event": "stream", "format_id": "251", "size": stream_size, "expected": expected}
+        )
+        return {**AUDIO_INFO, "requested_downloads": [{"filepath": str(media)}]}
+
+    return step
+
+
+def _failing(message):
+    async def step(params, report):
+        from savetube.jobs import DownloadFailed
+
+        raise DownloadFailed(message)
+
+    return step
+
+
+class _FakeTools:
+    """ffprobe that finds the expected audio stream, ffmpeg with no errors."""
+
+    def __init__(self):
+        self.packet_runs = 0
+
+    def probe(self, path):
+        return {"format": {"duration": "60.0"}, "streams": [{"codec_type": "audio"}]}
+
+    def packets(self, path):
+        self.packet_runs += 1
+        return ""
+
+
+async def _run_steps(settings, runner, tools=None):
+    from savetube.jobs import run
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    try:
+        await run(
+            1,
+            settings,
+            live=False,
+            runner=runner,
+            sessionmaker=sessionmaker,
+            tools=tools or _FakeTools(),
+        )
+    except Exception as e:
+        if type(e).__name__ != "DownloadFailed":
+            raise
+    async with sessionmaker() as session:
+        jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
+        video = await session.get(Video, "v1")
+    await engine.dispose()
+    return jobs, video
+
+
+def _events(caplog, name):
+    return [r for r in caplog.records if r.getMessage() == name]
+
+
+@pytest.mark.anyio
+async def test_a_worker_shutdown_interrupts_the_download_and_keeps_its_parts(settings, caplog):
+    import logging
+
+    from savetube.jobs import run
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    started = asyncio.Event()
+
+    async def downloading(params, report):
+        _part(params)
+        await report({"event": "format", "format_id": "251"})
+        started.set()
+        await asyncio.Event().wait()
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        task = asyncio.create_task(
+            run(1, settings, live=False, runner=_Steps(downloading), sessionmaker=sessionmaker)
+        )
+        await asyncio.wait_for(started.wait(), 10)
+        # procrastinate cancels the task when the worker shuts down.
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    async with sessionmaker() as session:
+        jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
+        video = await session.get(Video, "v1")
+    await engine.dispose()
+
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert (history.state, history.video_id) == ("interrupted", "v1")
+    assert history.log_tail == "worker shut down during the download"
+    assert history.attempts == 1 and history.finished_at is not None
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert jobs[1].started_at is None and jobs[1].progress is None
+    assert video.state is VideoState.PENDING and video.resume_format == "251"
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+    [line] = _events(caplog, "job.interrupted")
+    assert line.levelno == logging.INFO
+    assert (_fields(line)["job"], _fields(line)["video"]) == (1, "v1")
+
+
+@pytest.mark.anyio
+async def test_a_retry_resumes_the_parts_with_the_pinned_format_and_counts_no_attempt(
+    settings, caplog
+):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa'",
+        "UPDATE video SET resume_format = '251' WHERE id = 'v1'",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (8, 'archive', 'interrupted', 'v1', 1), (9, 'archive', 'interrupted', 'v1', 1)",
+    )
+    _part({"paths": {"home": str(settings.incoming_root / "v1")}})
+    tools = _FakeTools()
+    runner = _Steps(_finished())
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner, tools)
+    [params] = runner.calls
+    assert params["format"] == "251" and params["continuedl"] is True
+    assert _home(params) == settings.incoming_root / "v1"
+    # Interrupted runs are not failed attempts.
+    assert _fields(_events(caplog, "job.start")[0])["attempt"] == "1/3"
+    [resume] = _events(caplog, "download.resume")
+    assert resume.levelno == logging.INFO
+    assert _fields(resume)["present"] == "2KiB" and _fields(resume)["format"] == "251"
+    assert jobs[1].state is JobState.SUCCEEDED
+    # A resumed download gets the packet pass.
+    assert tools.packet_runs == 1
+    assert video.verified_checks == ["size", "probe", "packets"]
+    assert video.resume_format is None
+    assert not (settings.incoming_root / "v1").exists()
+
+
+@pytest.mark.anyio
+async def test_a_pinned_format_no_longer_offered_starts_over_and_a_real_failure_clears_the_parts(
+    settings, caplog
+):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa'",
+        "UPDATE video SET resume_format = '251' WHERE id = 'v1'",
+    )
+    old = {"paths": {"home": str(settings.incoming_root / "v1")}}
+    _part(old)
+    seen = []
+
+    async def gone_at_retry(params, report):
+        from savetube.jobs import DownloadFailed
+
+        seen.append(sorted(p.name for p in _home(params).rglob("*")))
+        raise DownloadFailed("HTTP Error 403: Forbidden")
+
+    runner = _Steps(
+        _failing(
+            "DownloadError: ERROR: [youtube] v1: Requested format is not available."
+            " Use --list-formats for a list of available formats"
+        ),
+        gone_at_retry,
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner)
+    assert [p["format"] for p in runner.calls] == ["251", "wa"]
+    # The restart downloads into an empty directory.
+    assert seen == [[]]
+    [restart] = _events(caplog, "download.restart")
+    assert restart.levelno == logging.WARNING and _fields(restart)["format"] == "251"
+    assert jobs[1].state is JobState.FAILED and jobs[1].log_tail == "HTTP Error 403: Forbidden"
+    assert video.resume_format is None
+    assert not (settings.incoming_root / "v1").exists()
+
+
+@pytest.mark.anyio
+async def test_a_fresh_download_is_verified_without_the_packet_pass(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    tools = _FakeTools()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _Steps(_finished()), tools)
+    assert jobs[1].state is JobState.SUCCEEDED and video.state is VideoState.COMPLETE
+    assert tools.packet_runs == 0
+    assert video.verified_checks == ["size", "probe"] and video.verified_at is not None
+    assert _events(caplog, "download.resume") == []
+    [verified] = _events(caplog, "download.verified")
+    assert verified.levelno == logging.INFO and _fields(verified)["checks"] == "size,probe"
+    with _api(settings) as client:
+        detail = client.get("/api/videos/v1").json()
+    assert detail["verified_checks"] == ["size", "probe"] and detail["verified_at"] is not None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("second_ok", [True, False])
+async def test_an_integrity_failure_downloads_again_from_zero_once(settings, caplog, second_ok):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    seen = []
+
+    def short_stream():
+        inner = _finished(stream_size=4, expected=5)
+
+        async def step(params, report):
+            seen.append(sorted(p.name for p in _home(params).rglob("*")))
+            return await inner(params, report)
+
+        return step
+
+    second = _finished() if second_ok else short_stream()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _Steps(short_stream(), second))
+    [first, *rest] = _events(caplog, "download.integrity_failed")
+    assert first.levelno == logging.WARNING
+    assert _fields(first)["check"] == "size"
+    assert (_fields(first)["size"], _fields(first)["expected"]) == (4, 5)
+    if second_ok:
+        assert jobs[1].state is JobState.SUCCEEDED and rest == []
+    else:
+        # The second run started from an empty directory too.
+        assert seen == [[], []]
+        assert jobs[1].state is JobState.FAILED
+        assert jobs[1].log_tail.startswith("integrity check failed: size")
+        assert not (settings.incoming_root / "v1").exists()
+    # One job row, one attempt, either way.
+    assert list(jobs) == [1] and jobs[1].attempts == 1
+
+
+@pytest.mark.anyio
+async def test_cleanup_deletes_partial_directories_no_job_wants_after_7_days(settings):
+    import os
+    import time
+
+    from savetube.jobs import clean_incoming
+
+    _job_rows(
+        settings,
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('old', 'UC1', 'videos', 't', 'pending'), ('fresh', 'UC1', 'videos', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (42, 'record', 'running', 'busy2', 1), (43, 'archive', 'cancelled', 'old', 0)",
+    )
+    week = time.time() - 8 * 86400
+    for name, stale in (("old", True), ("v1", True), ("fresh", False), ("42", True), ("7", True)):
+        d = settings.incoming_root / name / ".tmp"
+        d.mkdir(parents=True)
+        f = d / "x.part"
+        f.write_bytes(b"x")
+        if stale:
+            os.utime(f, (week, week))
+            os.utime(d, (week, week))
+            os.utime(d.parent, (week, week))
+    engine = make_engine(settings.sqlalchemy_url)
+    await clean_incoming(make_sessionmaker(engine), settings)
+    await engine.dispose()
+    # v1 has a queued archive job, 42 is a running recording, fresh is new.
+    assert sorted(p.name for p in settings.incoming_root.iterdir()) == ["42", "fresh", "v1"]
+
+
+def test_migration_0008_turns_interrupted_jobs_into_cancelled_on_downgrade(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    _job_rows(
+        settings,
+        "UPDATE video SET resume_format = '251' WHERE id = 'v1'",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'interrupted', 'v1', 1)",
+    )
+    command.downgrade(alembic_config(settings.sqlalchemy_url), "0007")
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
+    engine.dispose()
+    # The old code counts a failed job as an attempt, so an interrupted one
+    # becomes cancelled.
+    assert states == {1: "queued", 2: "cancelled"}
+
+
+BOT_CHECK = (
+    "DownloadError: ERROR: [youtube] v1: Sign in to confirm you’re not a bot."
+    " Use --cookies-from-browser or --cookies for the authentication."
+)
+
+
+def _block_state(settings):
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        row = c.execute(
+            sa.text("SELECT block_count, blocked_until FROM download_settings WHERE id = 1")
+        ).one()
+    engine.dispose()
+    return row.block_count, row.blocked_until
+
+
+async def _blocked_step(params, report):
+    from savetube.jobs import DownloadFailed
+
+    _part(params)
+    await report({"event": "format", "format_id": "251"})
+    raise DownloadFailed(BOT_CHECK)
+
+
+@pytest.mark.anyio
+async def test_a_youtube_block_interrupts_the_archive_job_and_pauses_downloads(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    before = datetime.now(UTC)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _Steps(_blocked_step))
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert (history.state, history.video_id) == ("interrupted", "v1")
+    assert history.log_tail == f"blocked by YouTube: {BOT_CHECK}"
+    # No attempt counts, and the parts and the pin stay for the resume.
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert video.state is VideoState.PENDING and video.resume_format == "251"
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+    count, until = _block_state(settings)
+    assert count == 1
+    assert before + timedelta(minutes=30) <= until <= datetime.now(UTC) + timedelta(minutes=30)
+    assert _events(caplog, "job.failed") == []
+    [line] = _events(caplog, "job.interrupted")
+    assert line.levelno == logging.WARNING and _fields(line)["reason"] == "blocked by YouTube"
+    [blocked] = _events(caplog, "dispatch.blocked")
+    assert blocked.levelno == logging.WARNING
+    fields = _fields(blocked)
+    assert (fields["count"], fields["backoff"], fields["job"], fields["video"]) == (
+        1,
+        "30m0s",
+        1,
+        "v1",
+    )
+
+
+@pytest.mark.anyio
+async def test_a_block_while_paused_interrupts_without_lengthening_the_pause(settings, caplog):
+    import logging
+
+    _job_rows(settings, "SELECT setval('job_id_seq', 200)")
+
+    async def blocked_together(params, report):
+        from savetube.jobs import DownloadFailed
+
+        # Another job hit the block while this one was downloading.
+        _sql(
+            settings,
+            "UPDATE download_settings SET block_count = 1,"
+            " blocked_until = now() + interval '30 minutes'",
+        )
+        raise DownloadFailed("ERROR: unable to download video data: HTTP Error 429")
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _Steps(blocked_together))
+    assert jobs[1].state is JobState.QUEUED and jobs[1].attempts == 0
+    count, until = _block_state(settings)
+    assert count == 1 and until < datetime.now(UTC) + timedelta(minutes=30)
+    assert _events(caplog, "dispatch.blocked") == []
+    assert len(_events(caplog, "job.interrupted")) == 1
+
+
+@pytest.mark.anyio
+async def test_dispatch_sends_nothing_while_blocked_then_one_probe(settings):
+    _waiting_rows(
+        settings,
+        "UPDATE job SET state = 'succeeded' WHERE id = 10",
+        "UPDATE download_settings SET max_concurrent = 5, block_count = 2,"
+        " blocked_until = '2026-10-21T03:00:00Z'",
+    )
+    until = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)
+    enqueued, jobs = await _dispatch(settings, until - timedelta(minutes=1))
+    assert enqueued == []
+    assert [jobs[i].deferred_until for i in (12, 13, 14)] == [until, until, until]
+
+    # The pause is over, but until a download succeeds only one runs at a time.
+    enqueued, jobs = await _dispatch(settings, until)
+    assert enqueued == [12]
+    assert [jobs[i].deferred_until for i in (12, 13, 14)] == [None, None, None]
+
+
+@pytest.mark.anyio
+async def test_dispatch_while_blocked_waits_for_the_later_of_pause_and_window(settings):
+    from savetube.limits import TIMEZONE
+
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 5, block_count = 1,"
+        " window_start = '23:00', window_end = '05:00', blocked_until = '2026-10-22T00:30:00+09'",
+    )
+    noon = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
+    enqueued, jobs = await _dispatch(settings, noon)
+    assert enqueued == []
+    assert jobs[12].deferred_until == datetime(2026, 10, 22, 0, 30, tzinfo=TIMEZONE)
+
+
+@pytest.mark.anyio
+async def test_a_worker_hands_back_a_job_while_blocked(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE download_settings SET blocked_until = now() + interval '1 hour'")
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        job, runner, _ = await _run(settings)
+    assert runner.params is None
+    assert job.state is JobState.QUEUED and job.queue_job_id is None
+    [line] = _events(caplog, "job.returned")
+    assert _fields(line)["reason"] == "blocked"
+
+
+@pytest.mark.anyio
+async def test_the_probe_admits_one_archive_job_at_a_time(settings, caplog):
+    import logging
+
+    _job_rows(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'running', 'busy1', 1)",
+        "UPDATE download_settings SET max_concurrent = 5, block_count = 1,"
+        " blocked_until = now() - interval '1 minute'",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        job, runner, _ = await _run(settings)
+    assert runner.params is None and job.state is JobState.QUEUED
+    assert _fields(_events(caplog, "job.returned")[0])["reason"] == "slots"
+
+
+@pytest.mark.anyio
+async def test_a_success_after_the_pause_ends_the_probe(settings, caplog):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa'",
+        "UPDATE download_settings SET block_count = 2, blocked_until = now() - interval '1 minute'",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _Steps(_finished()))
+    assert jobs[1].state is JobState.SUCCEEDED
+    assert _block_state(settings) == (0, None)
+    [line] = _events(caplog, "dispatch.unblocked")
+    assert line.levelno == logging.INFO and _fields(line)["count"] == 2
+
+
+@pytest.mark.anyio
+async def test_a_blocked_recording_still_fails(settings, caplog):
+    import logging
+
+    from savetube.jobs import DownloadFailed, run
+
+    _job_rows(settings, "UPDATE job SET kind = 'record'")
+
+    async def blocked(params, report):
+        raise DownloadFailed(BOT_CHECK)
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    with caplog.at_level(logging.INFO, logger="savetube"), pytest.raises(DownloadFailed):
+        await run(1, settings, live=True, runner=_Steps(blocked), sessionmaker=sessionmaker)
+    async with sessionmaker() as session:
+        job = await session.get(Job, 1)
+    await engine.dispose()
+    assert job.state is JobState.FAILED and job.log_tail == BOT_CHECK
+    assert _block_state(settings) == (0, None)
+    assert len(_events(caplog, "job.failed")) == 1
+
+
+def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0008")
+    _job_rows(
+        settings,
+        "UPDATE job SET state = 'succeeded' WHERE id = 1",
+        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail) VALUES"
+        " (2, 'archive', 'failed', 'v1', 1, 'Sign in to confirm you’re not a bot.'),"
+        " (3, 'archive', 'failed', 'v1', 1, 'HTTP Error 403: Forbidden'),"
+        " (4, 'record', 'failed', 'busy2', 1, 'Sign in to confirm you’re NOT A BOT.')",
+    )
+    command.upgrade(cfg, "head")
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
+    assert states == {1: "succeeded", 2: "interrupted", 3: "failed", 4: "failed"}
+    assert _block_state(settings) == (0, None)
+
+    command.downgrade(cfg, "0008")
+    with engine.connect() as c:
+        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
+        columns = set(
+            c.execute(
+                sa.text(
+                    "SELECT column_name FROM information_schema.columns"
+                    " WHERE table_name = 'download_settings'"
+                )
+            ).scalars()
+        )
+    engine.dispose()
+    # The downgrade leaves the data as it is.
+    assert states[2] == "interrupted"
+    assert not columns & {"blocked_until", "block_count"}

@@ -16,9 +16,10 @@ class Settings(BaseSettings):
 
     archive_root: Path = Path("/archive")
     static_dir: Path | None = None
-    # Mounted read-only from a Secret. Every run copies it into a writable
-    # directory first, because yt-dlp writes the cookie jar back.
-    cookies_file: Path | None = None
+    # Cookie profiles, one Netscape cookie file `<name>.txt` each, mounted
+    # read-only from a Secret. Every run copies its profile's file into a
+    # writable directory first, because yt-dlp writes the cookie jar back.
+    cookies_dir: Path | None = None
 
     # The browser-facing origin. Redirect URIs and the cookie's Secure flag come
     # from here, never from request headers.

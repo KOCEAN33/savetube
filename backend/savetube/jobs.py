@@ -5,12 +5,14 @@ import contextlib
 import json
 import logging
 import multiprocessing
+import os
 import shutil
+import signal
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
@@ -18,15 +20,35 @@ from typing import Any
 from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import logs
+from savetube import cookies, integrity, logs
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
-from savetube.db.models import Channel, Job, JobKind, JobState, Video, VideoState
-from savetube.limits import admit, load, lock, next_window_start, running
+from savetube.db.models import (
+    Channel,
+    DownloadSettings,
+    Job,
+    JobKind,
+    JobState,
+    Video,
+    VideoState,
+)
+from savetube.layout import VideoType
+from savetube.limits import (
+    TIMEZONE,
+    admit,
+    backoff,
+    blocked,
+    concurrency,
+    load,
+    lock,
+    next_window_start,
+    running,
+)
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
 from savetube.poll import MAX_ARCHIVE_ATTEMPTS
-from savetube.ytdl import DEFAULT_FORMAT, build_params, copy_cookies, download, video_url
+from savetube.storage import dir_size
+from savetube.ytdl import DEFAULT_FORMAT, build_params, download, video_url, youtube_block
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +58,13 @@ TITLE_CHARS = 80
 # row at most every PROGRESS_WRITE_SECONDS.
 PROGRESS_SEND_SECONDS = 1
 PROGRESS_WRITE_SECONDS = 5
+# How long the parent waits for the child's last messages after it exits.
+PUMP_DRAIN_SECONDS = 10
 
-# Stores a running download's progress (savetube.logs.progress) on its job row.
+# Takes what the download child sends: its progress (savetube.logs.progress),
+# or an event, a dict with `event` set. `format` carries the chosen
+# `format_id`. `stream` carries a downloaded stream's `format_id`, its `size`,
+# and the format's exact `filesize` as `expected`, or None.
 Report = Callable[[dict[str, Any]], Awaitable[None]]
 Runner = Callable[[str, dict[str, Any], Report], Awaitable[dict[str, Any]]]
 # Puts the `job` row on the queue and returns the queue's job id.
@@ -48,6 +75,13 @@ Stalled = Callable[[], Awaitable[list[tuple[int, int]]]]
 Finish = Callable[[int], Awaitable[None]]
 
 STALLED_LOG = "worker stopped during the download"
+SHUTDOWN_LOG = "worker shut down during the download"
+# yt-dlp's text when a pinned format is no longer offered.
+FORMAT_GONE = "Requested format is not available"
+# A partial directory no queued or running job wants is deleted after this.
+ORPHAN_DAYS = 7
+BLOCKED_LOG = "blocked by YouTube"
+NO_MEMBER = "no cookie profile is a confirmed member of the channel"
 
 
 class DownloadFailed(Exception):
@@ -89,13 +123,29 @@ def logged_download(
         nonlocal media
         media = True
         _log_format(info)
+        if send is not None:
+            send({"event": "format", "format_id": info.get("format_id")})
 
     def on_progress(d: dict[str, Any]) -> None:
         nonlocal last_send
         if not media:
             return
         progress_log(d)
-        if send is None or d.get("status") != "downloading":
+        if send is None:
+            return
+        if d.get("status") == "finished" and os.path.isfile(d.get("filename") or ""):
+            # A merge deletes the stream files, so their sizes go to the parent now.
+            fmt = d.get("info_dict") or {}
+            send(
+                {
+                    "event": "stream",
+                    "format_id": fmt.get("format_id"),
+                    "size": os.path.getsize(d["filename"]),
+                    "expected": fmt.get("filesize"),
+                }
+            )
+            return
+        if d.get("status") != "downloading":
             return
         now = time.monotonic()
         if last_send is None or now - last_send >= PROGRESS_SEND_SECONDS:
@@ -114,6 +164,10 @@ def _child(
     fields: dict[str, Any],
     progress: Connection,
 ) -> None:
+    # The parent decides how a download ends. A terminal's Ctrl-C reaches the
+    # whole process group, and a stop must leave the parts for a resume.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     logs.configure(level)
     with logs.context(**fields):
         try:
@@ -129,41 +183,53 @@ def _child(
 async def pump_progress(
     receive: Connection, report: Report, *, every: float = PROGRESS_WRITE_SECONDS
 ) -> None:
-    """Write the latest progress from the child at most once per `every`
-    seconds, until the child closes the pipe. Reads on the event loop, so a
-    download holds no thread for it."""
+    """Pass every event from the child, and the latest progress at most once
+    per `every` seconds, until the child closes the pipe. Reads on the event
+    loop, so a download holds no thread for it."""
     loop = asyncio.get_running_loop()
     fd = receive.fileno()
     latest: dict[str, Any] | None = None
-    closed = False
+    events: list[dict[str, Any]] = []
+    closed = asyncio.Event()
     arrived = asyncio.Event()
 
     def readable() -> None:
-        nonlocal latest, closed
+        nonlocal latest
         try:
-            latest = receive.recv()
+            message = receive.recv()
         except EOFError, OSError:
-            closed = True
+            closed.set()
             loop.remove_reader(fd)
+        else:
+            if "event" in message:
+                events.append(message)
+            else:
+                latest = message
         arrived.set()
+
+    async def write(message: dict[str, Any]) -> None:
+        try:
+            await report(message)
+        except Exception as e:
+            # Progress is for display. The download goes on without it.
+            emit(log, logging.WARNING, "job.progress_failed", reason=f"{e}")
 
     loop.add_reader(fd, readable)
     try:
         while True:
             await arrived.wait()
             arrived.clear()
+            while events:
+                await write(events.pop(0))
             if latest is not None:
                 update, latest = latest, None
-                try:
-                    await report(update)
-                except Exception as e:
-                    # Progress is for display. The download goes on without it.
-                    emit(log, logging.WARNING, "job.progress_failed", reason=f"{e}")
-            if closed:
+                await write(update)
+            if closed.is_set():
                 return
-            await asyncio.sleep(every)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(closed.wait(), every)
     finally:
-        if not closed:
+        if not closed.is_set():
             loop.remove_reader(fd)
 
 
@@ -190,13 +256,15 @@ async def in_child(url: str, params: dict[str, Any], report: Report) -> dict[str
         try:
             await asyncio.to_thread(proc.join)
         except asyncio.CancelledError:
+            # A kill leaves the `.part` files, and the retry resumes them.
             proc.kill()
             await asyncio.to_thread(proc.join)
+            pump.cancel()
             raise
         finally:
-            pump.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await pump
+            # The pump ends at the child's exit, after its last messages.
+            with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+                await asyncio.wait_for(pump, PUMP_DRAIN_SECONDS)
             receive.close()
         result = json.loads(out.read_text()) if out.exists() else {}
         if proc.exitcode != 0 or "info" not in result:
@@ -230,32 +298,61 @@ async def _describe(session: AsyncSession, video_id: str) -> dict[str, Any]:
     return {"channel": row.name, "title": logs.cut(row.title, TITLE_CHARS)}
 
 
+def incoming_dir(settings: Settings, video_id: str) -> Path:
+    """An archive download's working directory. It is per video, so a retry
+    after an interruption finds the parts."""
+    return settings.incoming_root / video_id
+
+
+async def _interrupt(session: AsyncSession, job: Job, reason: str) -> None:
+    """Put a job the worker stopped back to waiting for the dispatcher. A run
+    that started becomes its own `interrupted` row, so the history shows it
+    and no attempt counts. The job keeps its id and its place in the queue.
+    The caller commits."""
+    if job.state is JobState.RUNNING:
+        session.add(
+            Job(
+                kind=job.kind,
+                state=JobState.INTERRUPTED,
+                video_id=job.video_id,
+                attempts=1,
+                log_tail=reason,
+                progress=job.progress,
+                started_at=job.started_at,
+                finished_at=datetime.now(UTC),
+            )
+        )
+        job.attempts = max(job.attempts - 1, 0)
+    job.state = JobState.QUEUED
+    job.queue_job_id = None
+    job.started_at = None
+    job.progress = None
+    if job.video_id is not None:
+        await _set_video_state(session, job.video_id, VideoState.PENDING)
+
+
 async def reclaim_stalled(
     sessionmaker: async_sessionmaker, settings: Settings, *, stalled: Stalled, finish: Finish
 ) -> None:
-    """Fail the jobs of a dead worker. Their rows would stay running and hold
-    download slots forever. The next poll queues each video again."""
+    """Interrupt the jobs of a dead worker. Their rows would stay running and
+    hold download slots forever. The dispatcher queues each again, and its
+    parts stay for the resume."""
     for queue_job_id, job_id in await stalled():
         async with sessionmaker() as session:
             job = await session.get(Job, job_id)
             if job is not None and job.state in (JobState.QUEUED, JobState.RUNNING):
                 described = await _describe(session, job.video_id) if job.video_id else {}
+                await _interrupt(session, job, STALLED_LOG)
+                await session.commit()
                 emit(
                     log,
                     logging.WARNING,
-                    "job.reclaimed",
+                    "job.interrupted",
                     job=job_id,
                     video=job.video_id,
                     title=described.get("title"),
                     reason=STALLED_LOG,
                 )
-                job.state = JobState.FAILED
-                job.finished_at = datetime.now(UTC)
-                job.log_tail = STALLED_LOG
-                if job.video_id is not None:
-                    await _set_video_state(session, job.video_id, VideoState.FAILED)
-                await session.commit()
-        shutil.rmtree(settings.incoming_root / str(job_id), ignore_errors=True)
         await finish(queue_job_id)
 
 
@@ -281,11 +378,13 @@ class Dispatched:
     requeued: list[int]
     rate_limit: int | None
     window: str | None
+    # When the pause after a YouTube block ends. None when no pause holds.
+    blocked_until: datetime | None = None
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
     """Put the oldest waiting archive jobs on the queue, one per free slot, and
-    only inside the download window. Commits.
+    only inside the download window and outside a block pause. Commits.
 
     A waiting job is a queued archive job with no queue job. A dispatched job
     holds its slot until a worker takes it or hands it back.
@@ -304,6 +403,10 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         )
     )
     opens = next_window_start(now, limits.window_start, limits.window_end)
+    paused = blocked(limits, now)
+    if paused is not None:
+        opens = max(opens, paused) if opens is not None else paused
+    max_concurrent = concurrency(limits)
     await session.execute(
         update(Job)
         .where(queued, Job.queue_job_id.is_(None), Job.deferred_until.is_distinct_from(opens))
@@ -315,7 +418,7 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         dispatched = await session.scalar(
             select(func.count()).select_from(Job).where(queued, Job.queue_job_id.is_not(None))
         )
-        free = limits.max_concurrent - busy - dispatched
+        free = max_concurrent - busy - dispatched
         waiting = await session.scalars(
             select(Job.id)
             .where(queued, Job.queue_job_id.is_(None))
@@ -343,11 +446,12 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         started=started,
         waiting=left,
         running=busy,
-        max_concurrent=limits.max_concurrent,
+        max_concurrent=max_concurrent,
         opens=opens,
         requeued=requeued,
         rate_limit=limits.rate_limit_bytes,
         window=window,
+        blocked_until=paused,
     )
 
 
@@ -366,6 +470,7 @@ async def run(
     live: bool,
     runner: Runner,
     sessionmaker: async_sessionmaker | None = None,
+    tools: integrity.Tools | None = None,
 ) -> None:
     """Run one job. An archive job outside the download window, or with no free
     slot, goes back to waiting for the dispatcher. A recording ignores the limits."""
@@ -385,21 +490,29 @@ async def run(
                 await session.execute(update(Job).where(Job.id == job_id).values(queue_job_id=None))
                 await session.commit()
                 current = await load(session)
-                closed = next_window_start(now, current.window_start, current.window_end)
-                emit(
-                    log,
-                    logging.INFO,
-                    "job.returned",
-                    job=job_id,
-                    video=video_id,
-                    reason="window" if closed is not None else "slots",
-                )
+                if blocked(current, now) is not None:
+                    reason = "blocked"
+                elif next_window_start(now, current.window_start, current.window_end):
+                    reason = "window"
+                else:
+                    reason = "slots"
+                emit(log, logging.INFO, "job.returned", job=job_id, video=video_id, reason=reason)
                 return
             ratelimit = limits.rate_limit_bytes
         channel = await settings_channel(session, video_id)
-        use_cookies = channel is not None and channel.use_cookies
         fmt = channel.format if channel is not None else DEFAULT_FORMAT
         shorts = await from_shorts_tab(session, video_id)
+        video = await session.get(Video, video_id)
+        pinned = video.resume_format if video is not None else None
+        # A member profile serves its members-only videos only. Every other
+        # download takes the general profile.
+        members = video is not None and video.type is VideoType.MEMBERS
+        if members:
+            profile = await cookies.member_profile(
+                session, video.channel_id, cookies.profiles(settings)
+            )
+        else:
+            profile = await cookies.general(session)
         job.deferred_until = None
         job.state = JobState.RUNNING
         job.attempts += 1
@@ -421,6 +534,7 @@ async def run(
         described = await _describe(session, video_id)
         await session.commit()
 
+    workdir = settings.incoming_root / str(job_id) if live else incoming_dir(settings, video_id)
     attempt_label = f"{attempt}/{limit}" if limit else str(attempt)
     started = time.monotonic()
     with logs.context(job=job_id, video=video_id):
@@ -433,36 +547,66 @@ async def run(
             **described,
             attempt=attempt_label,
             format_pref=fmt,
-            cookies="yes" if use_cookies else "no",
+            cookies=profile or "none",
             ratelimit=f"{human_bytes(ratelimit)}/s" if ratelimit else None,
         )
 
-        async def report(progress: dict[str, Any]) -> None:
+        streams: list[dict[str, Any]] = []
+
+        async def report(message: dict[str, Any]) -> None:
+            if message.get("event") == "stream":
+                streams.append(message)
+                return
             async with sessionmaker() as session:
-                await session.execute(update(Job).where(Job.id == job_id).values(progress=progress))
+                if message.get("event") == "format":
+                    await _pin(session, video_id, message["format_id"])
+                else:
+                    await session.execute(
+                        update(Job).where(Job.id == job_id).values(progress=message)
+                    )
                 await session.commit()
 
         # Any failure past RUNNING must reach the row, or the job stays running and
         # no poll queues the video again.
         try:
-            incoming = prepare_incoming(settings.incoming_root, job_id)
-            # Outside `incoming`, so the cookie jar never moves into the tree.
+            if live:
+                prepare_incoming(settings.incoming_root, job_id)
+            # Outside the working directory, so the cookie jar never moves into the tree.
             with tempfile.TemporaryDirectory(prefix="savetube-") as private:
-                cookiefile = None
-                if use_cookies:
-                    if settings.cookies_file is None:
-                        raise RuntimeError(
-                            "the channel uses cookies and SAVETUBE_COOKIES_FILE is unset"
-                        )
-                    cookiefile = copy_cookies(settings.cookies_file, Path(private))
-                params = build_params(
-                    incoming,
-                    format=fmt,
-                    cookiefile=cookiefile,
-                    live=live,
-                    ratelimit=ratelimit,
-                )
-                info = await runner(video_url(video_id), params, report)
+                if members and profile is None:
+                    # A poll passed the video while a member profile existed.
+                    raise DownloadFailed(NO_MEMBER)
+                cookiefile = cookies.cookiefile(settings, profile, Path(private))
+
+                def params(format: str) -> dict[str, Any]:
+                    p = build_params(
+                        workdir,
+                        format=format,
+                        cookiefile=cookiefile,
+                        live=live,
+                        ratelimit=ratelimit,
+                    )
+                    if not live:
+                        # A `.part` file left by an interrupted run resumes.
+                        p["continuedl"] = True
+                    return p
+
+                checks = None
+                if live:
+                    info = await runner(video_url(video_id), params(fmt), report)
+                else:
+                    info, checks = await _archive(
+                        sessionmaker,
+                        video_id,
+                        workdir,
+                        runner=runner,
+                        params=params,
+                        fmt=fmt,
+                        pinned=pinned,
+                        report=report,
+                        streams=streams,
+                        tools=tools or integrity.Tools(),
+                    )
 
             async with sessionmaker() as session:
                 job = await session.get(Job, job_id)
@@ -470,11 +614,18 @@ async def run(
                     session,
                     job=job,
                     info=info,
-                    incoming=incoming,
+                    incoming=workdir,
                     archive_root=settings.archive_root,
                     from_shorts_tab=shorts,
                 )
+                if checks is not None:
+                    video.resume_format = None
+                    video.verified_at = video.completed_at
+                    video.verified_checks = checks
+                unblocked = 0 if live else await _unblock(session, datetime.now(UTC))
                 await session.commit()
+            if unblocked:
+                emit(log, logging.INFO, "dispatch.unblocked", count=unblocked)
             emit(
                 log,
                 logging.INFO,
@@ -486,16 +637,53 @@ async def run(
                 took=human_duration(time.monotonic() - started),
                 path=video.dir_path,
             )
+        except asyncio.CancelledError:
+            # A recorder's retry starts from the first segment anyway.
+            if live:
+                raise
+            async with sessionmaker() as session:
+                job = await session.get(Job, job_id)
+                await _interrupt(session, job, SHUTDOWN_LOG)
+                await session.commit()
+            emit(
+                log,
+                logging.INFO,
+                "job.interrupted",
+                job=job_id,
+                video=video_id,
+                **described,
+                took=human_duration(time.monotonic() - started),
+                present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
+                reason=SHUTDOWN_LOG,
+            )
+            raise
         except Exception as e:
-            # A retry is a new job with a new directory, so a partial download
-            # would otherwise stay on the dataset for good.
-            shutil.rmtree(settings.incoming_root / str(job_id), ignore_errors=True)
+            if not live and isinstance(e, DownloadFailed) and youtube_block(str(e)):
+                await _blocked(sessionmaker, job_id, e)
+                emit(
+                    log,
+                    logging.WARNING,
+                    "job.interrupted",
+                    job=job_id,
+                    video=video_id,
+                    **described,
+                    took=human_duration(time.monotonic() - started),
+                    present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
+                    reason=BLOCKED_LOG,
+                )
+                setattr(e, _RECORDED, True)
+                raise
+            # A retry after a real failure starts over, so the parts would
+            # otherwise stay on the dataset for good.
+            shutil.rmtree(workdir, ignore_errors=True)
             async with sessionmaker() as session:
                 job = await session.get(Job, job_id)
                 job.state = JobState.FAILED
                 job.finished_at = datetime.now(UTC)
                 job.log_tail = (str(e) or type(e).__name__)[-LOG_TAIL_CHARS:]
                 await _set_video_state(session, video_id, VideoState.FAILED)
+                if not live:
+                    await _pin(session, video_id, None)
                 await session.commit()
             final = live or (limit is not None and attempt >= limit)
             emit(
@@ -513,3 +701,199 @@ async def run(
             )
             setattr(e, _RECORDED, True)
             raise
+
+
+async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFailed) -> None:
+    """Interrupt an archive job YouTube refused, so it counts no attempt and
+    keeps its parts, and pause archive downloads. Jobs refused together pause
+    once: only the first one past an expired pause lengthens it."""
+    async with sessionmaker() as session:
+        await lock(session)
+        limits = await session.get(DownloadSettings, 1)
+        if limits is None:
+            limits = DownloadSettings(id=1, max_concurrent=1, block_count=0)
+            session.add(limits)
+        now = datetime.now(UTC)
+        pause: timedelta | None = None
+        if blocked(limits, now) is None:
+            limits.block_count += 1
+            pause = backoff(limits.block_count)
+            limits.blocked_until = now + pause
+        job = await session.get(Job, job_id)
+        await _interrupt(session, job, f"{BLOCKED_LOG}: {e}"[:LOG_TAIL_CHARS])
+        await session.commit()
+    if pause is not None:
+        emit(
+            log,
+            logging.WARNING,
+            "dispatch.blocked",
+            until=limits.blocked_until.astimezone(TIMEZONE).isoformat(timespec="minutes"),
+            backoff=human_duration(pause.total_seconds()),
+            count=limits.block_count,
+            job=job_id,
+            video=job.video_id,
+            reason=logs.cut(str(e)),
+        )
+
+
+async def _unblock(session: AsyncSession, now: datetime) -> int:
+    """End the probe after a block: a success resets the count. Returns the
+    count it cleared, 0 when none. A success while a pause holds clears
+    nothing, because that download started before the block."""
+    limits = await load(session)
+    if not limits.block_count or blocked(limits, now) is not None:
+        return 0
+    await lock(session)
+    await session.refresh(limits)
+    count = limits.block_count
+    if not count or blocked(limits, now) is not None:
+        return 0
+    limits.block_count = 0
+    limits.blocked_until = None
+    return count
+
+
+async def _pin(session: AsyncSession, video_id: str, format_id: str | None) -> None:
+    await session.execute(update(Video).where(Video.id == video_id).values(resume_format=format_id))
+
+
+def _present(workdir: Path) -> int | None:
+    """The bytes already in the working directory, None when it was missing.
+    Creates it either way."""
+    found = dir_size(workdir) if workdir.exists() else None
+    workdir.mkdir(parents=True, exist_ok=True)
+    return found
+
+
+def _part_bytes(workdir: Path) -> int:
+    """The bytes in yt-dlp's unfinished `.part` files, which a resume continues."""
+    return sum(f.stat().st_size for f in workdir.rglob("*.part") if f.is_file())
+
+
+async def _start_over(sessionmaker: async_sessionmaker, video_id: str, workdir: Path) -> None:
+    """Delete the parts and the pinned format, leaving an empty directory."""
+    shutil.rmtree(workdir, ignore_errors=True)
+    _present(workdir)
+    async with sessionmaker() as session:
+        await _pin(session, video_id, None)
+        await session.commit()
+
+
+def _media_path(info: dict[str, Any]) -> Path | None:
+    downloads = info.get("requested_downloads") or []
+    path = (downloads[-1] if downloads else info).get("filepath")
+    return Path(path) if path else None
+
+
+async def _archive(
+    sessionmaker: async_sessionmaker,
+    video_id: str,
+    workdir: Path,
+    *,
+    runner: Runner,
+    params: Callable[[str], dict[str, Any]],
+    fmt: str,
+    pinned: str | None,
+    report: Report,
+    streams: list[dict[str, Any]],
+    tools: integrity.Tools,
+) -> tuple[dict[str, Any], list[str]]:
+    """Download into `workdir`, resuming its parts, and verify the result.
+    Returns the info dict and the checks that passed.
+
+    A download that fails a check starts over from zero once, within the same
+    attempt. A second failure raises DownloadFailed.
+    """
+    url = video_url(video_id)
+    for fresh in (False, True):
+        streams.clear()
+        present = _present(workdir)
+        resumed = pinned is not None and present is not None
+        if pinned is not None and not resumed:
+            await _start_over(sessionmaker, video_id, workdir)
+            pinned = None
+        if resumed:
+            emit(
+                log,
+                logging.INFO,
+                "download.resume",
+                format=pinned,
+                present=human_bytes(present),
+                part=human_bytes(_part_bytes(workdir)),
+            )
+            try:
+                info = await runner(url, params(pinned), report)
+            except DownloadFailed as e:
+                if FORMAT_GONE not in str(e):
+                    raise
+                emit(
+                    log,
+                    logging.WARNING,
+                    "download.restart",
+                    format=pinned,
+                    present=human_bytes(dir_size(workdir)),
+                    reason="the pinned format is no longer offered",
+                )
+                await _start_over(sessionmaker, video_id, workdir)
+                streams.clear()
+                resumed = False
+                info = await runner(url, params(fmt), report)
+        else:
+            info = await runner(url, params(fmt), report)
+
+        media = _media_path(info) or workdir / "missing"
+        try:
+            checks = await asyncio.to_thread(
+                integrity.verify, media, info, list(streams), resumed=resumed, tools=tools
+            )
+        except integrity.IntegrityFailed as e:
+            emit(
+                log,
+                logging.WARNING,
+                "download.integrity_failed",
+                check=e.check,
+                **e.numbers,
+                resumed="yes" if resumed else "no",
+                then="fail" if fresh else "start over",
+            )
+            await _start_over(sessionmaker, video_id, workdir)
+            pinned = None
+            if fresh:
+                raise DownloadFailed(f"integrity check failed: {e}") from None
+            continue
+        emit(log, logging.INFO, "download.verified", checks=",".join(checks) or "none")
+        return info, checks
+    raise AssertionError("unreachable")
+
+
+async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -> None:
+    """Delete partial directories that no queued or running job wants and that
+    nothing wrote to for ORPHAN_DAYS, so cancelled or abandoned parts do not
+    fill the dataset."""
+    root = settings.incoming_root
+    if not root.is_dir():
+        return
+    active = Job.state.in_([JobState.QUEUED, JobState.RUNNING])
+    async with sessionmaker() as session:
+        wanted = set(
+            await session.scalars(select(Job.video_id).where(active, Job.kind == JobKind.ARCHIVE))
+        )
+        # A recording works in `.incoming/<job id>/`.
+        wanted |= {str(i) for i in await session.scalars(select(Job.id).where(active))}
+    cutoff = time.time() - ORPHAN_DAYS * 86400
+    for d in root.iterdir():
+        if not d.is_dir() or d.name in wanted:
+            continue
+        newest = max(p.stat().st_mtime for p in [d, *d.rglob("*")])
+        if newest >= cutoff:
+            continue
+        size = dir_size(d)
+        shutil.rmtree(d, ignore_errors=True)
+        emit(
+            log,
+            logging.INFO,
+            "incoming.deleted",
+            dir=d.name,
+            size=human_bytes(size),
+            idle=human_duration(time.time() - newest),
+        )

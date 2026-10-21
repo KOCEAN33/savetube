@@ -12,7 +12,7 @@ Read this file, then only the files your task touches.
 | `runtime.md` | the web, scheduler, worker and recorder roles, how yt-dlp runs in-process |
 | `frontend.md` | sidebar, pages, modals, adding a channel and its API, dashboard statistics |
 | `storage.md` | tables and migrations, the directory tree on `tank/youtube` |
-| `archive.md` | polling sources, playlists, title words, pausing downloads, download limits |
+| `archive.md` | polling sources, playlists, title words, pausing downloads, download limits, resuming and verifying downloads |
 | `live.md` | live detection, recording, the VOD |
 | `access.md` | login through Zitadel, YouTube cookies |
 | `operations.md` | Discord notifications, metrics, build, release, Kubernetes deployment |
@@ -20,7 +20,7 @@ Read this file, then only the files your task touches.
 ## Requirements
 
 1. Back up chosen playlists and whole channels: videos, Shorts, and past lives, at the best quality YouTube serves.
-2. Download members-only content with the user's own account cookies, per channel.
+2. Download members-only content with the cookies of an account that is a member of the channel.
 3. Watch chosen channels and record a live the moment it starts. An unarchived live is gone once it ends.
 4. One web UI to add channels and playlists, choose per channel what to keep, browse stored videos and their metadata, and see storage statistics.
 5. A structured tree on `tank`: `<channel>/<type>/<video>`, never a flat directory.

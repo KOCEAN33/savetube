@@ -4,7 +4,7 @@ import { CheckIcon } from "lucide-react"
 import { useNavigate } from "react-router"
 
 import { ChannelAvatar } from "@/components/channel-avatar"
-import { CookiesField, DateCutoffField, QualityField } from "@/components/channel-fields"
+import { DateCutoffField, QualityField } from "@/components/channel-fields"
 import { ErrorBox } from "@/components/query-state"
 import { SuggestionChips, TitlesPreview, WordListEditor } from "@/components/source-words"
 import { Badge } from "@/components/ui/badge"
@@ -391,7 +391,6 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
   const [words, setWords] = useState<TitleWords>({ include_words: [], exclude_words: [] })
   const [dateAfter, setDateAfter] = useState<string | null>(null)
   const [format, setFormat] = useState(DEFAULT_FORMAT)
-  const [useCookies, setUseCookies] = useState(false)
   const save = useMutation({
     mutationFn: mutations.createChannel,
     onSuccess: (channel) => {
@@ -438,7 +437,6 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
       ...words,
       date_after: dateAfter,
       format,
-      use_cookies: useCookies,
     }
     save.mutate(body)
   }
@@ -472,7 +470,6 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
           <div className="flex max-w-xl flex-col gap-6">
             <DateCutoffField id="new-date-after" value={dateAfter} onChange={setDateAfter} />
             <QualityField id="new-format" format={format} onChange={setFormat} />
-            <CookiesField checked={useCookies} onChange={setUseCookies} />
             <div className="flex flex-col gap-1 rounded-lg border p-4 text-xs text-muted-foreground">
               <span className="text-sm font-medium text-foreground">Summary</span>
               <span>

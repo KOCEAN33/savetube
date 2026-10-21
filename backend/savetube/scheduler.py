@@ -6,22 +6,33 @@ Recorder Jobs are not built yet (docs/plan/README.md, Build order step 3).
 
 import asyncio
 import logging
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from pathlib import Path
 
 from sqlalchemy import func, select
 
+from savetube import cookies
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
-from savetube.jobs import Dispatched, dispatch, reclaim_stalled
+from savetube.jobs import Dispatched, clean_incoming, dispatch, reclaim_stalled
 from savetube.limits import TIMEZONE
 from savetube.live import Seen, check_logged, watched_channels
 from savetube.logs import emit, human_bytes
 from savetube.poll import due_sources, poll_source
 from savetube.storage import disk_usage
-from savetube.ytdl import fetch_feed, list_entries, list_streams, probe_live, probe_video
+from savetube.ytdl import (
+    fetch_feed,
+    list_entries,
+    list_streams,
+    probe_live,
+    probe_member,
+    probe_video,
+)
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +42,8 @@ TICK_SECONDS = 60
 DISPATCH_SECONDS = 10
 SAMPLE_EVERY = timedelta(hours=1)
 SUMMARY_SECONDS = 600
+# Partial directories age in days, so an hourly look is enough.
+CLEANUP_SECONDS = 3600
 
 
 async def sample_storage(settings: Settings) -> None:
@@ -56,7 +69,14 @@ async def poll_sources(settings: Settings) -> None:
         due = await due_sources(session, datetime.now(UTC))
     # One at a time: every listing counts against YouTube's request limits.
     for source_id in due:
-        await poll_source(sessionmaker, source_id, settings, lister=list_entries, cancel=cancel)
+        await poll_source(
+            sessionmaker,
+            source_id,
+            settings,
+            lister=list_entries,
+            cancel=cancel,
+            prober=probe_member,
+        )
 
 
 class DispatchLog:
@@ -89,10 +109,13 @@ class DispatchLog:
             )
         reason = None
         if d.waiting:
-            reason = "window" if d.opens is not None else "slots"
+            if d.blocked_until is not None:
+                reason = "blocked"
+            else:
+                reason = "window" if d.opens is not None else "slots"
         if reason != self._reason:
             self._reason = reason
-            if reason == "window":
+            if reason in ("window", "blocked"):
                 emit(
                     log,
                     logging.INFO,
@@ -126,6 +149,9 @@ class DispatchLog:
                 window=d.window or "none",
                 open="no" if d.opens is not None else "yes",
                 ratelimit=f"{human_bytes(d.rate_limit)}/s" if d.rate_limit else "none",
+                blocked=d.blocked_until.astimezone(TIMEZONE).isoformat(timespec="minutes")
+                if d.blocked_until
+                else "none",
             )
 
 
@@ -155,23 +181,43 @@ async def reclaim(settings: Settings) -> None:
     await reclaim_stalled(default_sessionmaker(), settings, stalled=stalled, finish=finish)
 
 
-async def detect_lives(seen: Seen) -> None:
+async def record_profiles(settings: Settings) -> None:
+    """The web pod lists the profiles from the table, without the mount."""
+    async with default_sessionmaker()() as session:
+        await cookies.record_profiles(session, cookies.profiles(settings), datetime.now(UTC))
+        await session.commit()
+
+
+async def detect_lives(settings: Settings, seen: Seen) -> None:
     sessionmaker = default_sessionmaker()
     async with sessionmaker() as session:
         channels = await watched_channels(session)
-    # Every watched channel costs a Live tab listing and a `/live` extraction
-    # per tick. The guest limit is near 300 requests an hour, so this caps the
-    # number of watched channels.
-    for channel_id in channels:
-        await check_logged(
-            sessionmaker,
-            channel_id,
-            fetch_feed=fetch_feed,
-            probe=probe_video,
-            probe_live=probe_live,
-            list_streams=list_streams,
-            seen=seen,
-        )
+        profile = await cookies.general(session)
+    if not channels:
+        return
+
+    def member_probe(video_id: str, member: str) -> dict:
+        with tempfile.TemporaryDirectory(prefix="savetube-") as own:
+            return probe_video(video_id, cookies.cookiefile(settings, member, Path(own)))
+
+    # The probes take the general profile. The RSS feed needs no cookies.
+    with tempfile.TemporaryDirectory(prefix="savetube-") as private:
+        cookiefile = cookies.cookiefile(settings, profile, Path(private))
+        # Every watched channel costs a Live tab listing and a `/live`
+        # extraction per tick. The guest limit is near 300 requests an hour,
+        # so this caps the number of watched channels.
+        for channel_id in channels:
+            await check_logged(
+                sessionmaker,
+                channel_id,
+                fetch_feed=fetch_feed,
+                probe=partial(probe_video, cookiefile=cookiefile),
+                probe_live=partial(probe_live, cookiefile=cookiefile),
+                list_streams=partial(list_streams, cookiefile=cookiefile),
+                seen=seen,
+                member_probe=member_probe,
+                profiles=cookies.profiles(settings),
+            )
 
 
 async def _every(
@@ -200,11 +246,19 @@ async def run(settings: Settings) -> None:
         # live detection or the storage sample.
         async with asyncio.TaskGroup() as tg:
             tg.create_task(_every("storage sample", lambda: sample_storage(settings)))
+            tg.create_task(_every("cookie profiles", lambda: record_profiles(settings)))
             tg.create_task(_every("source poll", lambda: poll_sources(settings)))
             report = DispatchLog()
             tg.create_task(
                 _every("archive dispatch", lambda: dispatch_archives(report), DISPATCH_SECONDS)
             )
             tg.create_task(_every("stalled job reclaim", lambda: reclaim(settings)))
+            tg.create_task(
+                _every(
+                    "incoming cleanup",
+                    lambda: clean_incoming(default_sessionmaker(), settings),
+                    CLEANUP_SECONDS,
+                )
+            )
             seen: Seen = {}
-            tg.create_task(_every("live detection", lambda: detect_lives(seen)))
+            tg.create_task(_every("live detection", lambda: detect_lives(settings, seen)))

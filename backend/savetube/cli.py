@@ -64,6 +64,10 @@ def _worker(args: argparse.Namespace) -> None:
                 fetch_job_polling_interval=5,
                 # The `job` row keeps the history, and every dispatch adds a row.
                 delete_jobs="successful",
+                # On SIGTERM, cancel the downloads at once instead of waiting
+                # for them. Each cancel kills its child, keeps its parts, and
+                # puts the job back to waiting, so the next worker resumes it.
+                shutdown_graceful_timeout=0,
             )
 
     asyncio.run(main())

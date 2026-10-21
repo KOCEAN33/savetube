@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from yt_dlp.utils import DownloadError
 
-from savetube import logs, words
+from savetube import cookies, logs, words
 from savetube.config import Settings
 from savetube.db.models import (
     Channel,
@@ -38,7 +38,7 @@ from savetube.logs import emit, human_duration
 from savetube.pipeline import get_or_create_channel
 from savetube.sources import InvalidSourceUrl
 from savetube.sources import parse as parse_source_url
-from savetube.ytdl import avatar_url, copy_cookies
+from savetube.ytdl import avatar_url
 
 log = logging.getLogger(__name__)
 
@@ -81,14 +81,16 @@ def _skip(
     source: Source,
     channel: Channel | None,
     lists: words.Lists,
+    members: set[str],
 ) -> str | None:
-    """None when the entry passes, else the reason it does not."""
+    """None when the entry passes, else the reason it does not. `members` holds
+    the channels a present cookie profile is a confirmed member of."""
     if entry.get("live_status") in _UNFINISHED_LIVE:
         return "live"
     if not words.matches(entry.get("title") or "", *lists):
         return "words"
-    # Without cookies a members-only download fails every attempt.
-    if classify(entry) is VideoType.MEMBERS and not (channel is not None and channel.use_cookies):
+    # Without a member's cookies a members-only download fails every attempt.
+    if classify(entry) is VideoType.MEMBERS and entry["channel_id"] not in members:
         return "members"
     if (
         source.kind is SourceKind.PLAYLIST
@@ -126,11 +128,16 @@ class Synced:
     playlists: int = 0
     added: int = 0
     disabled: list[Source] = field(default_factory=list)
+    # One listed members-only video id per channel, for the membership checks.
+    members_only: dict[str, str] = field(default_factory=dict)
 
 
-async def sync(session: AsyncSession, source: Source, listing: dict[str, Any]) -> Synced:
+async def sync(
+    session: AsyncSession, source: Source, listing: dict[str, Any], profiles: list[str]
+) -> Synced:
     """Record the listing. Return the new archive jobs, and the queued archive
-    jobs whose video no longer passes. The caller commits, then cancels."""
+    jobs whose video no longer passes. `profiles` are the present cookie
+    profiles. The caller commits, then cancels."""
     parent = await session.get(Source, source.parent_id) if source.parent_id else None
     if parent is not None:
         # A child keeps its parent's channel, whatever the listing says.
@@ -155,6 +162,9 @@ async def sync(session: AsyncSession, source: Source, listing: dict[str, Any]) -
         if e.get("id"):
             listed[e["id"]] = {**e, "channel_id": e.get("channel_id") or tab_channel}
     result = Synced(listed=len(listed))
+    for vid, e in listed.items():
+        if e["channel_id"] and classify(e) is VideoType.MEMBERS:
+            result.members_only.setdefault(e["channel_id"], vid)
     if not listed:
         # Keeps the last titles for suggestions and the preview.
         return result
@@ -184,11 +194,16 @@ async def sync(session: AsyncSession, source: Source, listing: dict[str, Any]) -
     # The source's channel holds the date cutoff, also for another channel's
     # video in its playlist.
     channel = await session.get(Channel, source.channel_id) if source.channel_id else None
+    members = await cookies.member_channels(session, list(result.members_only), profiles)
     entries: dict[str, dict[str, Any]] = {}
     skipped: dict[str, str] = {}
     for vid, e in listed.items():
         # A private or deleted video in a playlist lists with no channel.
-        reason = _skip(e, source, channel, lists[e["channel_id"]]) if e["channel_id"] else "private"
+        reason = (
+            _skip(e, source, channel, lists[e["channel_id"]], members)
+            if e["channel_id"]
+            else "private"
+        )
         if reason is None:
             entries[vid] = e
         else:
@@ -369,10 +384,13 @@ async def poll_source(
     *,
     lister: Lister,
     cancel: Cancel,
+    prober: cookies.Prober,
 ) -> None:
     # yt-dlp's own lines during the listing carry the source too.
     with logs.context(source=source_id):
-        await _poll_source(sessionmaker, source_id, settings, lister=lister, cancel=cancel)
+        await _poll_source(
+            sessionmaker, source_id, settings, lister=lister, cancel=cancel, prober=prober
+        )
 
 
 async def _poll_source(
@@ -382,13 +400,14 @@ async def _poll_source(
     *,
     lister: Lister,
     cancel: Cancel,
+    prober: cookies.Prober,
 ) -> None:
     async with sessionmaker() as session:
         source = await session.get(Source, source_id)
         if source is None:  # deleted since due_sources
             return
         channel = await session.get(Channel, source.channel_id) if source.channel_id else None
-        url, use_cookies = source.url, channel is not None and channel.use_cookies
+        url, profile = source.url, await cookies.general(session)
         emit(
             log,
             logging.INFO,
@@ -403,19 +422,13 @@ async def _poll_source(
     started = time.monotonic()
     try:
         with tempfile.TemporaryDirectory(prefix="savetube-") as private:
-            cookiefile = None
-            if use_cookies:
-                if settings.cookies_file is None:
-                    raise RuntimeError(
-                        "the channel uses cookies and SAVETUBE_COOKIES_FILE is unset"
-                    )
-                cookiefile = copy_cookies(settings.cookies_file, Path(private))
+            cookiefile = cookies.cookiefile(settings, profile, Path(private))
             listing = await asyncio.to_thread(lister, url, cookiefile)
         async with sessionmaker() as session:
             source = await session.get(Source, source_id)
             source.last_polled_at = now
             source.last_error = None
-            synced = await sync(session, source, listing)
+            synced = await sync(session, source, listing, cookies.profiles(settings))
             await session.commit()
     except Exception as e:
         expected = isinstance(e, DownloadError)
@@ -449,6 +462,7 @@ async def _poll_source(
             reason=reason,
         )
     _log_done(source_id, url, synced, cancelled, time.monotonic() - started)
+    await cookies.check_memberships(sessionmaker, settings, synced.members_only, prober=prober)
 
 
 def _log_done(source_id: int, url: str, synced: Synced, cancelled: int, took: float) -> None:
