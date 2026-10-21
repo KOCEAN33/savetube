@@ -1,4 +1,5 @@
-"""The single-replica loop: source polls, live detection, recorder Jobs, storage samples.
+"""The single-replica loop: source polls, archive dispatch, live detection, recorder
+Jobs, storage samples.
 
 Recorder Jobs are not built yet (docs/plan/README.md, Build order step 3).
 """
@@ -13,7 +14,7 @@ from sqlalchemy import func, select
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
-from savetube.jobs import reclaim_stalled
+from savetube.jobs import dispatch, reclaim_stalled
 from savetube.live import Seen, check_channel, watched_channels
 from savetube.poll import due_sources, poll_source
 from savetube.storage import disk_usage
@@ -22,6 +23,9 @@ from savetube.ytdl import fetch_feed, list_entries, list_streams, probe_live, pr
 log = logging.getLogger(__name__)
 
 TICK_SECONDS = 60
+# With max_concurrent 1 a slot sits idle up to this long after each download,
+# so it is shorter than the tick. One dispatch is a few small queries.
+DISPATCH_SECONDS = 10
 SAMPLE_EVERY = timedelta(hours=1)
 
 
@@ -37,10 +41,7 @@ async def sample_storage(settings: Settings) -> None:
 
 
 async def poll_sources(settings: Settings) -> None:
-    from savetube.queue import app, archive
-
-    async def enqueue(job_id: int) -> int:
-        return await archive.defer_async(job_id=job_id)
+    from savetube.queue import app
 
     async def cancel(queue_job_id: int) -> bool:
         return await app.job_manager.cancel_job_by_id_async(queue_job_id)
@@ -50,9 +51,14 @@ async def poll_sources(settings: Settings) -> None:
         due = await due_sources(session, datetime.now(UTC))
     # One at a time: every listing counts against YouTube's request limits.
     for source_id in due:
-        await poll_source(
-            sessionmaker, source_id, settings, lister=list_entries, enqueue=enqueue, cancel=cancel
-        )
+        await poll_source(sessionmaker, source_id, settings, lister=list_entries, cancel=cancel)
+
+
+async def dispatch_archives() -> None:
+    from savetube.queue import enqueue
+
+    async with default_sessionmaker()() as session:
+        await dispatch(session, datetime.now(UTC), enqueue)
 
 
 async def reclaim(settings: Settings) -> None:
@@ -96,13 +102,15 @@ async def detect_lives(seen: Seen) -> None:
             log.exception("live check of %s failed", channel_id)
 
 
-async def _every(name: str, step: Callable[[], Awaitable[None]]) -> None:
+async def _every(
+    name: str, step: Callable[[], Awaitable[None]], seconds: float = TICK_SECONDS
+) -> None:
     while True:
         try:
             await step()
         except Exception:
             log.exception("%s failed", name)
-        await asyncio.sleep(TICK_SECONDS)
+        await asyncio.sleep(seconds)
 
 
 async def run(settings: Settings) -> None:
@@ -114,6 +122,7 @@ async def run(settings: Settings) -> None:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(_every("storage sample", lambda: sample_storage(settings)))
             tg.create_task(_every("source poll", lambda: poll_sources(settings)))
+            tg.create_task(_every("archive dispatch", dispatch_archives, DISPATCH_SECONDS))
             tg.create_task(_every("stalled job reclaim", lambda: reclaim(settings)))
             seen: Seen = {}
             tg.create_task(_every("live detection", lambda: detect_lives(seen)))

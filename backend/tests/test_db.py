@@ -18,6 +18,7 @@ from savetube.db.models import (
     Job,
     JobKind,
     JobState,
+    ListingEntry,
     Source,
     SourceKind,
     Video,
@@ -242,29 +243,22 @@ async def test_poll_queues_unstored_videos_once(settings):
     async with sessionmaker() as session:
         assert await due_sources(session, datetime.now(UTC)) == [1, 2]
 
-    deferred = []
-
-    async def enqueue(job_id):
-        deferred.append(job_id)
-        return 1000 + job_id
-
     await poll_source(
         sessionmaker,
         1,
         settings,
         lister=lambda url, c: TAB_LISTING,
-        enqueue=enqueue,
         cancel=_cancel,
     )
 
     async with sessionmaker() as session:
-        jobs = {
-            j.video_id: j for j in await session.scalars(sa.select(Job).where(Job.id.in_(deferred)))
-        }
+        # Jobs 1-5 existed before the poll.
+        jobs = {j.video_id: j for j in await session.scalars(sa.select(Job).where(Job.id > 5))}
         # The tab decides what is kept, so a past live on it is archived too.
         # `old` is before the channel's date cutoff.
         assert sorted(jobs) == ["new", "past_live", "retry", "undated"]
-        assert all(j.queue_job_id == 1000 + j.id for j in jobs.values())
+        # A new job waits for the dispatcher, with no queue job of its own.
+        assert all(j.state is JobState.QUEUED and j.queue_job_id is None for j in jobs.values())
         assert (await session.get(Video, "new")).state is VideoState.PENDING
         assert (await session.get(Video, "new")).channel_id == "UC1"
         assert await session.get(Video, "upcoming") is None
@@ -279,7 +273,6 @@ async def test_poll_queues_unstored_videos_once(settings):
         assert await due_sources(session, datetime.now(UTC)) == [2]
 
     # A second poll of the same listing finds every video queued or done.
-    deferred.clear()
     async with sessionmaker() as session:
         await session.execute(sa.update(Source).values(last_polled_at=None))
         await session.commit()
@@ -288,13 +281,10 @@ async def test_poll_queues_unstored_videos_once(settings):
         1,
         settings,
         lister=lambda url, c: TAB_LISTING,
-        enqueue=enqueue,
         cancel=_cancel,
     )
-    assert deferred == []
-
-    async def broken_enqueue(job_id):
-        raise RuntimeError("queue down")
+    async with sessionmaker() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(Job)) == 9
 
     playlist = {
         "channel_id": "UC1",
@@ -309,7 +299,6 @@ async def test_poll_queues_unstored_videos_once(settings):
         2,
         settings,
         lister=lambda url, c: playlist,
-        enqueue=broken_enqueue,
         cancel=_cancel,
     )
     async with sessionmaker() as session:
@@ -318,12 +307,12 @@ async def test_poll_queues_unstored_videos_once(settings):
         assert (await session.get(Source, 2)).channel_id == "UC1"
         assert await session.get(Video, "private") is None
         job = await session.scalar(sa.select(Job).where(Job.video_id == "other"))
-        assert job.state is JobState.FAILED and "queue down" in job.log_tail
+        assert job.state is JobState.QUEUED
 
     def fails(url, cookiefile):
         raise RuntimeError("HTTP Error 429")
 
-    await poll_source(sessionmaker, 2, settings, lister=fails, enqueue=enqueue, cancel=_cancel)
+    await poll_source(sessionmaker, 2, settings, lister=fails, cancel=_cancel)
     async with sessionmaker() as session:
         assert (await session.get(Source, 2)).last_error == "RuntimeError: HTTP Error 429"
     await engine.dispose()
@@ -569,12 +558,7 @@ async def test_a_detected_live_is_archived_once_it_ends(settings):
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
 
-    async def enqueue(job_id):
-        return job_id
-
-    await poll_source(
-        sessionmaker, 1, settings, lister=lambda u, c: listing, enqueue=enqueue, cancel=_cancel
-    )
+    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
     async with sessionmaker() as session:
         kinds = sorted(
             await session.scalars(sa.select(Job.kind).where(Job.video_id == "B_eFxgIWdXo"))
@@ -685,24 +669,14 @@ PLAYLISTS_LISTING = {
 }
 
 
-async def _requeue_nothing(job_id, queue_job_id):
-    return None
-
-
 def _api(settings, lister=None):
-    from savetube.web.api import get_requeue, get_scanner
+    from savetube.web.api import get_scanner
 
     app = create_app(settings)
     app.dependency_overrides[current_user] = lambda: User(sub="u")
-    # The real requeue opens the procrastinate queue at SAVETUBE_DATABASE_URL.
-    app.dependency_overrides[get_requeue] = lambda: _requeue_nothing
     if lister is not None:
         app.dependency_overrides[get_scanner] = lambda: lister
     return TestClient(app, headers={"X-Requested-With": "savetube"})
-
-
-async def _enqueue(job_id):
-    return job_id
 
 
 async def _cancel(queue_job_id):
@@ -739,9 +713,7 @@ async def test_poll_keeps_the_full_listing_and_archives_titles_the_words_pass(se
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(
-        sessionmaker, 1, settings, lister=lambda u, c: listing, enqueue=_enqueue, cancel=_cancel
-    )
+    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
     assert await _archive_jobs(sessionmaker) == ["B_eFxgIWdXo"]
 
     with _api(settings) as client:
@@ -777,9 +749,7 @@ async def test_poll_keeps_the_full_listing_and_archives_titles_the_words_pass(se
     async with sessionmaker() as session:
         await session.execute(sa.update(Source).values(last_polled_at=None))
         await session.commit()
-    await poll_source(
-        sessionmaker, 1, settings, lister=lambda u, c: listing, enqueue=_enqueue, cancel=_cancel
-    )
+    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
     with _api(settings) as client:
         preview = client.post(
             "/api/sources/1/title-preview", json={"include_words": [], "exclude_words": []}
@@ -818,7 +788,6 @@ async def test_playlists_source_makes_a_child_per_new_playlist_and_archives_noth
             1,
             settings,
             lister=lambda u, c: PLAYLISTS_LISTING,
-            enqueue=_enqueue,
             cancel=_cancel,
         )
     assert await _archive_jobs(sessionmaker) == []
@@ -894,16 +863,12 @@ async def test_playlist_source_skips_other_channels_unless_allowed(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(
-        sessionmaker, 2, settings, lister=lambda u, c: listing, enqueue=_enqueue, cancel=_cancel
-    )
+    await poll_source(sessionmaker, 2, settings, lister=lambda u, c: listing, cancel=_cancel)
     assert await _archive_jobs(sessionmaker) == ["own"]
     async with sessionmaker() as session:
         assert (await session.get(Source, 2)).channel_id == VESP
 
-    await poll_source(
-        sessionmaker, 3, settings, lister=lambda u, c: listing, enqueue=_enqueue, cancel=_cancel
-    )
+    await poll_source(sessionmaker, 3, settings, lister=lambda u, c: listing, cancel=_cancel)
     assert await _archive_jobs(sessionmaker) == ["EoPQm9SemWw", "own"]
     await engine.dispose()
 
@@ -1066,9 +1031,7 @@ async def test_poll_and_preview_merge_global_channel_and_source_words(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(
-        sessionmaker, 1, settings, lister=lambda u, c: listing, enqueue=_enqueue, cancel=_cancel
-    )
+    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
     assert await _archive_jobs(sessionmaker) == ["cover", "utawaku"]
 
     with _api(settings) as client:
@@ -1188,7 +1151,6 @@ async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel):
         source_id,
         settings,
         lister=lambda u, c: listing,
-        enqueue=_enqueue,
         cancel=cancel,
     )
 
@@ -1442,6 +1404,65 @@ async def test_poll_links_every_stored_video_and_cancels_queued_jobs_the_words_d
 
 
 @pytest.mark.anyio
+async def test_members_only_videos_wait_for_the_channels_cookies(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360)",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        f" ('queued_member', '{VESP}', 'members', 'q', 'pending')",
+        "INSERT INTO video_source (video_id, source_id) VALUES ('queued_member', 1)",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (101, 'archive', 'queued', 'queued_member', 0)",
+        "SELECT setval('job_id_seq', 200)",
+    )
+
+    def e(video_id, availability):
+        return {
+            "id": video_id,
+            "title": video_id,
+            "live_status": "was_live",
+            "availability": availability,
+        }
+
+    listing = {
+        "channel_id": VESP,
+        "channel": "VESPERBELL",
+        "entries": [
+            e("public", "public"),
+            e("member", "subscriber_only"),
+            e("queued_member", "subscriber_only"),
+        ],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def queued():
+        async with sessionmaker() as session:
+            return sorted(
+                await session.scalars(sa.select(Job.video_id).where(Job.state == JobState.QUEUED))
+            )
+
+    await _poll(sessionmaker, settings, 1, listing)
+    assert await queued() == ["public"]
+    async with sessionmaker() as session:
+        assert (await session.get(Job, 101)).state is JobState.CANCELLED
+        listed = set(await session.scalars(sa.select(ListingEntry.video_id)))
+        linked = set(await session.scalars(sa.select(VideoSource.video_id)))
+    assert listed == {"public", "member", "queued_member"}
+    assert linked == {"public", "queued_member"}
+
+    _sql(settings, f"UPDATE channel SET use_cookies = true WHERE id = '{VESP}'")
+    cookie_file = settings.archive_root.parent / "cookies.txt"
+    cookie_file.write_text("# Netscape HTTP Cookie File\n")
+    await _poll(sessionmaker, settings.model_copy(update={"cookies_file": cookie_file}), 1, listing)
+    assert await queued() == ["member", "public", "queued_member"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
 async def test_a_playlist_gone_from_the_channel_disables_its_child(settings):
     _parent(settings)
     engine = make_engine(settings.sqlalchemy_url)
@@ -1634,60 +1655,46 @@ class _Runner:
         raise DownloadFailed("stopped by the test")
 
 
-async def _run(settings, *, live=False, defer=None):
+async def _run(settings, *, live=False):
     from savetube.jobs import run
 
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
     runner = _Runner()
-    deferred = []
-
-    async def record_defer(job_id, at):
-        deferred.append((job_id, at))
-        return 900
-
     try:
-        await run(
-            1,
-            settings,
-            live=live,
-            runner=runner,
-            defer=defer or record_defer,
-            sessionmaker=sessionmaker,
-        )
+        await run(1, settings, live=live, runner=runner, sessionmaker=sessionmaker)
     except Exception as e:
         if type(e).__name__ != "DownloadFailed":
             raise
     async with sessionmaker() as session:
         job = await session.get(Job, 1)
+        queue_rows = await session.scalar(sa.text("SELECT count(*) FROM procrastinate_jobs"))
     await engine.dispose()
-    return job, runner, deferred
+    return job, runner, queue_rows
 
 
 @pytest.mark.anyio
-async def test_an_archive_outside_the_window_defers_to_its_start(settings):
+async def test_an_archive_outside_the_window_goes_back_to_waiting(settings):
     _job_rows(settings, _closed_window_sql())
-    before = datetime.now(UTC)
-    job, runner, deferred = await _run(settings)
+    job, runner, queue_rows = await _run(settings)
     assert runner.params is None
     assert job.state is JobState.QUEUED and job.attempts == 0
-    assert before + timedelta(minutes=118) < job.deferred_until <= before + timedelta(hours=2)
-    assert deferred == [(1, job.deferred_until)]
-    assert job.queue_job_id == 900
+    # The dispatcher takes it again. Nothing new is queued.
+    assert job.queue_job_id is None
+    assert queue_rows == 0
 
 
 @pytest.mark.anyio
-async def test_an_archive_without_a_free_slot_defers_a_minute(settings):
+async def test_an_archive_without_a_free_slot_goes_back_to_waiting(settings):
     _job_rows(
         settings,
         "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
         " (2, 'archive', 'running', 'busy1', 1)",
     )
-    before = datetime.now(UTC)
-    job, runner, deferred = await _run(settings)
+    job, runner, queue_rows = await _run(settings)
     assert runner.params is None and job.state is JobState.QUEUED
-    assert before + timedelta(seconds=59) < job.deferred_until < before + timedelta(seconds=75)
-    assert [j for j, _ in deferred] == [1]
+    assert job.queue_job_id is None
+    assert queue_rows == 0
 
 
 @pytest.mark.anyio
@@ -1695,16 +1702,13 @@ async def test_an_admitted_archive_runs_with_the_rate_limit(settings):
     _job_rows(
         settings,
         "UPDATE download_settings SET max_concurrent = 2, rate_limit_bytes = 1000000",
-        "UPDATE job SET deferred_until = now() WHERE id = 1",
         # A running recording takes no archive slot.
         "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
         " (2, 'archive', 'running', 'busy1', 1), (3, 'record', 'running', 'busy2', 1)",
     )
-    job, runner, deferred = await _run(settings)
-    assert deferred == []
+    job, runner, _ = await _run(settings)
     assert runner.params["ratelimit"] == 1000000
     assert job.attempts == 1 and job.started_at is not None
-    assert job.deferred_until is None
     assert job.state is JobState.FAILED  # the test runner fails every download
 
 
@@ -1718,20 +1722,116 @@ async def test_a_recording_ignores_every_download_limit(settings):
         "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
         " (2, 'archive', 'running', 'busy1', 1)",
     )
-    job, runner, deferred = await _run(settings, live=True)
-    assert deferred == []
+    job, runner, _ = await _run(settings, live=True)
     assert runner.params is not None and "ratelimit" not in runner.params
 
 
+def _queue_row(settings, status="todo"):
+    """A procrastinate job row, as the real queue would add it."""
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.begin() as c:
+        queue_job_id = c.execute(
+            sa.text(
+                "INSERT INTO procrastinate_jobs (queue_name, task_name, args)"
+                " VALUES ('archive', 'archive', '{}') RETURNING id"
+            )
+        ).scalar()
+        if status != "todo":
+            c.execute(
+                sa.text(
+                    "UPDATE procrastinate_jobs SET status = CAST(:s AS procrastinate_job_status)"
+                    " WHERE id = :id"
+                ),
+                {"s": status, "id": queue_job_id},
+            )
+    engine.dispose()
+    return queue_job_id
+
+
+async def _dispatch(settings, now=None):
+    from savetube.jobs import dispatch
+
+    enqueued = []
+
+    async def enqueue(job_id):
+        enqueued.append(job_id)
+        return _queue_row(settings)
+
+    engine = make_engine(settings.sqlalchemy_url)
+    async with make_sessionmaker(engine)() as session:
+        await dispatch(session, now or datetime.now(UTC), enqueue)
+    async with make_sessionmaker(engine)() as session:
+        jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
+    await engine.dispose()
+    return enqueued, jobs
+
+
+def _waiting_rows(settings, *extra):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('a', 'UC1', 'videos', 't', 'pending'), ('b', 'UC1', 'videos', 't', 'pending'),"
+        " ('c', 'UC1', 'videos', 't', 'pending'), ('run', 'UC1', 'videos', 't', 'downloading'),"
+        " ('live', 'UC1', 'lives', 't', 'downloading'), ('soon', 'UC1', 'lives', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (10, 'archive', 'running', 'run', 1), (11, 'record', 'running', 'live', 1),"
+        " (12, 'archive', 'queued', 'a', 0), (13, 'archive', 'queued', 'b', 0),"
+        " (14, 'archive', 'queued', 'c', 0), (15, 'record', 'queued', 'soon', 0)",
+        *extra,
+    )
+
+
 @pytest.mark.anyio
-async def test_a_failed_defer_fails_the_job(settings):
-    _job_rows(settings, _closed_window_sql())
+async def test_dispatch_queues_the_oldest_waiting_archive_jobs_up_to_the_free_slots(settings):
+    # One archive runs, so max_concurrent 2 leaves one slot. A recording takes none.
+    _waiting_rows(settings, "UPDATE download_settings SET max_concurrent = 2")
+    enqueued, jobs = await _dispatch(settings)
+    assert enqueued == [12]
+    assert jobs[12].queue_job_id is not None and jobs[12].state is JobState.QUEUED
+    assert jobs[13].queue_job_id is None and jobs[15].queue_job_id is None
 
-    async def broken(job_id, at):
-        raise RuntimeError("queue down")
+    # The dispatched job holds its slot until a worker takes it.
+    enqueued, _ = await _dispatch(settings)
+    assert enqueued == []
 
-    job, runner, _ = await _run(settings, defer=broken)
-    assert job.state is JobState.FAILED and "queue down" in job.log_tail
+    # A queue job that ended without a worker taking the `job` row frees the slot.
+    _sql(
+        settings,
+        "UPDATE procrastinate_jobs SET status = 'failed'",
+    )
+    enqueued, jobs = await _dispatch(settings)
+    assert enqueued == [12]
+
+
+@pytest.mark.anyio
+async def test_dispatch_with_max_concurrent_1_and_one_running_queues_nothing(settings):
+    _waiting_rows(settings)
+    enqueued, jobs = await _dispatch(settings)
+    assert enqueued == []
+    assert all(j.deferred_until is None for j in jobs.values())
+
+
+@pytest.mark.anyio
+async def test_dispatch_waits_for_the_window_and_shows_its_start(settings):
+    from savetube.limits import TIMEZONE
+
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 5,"
+        " window_start = '23:00', window_end = '05:00'",
+    )
+    # 12:00 in Seoul, eleven hours before the window opens.
+    noon = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
+    opens = datetime(2026, 10, 21, 23, 0, tzinfo=TIMEZONE)
+    enqueued, jobs = await _dispatch(settings, noon)
+    assert enqueued == []
+    assert [jobs[i].deferred_until for i in (12, 13, 14)] == [opens, opens, opens]
+    assert jobs[15].deferred_until is None
+
+    enqueued, jobs = await _dispatch(settings, opens)
+    assert enqueued == [12, 13, 14]
+    assert [jobs[i].deferred_until for i in (12, 13, 14)] == [None, None, None]
 
 
 def test_api_download_settings_and_job_deferral(settings):
@@ -1873,42 +1973,6 @@ async def test_reclaim_fails_the_jobs_of_a_dead_worker(settings):
     assert not incoming.exists()
     assert finished == [700, 701]
     await engine.dispose()
-
-
-def test_putting_download_settings_reschedules_deferred_jobs(settings):
-    from savetube.web.api import get_requeue
-
-    _job_rows(
-        settings,
-        "UPDATE job SET deferred_until = now() + interval '5 hours' WHERE id = 1",
-        "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id, deferred_until)"
-        " VALUES (2, 'archive', 'queued', 'busy1', 0, 501, NULL),"
-        "        (3, 'archive', 'queued', 'busy2', 0, 502, now() + interval '1 minute'),"
-        "        (4, 'archive', 'failed', 'busy2', 1, 503, now() + interval '1 hour')",
-    )
-    calls = []
-
-    async def requeue(job_id, queue_job_id):
-        calls.append((job_id, queue_job_id))
-        # A worker took 502 before the cancel.
-        return None if queue_job_id == 502 else 900 + job_id
-
-    app = create_app(settings)
-    app.dependency_overrides[current_user] = lambda: User(sub="u")
-    app.dependency_overrides[get_requeue] = lambda: requeue
-    with TestClient(app, headers={"X-Requested-With": "savetube"}) as client:
-        response = client.put("/api/download-settings", json={"max_concurrent": 2})
-        assert response.status_code == 200
-        jobs = {j["id"]: j for j in client.get("/api/jobs").json()}
-    assert sorted(calls) == [(1, 500), (3, 502)]
-    assert jobs[1]["deferred_until"] is None
-    assert jobs[3]["deferred_until"] is not None
-    assert jobs[2]["deferred_until"] is None
-    engine = sa.create_engine(settings.sqlalchemy_url)
-    with engine.connect() as c:
-        queue_ids = dict(c.execute(sa.text("SELECT id, queue_job_id FROM job")).all())
-    engine.dispose()
-    assert queue_ids == {1: 901, 2: 501, 3: 502, 4: 503}
 
 
 @pytest.mark.anyio
@@ -2253,9 +2317,7 @@ async def test_a_poll_uses_cookies_only_for_a_channel_that_wants_them(settings):
 async def poll_source_with(sessionmaker, settings, source_id, lister):
     from savetube.poll import poll_source
 
-    await poll_source(
-        sessionmaker, source_id, settings, lister=lister, enqueue=_enqueue, cancel=_cancel
-    )
+    await poll_source(sessionmaker, source_id, settings, lister=lister, cancel=_cancel)
 
 
 @pytest.mark.anyio
@@ -2300,3 +2362,54 @@ def test_api_lists_a_channels_archive_jobs_with_titles(settings):
     with _api(settings) as client:
         jobs = client.get("/api/jobs", params={"channel_id": "UC2"}).json()
     assert [(j["id"], j["title"], j["channel_id"]) for j in jobs] == [(2, "other", "UC2")]
+
+
+def test_migration_0006_hands_waiting_archive_jobs_to_the_dispatcher(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0005")
+    done = [_queue_row(settings, "succeeded") for _ in range(3)]
+    waiting = _queue_row(settings)
+    taken = _queue_row(settings, "doing")
+    lost = _queue_row(settings, "failed")
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('a', 'UC1', 'videos', 't', 'pending'), ('b', 'UC1', 'videos', 't', 'pending'),"
+        " ('c', 'UC1', 'videos', 't', 'pending'), ('d', 'UC1', 'videos', 't', 'complete')",
+        "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id, deferred_until)"
+        " VALUES"
+        f" (1, 'archive', 'queued', 'a', 0, {waiting}, now() + interval '1 minute'),"
+        f" (2, 'archive', 'queued', 'b', 0, {taken}, NULL),"
+        f" (3, 'archive', 'queued', 'c', 0, {lost}, NULL),"
+        f" (4, 'archive', 'succeeded', 'd', 1, {done[0]}, NULL)",
+    )
+    command.upgrade(cfg, "head")
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        queue_rows = dict(c.execute(sa.text("SELECT id, status FROM procrastinate_jobs")).all())
+        jobs = {
+            r.id: (r.state, r.queue_job_id, r.deferred_until)
+            for r in c.execute(sa.text("SELECT id, state, queue_job_id, deferred_until FROM job"))
+        }
+    # The running task keeps its row. A failed row stays as the record of a failure.
+    assert queue_rows == {taken: "doing", lost: "failed"}
+    assert jobs == {
+        1: ("queued", None, None),
+        2: ("queued", taken, None),
+        3: ("queued", None, None),
+        4: ("succeeded", done[0], None),
+    }
+
+    command.downgrade(cfg, "0005")
+    with engine.connect() as c:
+        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
+    engine.dispose()
+    # The old code queues only through a poll, which skips a video with a
+    # queued job, so a waiting job without a queue job is cancelled for the
+    # next poll to queue it again.
+    assert states == {1: "cancelled", 2: "queued", 3: "cancelled", 4: "succeeded"}

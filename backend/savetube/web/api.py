@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Any, Literal
 
@@ -869,25 +869,11 @@ async def download_settings(session: Session) -> DownloadSettingsOut:
     return _settings_out(await limits.load(session))
 
 
-# Replaces a deferred job's queue job with one due now. None when a worker
-# took the old one first.
-Requeue = Callable[[int, int | None], Awaitable[int | None]]
-
-
-async def get_requeue() -> AsyncIterator[Requeue]:
-    """The queue, opened for this request only. Tests override it."""
-    from savetube.queue import app, requeue_now
-
-    async with app.open_async():
-        yield requeue_now
-
-
 @router.put("/download-settings")
 async def replace_download_settings(
-    session: Session, body: DownloadSettingsIn, requeue: Annotated[Requeue, Depends(get_requeue)]
+    session: Session, body: DownloadSettingsIn
 ) -> DownloadSettingsOut:
-    """Deferred jobs run again at once, so a widened or removed window or a
-    raised limit takes effect now instead of at the old deferral time."""
+    """The scheduler's next dispatch applies the new limits to waiting jobs."""
     row = await session.get(DownloadSettings, 1)
     if row is None:
         row = DownloadSettings(id=1)
@@ -897,20 +883,4 @@ async def replace_download_settings(
     row.window_start = time.fromisoformat(body.window_start) if body.window_start else None
     row.window_end = time.fromisoformat(body.window_end) if body.window_end else None
     await session.commit()
-    deferred = await session.scalars(
-        select(Job).where(
-            Job.kind == JobKind.ARCHIVE,
-            Job.state == JobState.QUEUED,
-            Job.deferred_until.is_not(None),
-        )
-    )
-    for job in deferred.all():
-        try:
-            queue_job_id = await requeue(job.id, job.queue_job_id)
-        except Exception:
-            log.exception("requeue of job %s failed", job.id)
-            continue
-        if queue_job_id is not None:
-            job.queue_job_id, job.deferred_until = queue_job_id, None
-            await session.commit()
     return _settings_out(row)

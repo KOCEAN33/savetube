@@ -11,12 +11,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
-from savetube.db.models import Job, JobState, Video, VideoState
-from savetube.limits import admit
+from savetube.db.models import Job, JobKind, JobState, Video, VideoState
+from savetube.limits import admit, load, lock, next_window_start, running
 from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
 from savetube.ytdl import DEFAULT_FORMAT, build_params, copy_cookies, download, video_url
 
@@ -25,9 +26,8 @@ log = logging.getLogger(__name__)
 LOG_TAIL_CHARS = 4000
 
 Runner = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
-# Puts a new queue job for the `job` row, due at the given time, and returns
-# the queue's job id.
-Defer = Callable[[int, datetime], Awaitable[int]]
+# Puts the `job` row on the queue and returns the queue's job id.
+Enqueue = Callable[[int], Awaitable[int]]
 # Queue jobs left running by a dead worker, as (queue job id, `job` id).
 Stalled = Callable[[], Awaitable[list[tuple[int, int]]]]
 # Ends a queue job as failed, so no worker takes it again.
@@ -84,24 +84,6 @@ async def _set_video_state(session: AsyncSession, video_id: str, state: VideoSta
         video.state = state
 
 
-async def _defer(
-    sessionmaker: async_sessionmaker, job_id: int, at: datetime, defer: Defer | None
-) -> None:
-    async with sessionmaker() as session:
-        job = await session.get(Job, job_id)
-        try:
-            if defer is None:
-                raise RuntimeError("no queue to defer the job to")
-            job.queue_job_id = await defer(job_id, at)
-        except Exception as e:
-            # A queued row with no queue job would block its video for good.
-            log.exception("defer of job %s failed", job_id)
-            job.state = JobState.FAILED
-            job.finished_at = datetime.now(UTC)
-            job.log_tail = f"defer failed: {type(e).__name__}: {e}"[-LOG_TAIL_CHARS:]
-        await session.commit()
-
-
 async def reclaim_stalled(
     sessionmaker: async_sessionmaker, settings: Settings, *, stalled: Stalled, finish: Finish
 ) -> None:
@@ -122,17 +104,72 @@ async def reclaim_stalled(
         await finish(queue_job_id)
 
 
+_queue_jobs = table("procrastinate_jobs", column("id"), column("status"))
+# Queue jobs that still lead to a run of their `job` row.
+_LIVE_QUEUE_JOBS = select(_queue_jobs.c.id).where(
+    _queue_jobs.c.status.cast(Text).in_(["todo", "doing"])
+)
+
+
+async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> list[int]:
+    """Put the oldest waiting archive jobs on the queue, one per free slot, and
+    only inside the download window. Return their ids. Commits.
+
+    A waiting job is a queued archive job with no queue job. A dispatched job
+    holds its slot until a worker takes it or hands it back.
+    """
+    await lock(session)
+    limits = await load(session)
+    queued = (Job.kind == JobKind.ARCHIVE) & (Job.state == JobState.QUEUED)
+    # A queue job that ended before the worker marked the row, such as an
+    # error or a stopped worker, would hold its slot for good.
+    await session.execute(
+        update(Job)
+        .where(queued, Job.queue_job_id.is_not(None), Job.queue_job_id.not_in(_LIVE_QUEUE_JOBS))
+        .values(queue_job_id=None)
+    )
+    opens = next_window_start(now, limits.window_start, limits.window_end)
+    await session.execute(
+        update(Job)
+        .where(queued, Job.queue_job_id.is_(None), Job.deferred_until.is_distinct_from(opens))
+        .values(deferred_until=opens)
+    )
+    started: list[int] = []
+    if opens is None:
+        dispatched = await session.scalar(
+            select(func.count()).select_from(Job).where(queued, Job.queue_job_id.is_not(None))
+        )
+        free = limits.max_concurrent - await running(session) - dispatched
+        waiting = await session.scalars(
+            select(Job.id)
+            .where(queued, Job.queue_job_id.is_(None))
+            .order_by(Job.id)
+            .limit(max(free, 0))
+        )
+        for job_id in list(waiting):
+            try:
+                queue_job_id = await enqueue(job_id)
+            except Exception:
+                log.exception("enqueue of job %s failed", job_id)
+                break
+            await session.execute(
+                update(Job).where(Job.id == job_id).values(queue_job_id=queue_job_id)
+            )
+            started.append(job_id)
+    await session.commit()
+    return started
+
+
 async def run(
     job_id: int,
     settings: Settings,
     *,
     live: bool,
     runner: Runner,
-    defer: Defer | None = None,
     sessionmaker: async_sessionmaker | None = None,
 ) -> None:
     """Run one job. An archive job outside the download window, or with no free
-    slot, is deferred instead and stays queued. A recording ignores the limits."""
+    slot, goes back to waiting for the dispatcher. A recording ignores the limits."""
     sessionmaker = sessionmaker or default_sessionmaker()
     ratelimit = None
     async with sessionmaker() as session:
@@ -140,11 +177,12 @@ async def run(
         if job is None or job.video_id is None:
             raise LookupError(f"job {job_id} has no video")
         if not live:
-            wait, limits = await admit(session, datetime.now(UTC))
-            if wait is not None:
-                job.deferred_until = wait
+            limits = await admit(session, datetime.now(UTC))
+            if limits is None:
+                # A core UPDATE: the row loaded above may predate the
+                # dispatcher's commit of queue_job_id.
+                await session.execute(update(Job).where(Job.id == job_id).values(queue_job_id=None))
                 await session.commit()
-                await _defer(sessionmaker, job_id, wait, defer)
                 return
             ratelimit = limits.rate_limit_bytes
         video_id = job.video_id

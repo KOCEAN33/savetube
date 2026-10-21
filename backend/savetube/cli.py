@@ -50,6 +50,8 @@ def _worker(args: argparse.Namespace) -> None:
                 concurrency=args.concurrency,
                 listen_notify=False,
                 fetch_job_polling_interval=5,
+                # The `job` row keeps the history, and every dispatch adds a row.
+                delete_jobs="successful",
             )
 
     asyncio.run(main())

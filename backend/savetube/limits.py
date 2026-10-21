@@ -28,9 +28,8 @@ def next_window_start(now: datetime, start: time | None, end: time | None) -> da
     return opens if opens > local else opens + timedelta(days=1)
 
 
-SLOT_RETRY = timedelta(seconds=60)
-# One key shared by every worker: the slot check and the RUNNING mark happen
-# under it, so two workers cannot both take the last slot.
+# One key shared by every worker and the dispatcher: the slot check and the
+# RUNNING mark or the enqueue happen under it, so a slot is never taken twice.
 _SLOT_LOCK = 0x5A7E7B0E
 
 
@@ -39,22 +38,29 @@ async def load(session: AsyncSession) -> DownloadSettings:
     return await session.get(DownloadSettings, 1) or DownloadSettings(id=1, max_concurrent=1)
 
 
-async def admit(session: AsyncSession, now: datetime) -> tuple[datetime | None, DownloadSettings]:
-    """When an archive job must wait until, or None when it may start now.
-
-    Takes a transaction-scoped advisory lock. The caller marks the job running
-    in the same transaction, so the lock covers the check and the mark.
-    """
+async def lock(session: AsyncSession) -> None:
+    """Hold the slot lock until the transaction ends."""
     await session.execute(select(func.pg_advisory_xact_lock(_SLOT_LOCK)))
-    limits = await load(session)
-    opens = next_window_start(now, limits.window_start, limits.window_end)
-    if opens is not None:
-        return opens, limits
-    running = await session.scalar(
+
+
+async def running(session: AsyncSession) -> int:
+    return await session.scalar(
         select(func.count())
         .select_from(Job)
         .where(Job.kind == JobKind.ARCHIVE, Job.state == JobState.RUNNING)
     )
-    if running >= limits.max_concurrent:
-        return now + SLOT_RETRY, limits
-    return None, limits
+
+
+async def admit(session: AsyncSession, now: datetime) -> DownloadSettings | None:
+    """The limits when an archive job may start now, else None.
+
+    Takes the slot lock. The caller marks the job running in the same
+    transaction, so the lock covers the check and the mark.
+    """
+    await lock(session)
+    limits = await load(session)
+    if next_window_start(now, limits.window_start, limits.window_end) is not None:
+        return None
+    if await running(session) >= limits.max_concurrent:
+        return None
+    return limits
