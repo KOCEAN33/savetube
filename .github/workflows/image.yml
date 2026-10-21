@@ -26,6 +26,8 @@ jobs:
     outputs:
       # The version when this push released one, the full commit sha otherwise.
       tag: ${{ steps.release.outputs.released == 'true' && steps.release.outputs.version || github.sha }}
+      # The git ref of the chart that matches the image: the release tag, or the commit.
+      revision: ${{ steps.release.outputs.released == 'true' && steps.release.outputs.tag || github.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -72,7 +74,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Points homelab-workloads' prod values at the image just pushed. Argo CD rolls it out.
+  # Points homelab-workloads' prod at the image just pushed and at the chart from the
+  # same commit, in one commit, so Argo CD never pairs a chart with an image from
+  # another release. Argo CD rolls it out.
   # Pushes as the kocean33-homelab-ci GitHub App, whose token is scoped here to homelab-workloads.
   deploy:
     needs: build
@@ -92,15 +96,20 @@ jobs:
           repository: KOCEAN33/homelab-workloads
           token: ${{ steps.app.outputs.token }}
 
-      - name: Set image.tag
+      - name: Set image.tag and chartRevision
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           BOT: ${{ steps.app.outputs.app-slug }}[bot]
           TAG: ${{ needs.build.outputs.tag }}
+          REVISION: ${{ needs.build.outputs.revision }}
         run: |
-          file=savetube/envs/prod.yaml
-          sed -i -E "s/^(  tag: ).*/\1${TAG}/" "$file"
-          grep -q "^  tag: ${TAG}$" "$file"
+          values=savetube/envs/prod.yaml
+          sed -i -E "s/^(  tag: ).*/\1${TAG}/" "$values"
+          grep -q "^  tag: ${TAG}$" "$values"
+          # chartRevision is the line after `- env: prod` in the list generator.
+          appset=savetube/appset.yaml
+          sed -i -E "/^ *- env: prod$/{n;s/^( *chartRevision: ).*/\1${REVISION}/}" "$appset"
+          grep -A1 -E "^ *- env: prod$" "$appset" | grep -qE "^ *chartRevision: ${REVISION}$"
           git diff --quiet && exit 0
           git config user.name "$BOT"
           git config user.email "$(gh api "/users/${BOT}" --jq .id)+${BOT}@users.noreply.github.com"
