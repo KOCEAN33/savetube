@@ -250,6 +250,7 @@ async def test_poll_queues_unstored_videos_once(settings):
         settings,
         lister=lambda url, c: TAB_LISTING,
         cancel=_cancel,
+        prober=_no_probe,
     )
 
     async with sessionmaker() as session:
@@ -283,6 +284,7 @@ async def test_poll_queues_unstored_videos_once(settings):
         settings,
         lister=lambda url, c: TAB_LISTING,
         cancel=_cancel,
+        prober=_no_probe,
     )
     async with sessionmaker() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(Job)) == 9
@@ -301,6 +303,7 @@ async def test_poll_queues_unstored_videos_once(settings):
         settings,
         lister=lambda url, c: playlist,
         cancel=_cancel,
+        prober=_no_probe,
     )
     async with sessionmaker() as session:
         assert (await session.get(Channel, "UC2")).dir_name == "Two [UC2]"
@@ -313,7 +316,7 @@ async def test_poll_queues_unstored_videos_once(settings):
     def fails(url, cookiefile):
         raise RuntimeError("HTTP Error 429")
 
-    await poll_source(sessionmaker, 2, settings, lister=fails, cancel=_cancel)
+    await poll_source(sessionmaker, 2, settings, lister=fails, cancel=_cancel, prober=_no_probe)
     async with sessionmaker() as session:
         assert (await session.get(Source, 2)).last_error == "RuntimeError: HTTP Error 429"
     await engine.dispose()
@@ -559,7 +562,9 @@ async def test_a_detected_live_is_archived_once_it_ends(settings):
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
 
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     async with sessionmaker() as session:
         kinds = sorted(
             await session.scalars(sa.select(Job.kind).where(Job.video_id == "B_eFxgIWdXo"))
@@ -612,6 +617,64 @@ async def test_one_unreadable_feed_video_does_not_stop_detection(settings):
         "M3HKLzjvKPc",
         "pAKqJxuxDgk",
     ]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_members_only_live_is_probed_again_with_a_member_profile(settings):
+    from yt_dlp.utils import DownloadError
+
+    from savetube.live import check_channel
+
+    _watch(settings)
+    _sql(
+        settings,
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        f" ('{NASA}', 'alt', false, now(), 'm0'), ('{NASA}', 'main', true, now(), 'm0')",
+    )
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    members_live = UPCOMING | {"id": "memlive", "title": "Members stream"}
+    retried = []
+
+    def probe(video_id):
+        if video_id == "memlive":
+            raise DownloadError(MEMBERS_ONLY_ERROR)
+        if video_id == "private":
+            raise DownloadError("ERROR: [youtube] private: Private video")
+        return LIVE_NOW
+
+    def member_probe(video_id, profile):
+        retried.append((video_id, profile))
+        return members_live
+
+    async def check(profiles):
+        await check_channel(
+            sessionmaker,
+            NASA,
+            fetch_feed=lambda c: _feed("memlive", "private", LIVE_NOW["id"]),
+            probe=probe,
+            probe_live=_not_live,
+            list_streams=_no_streams,
+            seen={},
+            member_probe=member_probe,
+            profiles=profiles,
+        )
+
+    # The member profile is not present: no second probe, as before.
+    await check(["alt"])
+    assert retried == []
+    assert [j.video_id for j in await _record_jobs(sessionmaker)] == [LIVE_NOW["id"]]
+
+    # Only the members-only refusal is probed again, with the member profile.
+    await check(["alt", "main"])
+    assert retried == [("memlive", "main")]
+    jobs = {j.video_id: j for j in await _record_jobs(sessionmaker)}
+    assert sorted(jobs) == [LIVE_NOW["id"], "memlive"]
+    async with sessionmaker() as session:
+        video = await session.get(Video, "memlive")
+    # Its recording takes a member profile (savetube.jobs).
+    assert video.type is VideoType.MEMBERS
     await engine.dispose()
 
 
@@ -684,6 +747,10 @@ async def _cancel(queue_job_id):
     return True
 
 
+def _no_probe(video_id, cookiefile):
+    pytest.fail("no membership check expected")
+
+
 async def _archive_jobs(sessionmaker):
     async with sessionmaker() as session:
         return sorted(
@@ -714,7 +781,9 @@ async def test_poll_keeps_the_full_listing_and_archives_titles_the_words_pass(se
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     assert await _archive_jobs(sessionmaker) == ["B_eFxgIWdXo"]
 
     with _api(settings) as client:
@@ -750,7 +819,9 @@ async def test_poll_keeps_the_full_listing_and_archives_titles_the_words_pass(se
     async with sessionmaker() as session:
         await session.execute(sa.update(Source).values(last_polled_at=None))
         await session.commit()
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     with _api(settings) as client:
         preview = client.post(
             "/api/sources/1/title-preview", json={"include_words": [], "exclude_words": []}
@@ -790,6 +861,7 @@ async def test_playlists_source_makes_a_child_per_new_playlist_and_archives_noth
             settings,
             lister=lambda u, c: PLAYLISTS_LISTING,
             cancel=_cancel,
+            prober=_no_probe,
         )
     assert await _archive_jobs(sessionmaker) == []
 
@@ -864,12 +936,16 @@ async def test_playlist_source_skips_other_channels_unless_allowed(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(sessionmaker, 2, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 2, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     assert await _archive_jobs(sessionmaker) == ["own"]
     async with sessionmaker() as session:
         assert (await session.get(Source, 2)).channel_id == VESP
 
-    await poll_source(sessionmaker, 3, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 3, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     assert await _archive_jobs(sessionmaker) == ["EoPQm9SemWw", "own"]
     await engine.dispose()
 
@@ -1032,7 +1108,9 @@ async def test_poll_and_preview_merge_global_channel_and_source_words(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     assert await _archive_jobs(sessionmaker) == ["cover", "utawaku"]
 
     with _api(settings) as client:
@@ -1144,7 +1222,7 @@ def _parent(settings, *extra, enabled="true", other_channels="false"):
     )
 
 
-async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel):
+async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel, prober=_no_probe):
     from savetube.poll import poll_source
 
     await poll_source(
@@ -1153,6 +1231,7 @@ async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel):
         settings,
         lister=lambda u, c: listing,
         cancel=cancel,
+        prober=prober,
     )
 
 
@@ -1404,8 +1483,33 @@ async def test_poll_links_every_stored_video_and_cancels_queued_jobs_the_words_d
     await engine.dispose()
 
 
+def _profiles(settings, *names):
+    """Settings whose SAVETUBE_COOKIES_DIR holds a file per name, its content `# <name>`."""
+    root = settings.archive_root.parent / "cookies"
+    root.mkdir(exist_ok=True)
+    for name in names:
+        (root / f"{name}.txt").write_text(f"# {name}\n")
+    # A Secret mount's own entries are no profiles.
+    (root / "..data").mkdir(exist_ok=True)
+    return settings.model_copy(update={"cookies_dir": root})
+
+
+MEMBERS_ONLY_ERROR = (
+    "ERROR: [youtube] member: Join this channel to get access to members-only content"
+    " like this video, and other exclusive perks."
+)
+BOT_CHECK_ERROR = (
+    "ERROR: [youtube] member: Sign in to confirm you’re not a bot."
+    " Use --cookies-from-browser or --cookies for the authentication."
+)
+
+
 @pytest.mark.anyio
-async def test_members_only_videos_wait_for_the_channels_cookies(settings):
+async def test_members_only_videos_wait_for_a_confirmed_member_profile(settings, caplog):
+    import logging
+
+    from yt_dlp.utils import DownloadError
+
     _sql(
         settings,
         "INSERT INTO channel (id, name, dir_name) VALUES"
@@ -1419,6 +1523,7 @@ async def test_members_only_videos_wait_for_the_channels_cookies(settings):
         " (101, 'archive', 'queued', 'queued_member', 0)",
         "SELECT setval('job_id_seq', 200)",
     )
+    settings = _profiles(settings, "main", "alt")
 
     def e(video_id, availability):
         return {
@@ -1439,6 +1544,15 @@ async def test_members_only_videos_wait_for_the_channels_cookies(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
+    probed = []
+    errors = {"alt": MEMBERS_ONLY_ERROR}
+
+    def prober(video_id, cookiefile):
+        profile = cookiefile.read_text().removeprefix("# ").strip()
+        probed.append((video_id, profile))
+        if profile in errors:
+            raise DownloadError(errors[profile])
+        return {"id": video_id, "formats": [{"format_id": "251"}]}
 
     async def queued():
         async with sessionmaker() as session:
@@ -1446,7 +1560,22 @@ async def test_members_only_videos_wait_for_the_channels_cookies(settings):
                 await session.scalars(sa.select(Job.video_id).where(Job.state == JobState.QUEUED))
             )
 
-    await _poll(sessionmaker, settings, 1, listing)
+    def memberships():
+        engine = sa.create_engine(settings.sqlalchemy_url)
+        with engine.connect() as c:
+            rows = c.execute(
+                sa.text(
+                    "SELECT channel_id, profile, is_member, video_id, checked_at FROM membership"
+                    " ORDER BY profile"
+                )
+            ).all()
+        engine.dispose()
+        return rows
+
+    # No result yet: the poll skips the members-only videos, then checks
+    # each profile with the first one it listed.
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await _poll(sessionmaker, settings, 1, listing, prober=prober)
     assert await queued() == ["public"]
     async with sessionmaker() as session:
         assert (await session.get(Job, 101)).state is JobState.CANCELLED
@@ -1454,12 +1583,51 @@ async def test_members_only_videos_wait_for_the_channels_cookies(settings):
         linked = set(await session.scalars(sa.select(VideoSource.video_id)))
     assert listed == {"public", "member", "queued_member"}
     assert linked == {"public", "queued_member"}
+    assert probed == [("member", "alt"), ("member", "main")]
+    assert [tuple(r)[:4] for r in memberships()] == [
+        (VESP, "alt", False, "member"),
+        (VESP, "main", True, "member"),
+    ]
+    checked = [_fields(r) for r in caplog.records if r.getMessage() == "membership.checked"]
+    assert [(f["channel"], f["profile"], f["member"]) for f in checked] == [
+        ("VESPERBELL", "alt", "no"),
+        ("VESPERBELL", "main", "yes"),
+    ]
 
-    _sql(settings, f"UPDATE channel SET use_cookies = true WHERE id = '{VESP}'")
-    cookie_file = settings.archive_root.parent / "cookies.txt"
-    cookie_file.write_text("# Netscape HTTP Cookie File\n")
-    await _poll(sessionmaker, settings.model_copy(update={"cookies_file": cookie_file}), 1, listing)
+    # A confirmed member lets them pass. Fresh results are not checked again.
+    await _poll(sessionmaker, settings, 1, listing, prober=prober)
     assert await queued() == ["member", "public", "queued_member"]
+    assert len(probed) == 2
+
+    # Stale results wait while a YouTube block pauses downloads.
+    _sql(
+        settings,
+        "UPDATE membership SET checked_at = now() - interval '25 hours'",
+        "UPDATE download_settings SET blocked_until = now() + interval '1 hour'",
+    )
+    await _poll(sessionmaker, settings, 1, listing, prober=prober)
+    assert len(probed) == 2
+
+    # A bot check keeps the previous result and stops the checks after it.
+    _sql(settings, "UPDATE download_settings SET blocked_until = NULL")
+    before = memberships()
+    errors["alt"] = BOT_CHECK_ERROR
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await _poll(sessionmaker, settings, 1, listing, prober=prober)
+    assert probed[2:] == [("member", "alt")]
+    assert memberships() == before
+    [failed] = [r for r in caplog.records if r.getMessage() == "membership.check_failed"]
+    assert failed.levelno == logging.WARNING
+    assert (_fields(failed)["profile"], _fields(failed)["video"]) == ("alt", "member")
+    assert "not a bot" in _fields(failed)["reason"]
+    assert "# alt" not in caplog.text and "# main" not in caplog.text
+
+    # Without a present member profile, the members-only videos are skipped again.
+    (settings.cookies_dir / "main.txt").unlink()
+    errors["alt"] = MEMBERS_ONLY_ERROR
+    await _poll(sessionmaker, settings, 1, listing, prober=prober)
+    assert await queued() == ["public"]
     await engine.dispose()
 
 
@@ -1843,6 +2011,7 @@ def test_api_download_settings_and_job_deferral(settings):
             "rate_limit_bytes": None,
             "window_start": None,
             "window_end": None,
+            "cookie_profile": None,
             "timezone": "Asia/Seoul",
             "blocked_until": None,
             "block_count": 0,
@@ -1852,6 +2021,7 @@ def test_api_download_settings_and_job_deferral(settings):
             "rate_limit_bytes": 2000000,
             "window_start": "23:00",
             "window_end": "05:00",
+            "cookie_profile": None,
         }
         put = client.put("/api/download-settings", json=body)
         assert put.status_code == 200
@@ -1872,6 +2042,59 @@ def test_api_download_settings_and_job_deferral(settings):
 
         [job] = client.get("/api/jobs").json()
         assert job["deferred_until"] == "2026-10-21T14:00:00Z"
+
+
+def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplog):
+    import logging
+
+    _sql(
+        settings,
+        f"INSERT INTO channel (id, name, dir_name) VALUES ('{VESP}', 'V', 'V [{VESP}]')",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        f" ('{VESP}', 'main', true, '2026-10-21T01:00:00Z', 'm1'),"
+        f" ('{VESP}', 'alt', false, '2026-10-21T02:00:00Z', 'm1')",
+    )
+    with _api(settings) as client:
+        assert client.get("/api/cookie-profiles").json() == []
+        assert (
+            client.put("/api/download-settings", json={"cookie_profile": "main"}).status_code == 422
+        )
+        [channel] = client.get("/api/channels").json()
+        assert channel["memberships"] == [
+            {"profile": "alt", "is_member": False, "checked_at": "2026-10-21T02:00:00Z"},
+            {"profile": "main", "is_member": True, "checked_at": "2026-10-21T01:00:00Z"},
+        ]
+        patched = client.patch(f"/api/channels/{VESP}", json={"watch_lives": True}).json()
+        assert patched["memberships"] == channel["memberships"]
+
+    # The scheduler records what its mount holds. The web reads only the table.
+    from savetube.cookies import profiles, record_profiles
+
+    async def record(names):
+        engine = make_engine(settings.sqlalchemy_url)
+        async with make_sessionmaker(engine)() as session:
+            await record_profiles(session, names, datetime.now(UTC))
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(record(["gone", "main"]))
+    asyncio.run(record(profiles(_profiles(settings, "main", "throwaway"))))
+    with _api(settings) as client:
+        assert settings.cookies_dir is None
+        assert client.get("/api/cookie-profiles").json() == [
+            {"name": "main"},
+            {"name": "throwaway"},
+        ]
+        with caplog.at_level(logging.INFO, logger="savetube"):
+            put = client.put("/api/download-settings", json={"cookie_profile": "throwaway"})
+        assert put.status_code == 200 and put.json()["cookie_profile"] == "throwaway"
+        assert client.get("/api/download-settings").json()["cookie_profile"] == "throwaway"
+        assert "# throwaway" not in caplog.text and "# throwaway" not in put.text
+        [line] = [r for r in caplog.records if r.getMessage() == "settings.download"]
+        assert _fields(line)["cookie_profile"] == "throwaway"
+        put = client.put("/api/download-settings", json={"cookie_profile": "gone"})
+        assert put.status_code == 422
+        assert client.put("/api/download-settings", json={}).json()["cookie_profile"] is None
 
 
 @pytest.mark.anyio
@@ -2040,7 +2263,7 @@ def test_migration_0005_moves_rule_settings_onto_channels(settings):
         "        (4, 'https://www.youtube.com/@b/streams', 'tab', 'UC2', 1, true, 360),"
         "        (5, 'https://www.youtube.com/playlist?list=PL1', 'playlist', NULL, 2, true, 360)",
     )
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0009")
     with engine.connect() as c:
         rows = c.execute(
             sa.text(
@@ -2199,7 +2422,6 @@ def _channel_body(**extra):
         "exclude_words": ["告知"],
         "date_after": "2026-01-01",
         "format": "wa",
-        "use_cookies": True,
     } | extra
 
 
@@ -2215,12 +2437,12 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
             "dir_name": f"VESPERBELL [{VESP}]",
         }
         assert (body["include_words"], body["exclude_words"]) == (["歌枠"], ["告知"])
-        assert (body["date_after"], body["format"], body["use_cookies"], body["watch_lives"]) == (
+        assert (body["date_after"], body["format"], body["watch_lives"]) == (
             "2026-01-01",
             "wa",
             True,
-            True,
         )
+        assert body["memberships"] == []
         assert [
             (s["url"], s["kind"], s["title"], s["channel_id"], s["archiving"], s["include_words"])
             for s in body["sources"]
@@ -2251,15 +2473,11 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
 
         patched = client.patch(
             f"/api/channels/{VESP}",
-            json={"date_after": None, "format": "bv*+ba/b", "use_cookies": False},
+            json={"date_after": None, "format": "bv*+ba/b"},
         )
         assert patched.status_code == 200
         channel = patched.json()
-        assert (channel["date_after"], channel["format"], channel["use_cookies"]) == (
-            None,
-            "bv*+ba/b",
-            False,
-        )
+        assert (channel["date_after"], channel["format"]) == (None, "bv*+ba/b")
         # An omitted field stays.
         assert channel["watch_lives"] is True and channel["include_words"] == ["歌枠"]
         assert client.patch(f"/api/channels/{VESP}", json={"format": ""}).status_code == 422
@@ -2293,11 +2511,11 @@ def test_api_tracks_all_playlists_of_a_new_channel(settings):
 
 
 @pytest.mark.anyio
-async def test_a_poll_uses_cookies_only_for_a_channel_that_wants_them(settings):
+async def test_every_poll_takes_the_general_profile(settings):
     _sql(
         settings,
-        "INSERT INTO channel (id, name, dir_name, use_cookies) VALUES"
-        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', true)",
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
         "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
         f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360),"
         " (2, 'https://www.youtube.com/playlist?list=PLnew', 'playlist', NULL, true, 360)",
@@ -2307,42 +2525,43 @@ async def test_a_poll_uses_cookies_only_for_a_channel_that_wants_them(settings):
     cookies = []
 
     def lister(url, cookiefile):
-        cookies.append(cookiefile)
+        cookies.append(cookiefile.read_text() if cookiefile else None)
         return {"entries": []}
 
-    for source_id in (1, 2):
-        await poll_source_with(sessionmaker, settings, source_id, lister)
-    async with sessionmaker() as session:
-        errors = [(await session.get(Source, i)).last_error for i in (1, 2)]
-    # SAVETUBE_COOKIES_FILE is unset in the test settings.
-    assert errors == [
-        "RuntimeError: the channel uses cookies and SAVETUBE_COOKIES_FILE is unset",
-        None,
-    ]
+    # No general profile: cookie-free.
+    await poll_source_with(sessionmaker, settings, 1, lister)
     assert cookies == [None]
 
-    cookie_file = settings.archive_root.parent / "cookies.txt"
-    cookie_file.write_text("# Netscape HTTP Cookie File\n")
-    await poll_source_with(
-        sessionmaker, settings.model_copy(update={"cookies_file": cookie_file}), 1, lister
-    )
-    assert cookies[-1] is not None and cookies[-1].name == "cookies.txt"
+    _sql(settings, "UPDATE download_settings SET cookie_profile = 'throwaway'")
+    # The profile is not in SAVETUBE_COOKIES_DIR.
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    async with sessionmaker() as session:
+        assert (await session.get(Source, 1)).last_error == (
+            "RuntimeError: cookie profile throwaway is not in SAVETUBE_COOKIES_DIR"
+        )
+    assert cookies == [None]
+
+    with_profiles = _profiles(settings, "throwaway", "member")
+    for source_id in (1, 2):
+        await poll_source_with(sessionmaker, with_profiles, source_id, lister)
+    assert cookies == [None, "# throwaway\n", "# throwaway\n"]
     await engine.dispose()
 
 
 async def poll_source_with(sessionmaker, settings, source_id, lister):
     from savetube.poll import poll_source
 
-    await poll_source(sessionmaker, source_id, settings, lister=lister, cancel=_cancel)
+    await poll_source(
+        sessionmaker, source_id, settings, lister=lister, cancel=_cancel, prober=_no_probe
+    )
 
 
 @pytest.mark.anyio
-async def test_a_download_takes_format_and_cookies_from_its_sources_channel(settings):
+async def test_a_download_takes_format_from_its_sources_channel(settings):
     _job_rows(
         settings,
         "UPDATE channel SET format = 'wa' WHERE id = 'UC1'",
-        "INSERT INTO channel (id, name, dir_name, format, use_cookies) VALUES"
-        " ('UC2', 'B', 'B [UC2]', 'ba', true)",
+        "INSERT INTO channel (id, name, dir_name, format) VALUES ('UC2', 'B', 'B [UC2]', 'ba')",
         "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
         " (1, 'https://www.youtube.com/playlist?list=PLb', 'playlist', 'UC2', true, 360)",
     )
@@ -2350,20 +2569,73 @@ async def test_a_download_takes_format_and_cookies_from_its_sources_channel(sett
     job, runner, _ = await _run(settings)
     assert runner.params["format"] == "wa" and "cookiefile" not in runner.params
 
-    # Listed by a source of a channel that uses cookies, with no cookie file set.
     _sql(
         settings,
         "INSERT INTO video_source (video_id, source_id) VALUES ('v1', 1)",
         "UPDATE job SET state = 'queued' WHERE id = 1",
     )
-    with pytest.raises(RuntimeError):
-        await _run(settings)
-    engine = sa.create_engine(settings.sqlalchemy_url)
-    with engine.connect() as c:
-        job = c.execute(sa.text("SELECT state, log_tail FROM job WHERE id = 1")).one()
-    engine.dispose()
-    assert job.state == "failed"
-    assert job.log_tail == "the channel uses cookies and SAVETUBE_COOKIES_FILE is unset"
+    job, runner, _ = await _run(settings)
+    assert runner.params["format"] == "ba"
+
+
+class _CookieRunner(_Runner):
+    """Records the cookie file's content, which the run deletes afterwards."""
+
+    async def __call__(self, url, params, report):
+        path = params.get("cookiefile")
+        self.cookies = await asyncio.to_thread(Path(path).read_text) if path else None
+        return await super().__call__(url, params, report)
+
+
+@pytest.mark.anyio
+async def test_a_members_only_download_takes_a_member_profile_and_no_other(settings, caplog):
+    import logging
+
+    from savetube.jobs import NO_MEMBER, run
+
+    _job_rows(
+        settings,
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('m1', 'UC1', 'members', 'm', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'queued', 'm1', 0)",
+        "UPDATE download_settings SET cookie_profile = 'general'",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        " ('UC1', 'b_member', true, now(), 'm1'), ('UC1', 'c_member', true, now(), 'm1'),"
+        " ('UC1', 'a_gone', true, now(), 'm1'), ('UC1', 'general', false, now(), 'm1')",
+    )
+    settings = _profiles(settings, "general", "b_member", "c_member")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def run_job(job_id):
+        runner = _CookieRunner()
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="savetube"):
+            try:
+                await run(job_id, settings, live=False, runner=runner, sessionmaker=sessionmaker)
+            except Exception as e:
+                if type(e).__name__ != "DownloadFailed":
+                    raise
+        [start] = [r for r in caplog.records if r.getMessage() == "job.start"]
+        return getattr(runner, "cookies", "not run"), _fields(start)["cookies"]
+
+    # A public video takes the general profile, never a member one.
+    assert await run_job(1) == ("# general\n", "general")
+    # The first present member by name. `a_gone` has no file any more.
+    assert await run_job(2) == ("# b_member\n", "b_member")
+
+    # No member left: the job fails without a download, as one attempt.
+    _sql(
+        settings,
+        "UPDATE membership SET is_member = false",
+        "UPDATE job SET state = 'queued' WHERE id = 2",
+    )
+    assert await run_job(2) == ("not run", "none")
+    async with sessionmaker() as session:
+        job = await session.get(Job, 2)
+        assert (job.state, job.attempts, job.log_tail) == (JobState.FAILED, 2, NO_MEMBER)
+    await engine.dispose()
 
 
 def test_api_lists_a_channels_archive_jobs_with_titles(settings):
@@ -2488,7 +2760,7 @@ async def test_a_failed_archive_logs_its_attempt_and_the_third_is_an_error(setti
     events = {r.getMessage(): r for r in caplog.records if r.name == "savetube.jobs"}
     start = _fields(events["job.start"])
     assert (start["job"], start["video"], start["channel"], start["title"]) == (1, "v1", "A", "t")
-    assert start["attempt"] == "2/3" and start["cookies"] == "no"
+    assert start["attempt"] == "2/3" and start["cookies"] == "none"
     failed = events["job.failed"]
     assert failed.levelno == logging.WARNING
     assert _fields(failed)["attempt"] == "2/3"
@@ -2536,7 +2808,12 @@ async def test_poll_done_counts_each_skip_reason(settings, caplog):
     engine = make_engine(settings.sqlalchemy_url)
     with caplog.at_level(logging.INFO, logger="savetube"):
         await poll_source(
-            make_sessionmaker(engine), 1, settings, lister=lambda u, c: listing, cancel=_cancel
+            make_sessionmaker(engine),
+            1,
+            settings,
+            lister=lambda u, c: listing,
+            cancel=_cancel,
+            prober=_no_probe,
         )
     await engine.dispose()
     events = {r.getMessage(): _fields(r) for r in caplog.records}
@@ -2613,7 +2890,9 @@ async def test_a_tab_poll_gives_an_existing_channel_its_avatar(settings):
     }
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
     async with sessionmaker() as session:
         assert (await session.get(Channel, "UC1")).avatar_url == AVATAR
     await engine.dispose()

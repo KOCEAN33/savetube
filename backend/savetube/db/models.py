@@ -94,7 +94,6 @@ class Channel(Base):
     # The listing's approximate timestamp is compared, so the cutoff is coarse.
     date_after: Mapped[date | None]
     format: Mapped[str] = mapped_column(default="bv*+ba/b", server_default="bv*+ba/b")
-    use_cookies: Mapped[bool] = mapped_column(default=False, server_default=false())
     watch_lives: Mapped[bool] = mapped_column(default=False, server_default=false())
     # The profile picture YouTube serves, from a tab listing. Null until a scan or
     # a tab poll finds it.
@@ -138,6 +137,36 @@ class DownloadSettings(Base):
     # The pause after a YouTube block, and the blocks since the last success.
     blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     block_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    # The cookie profile of every poll, live probe and non-members download.
+    # Null runs them cookie-free.
+    cookie_profile: Mapped[str | None] = mapped_column(Text)
+
+
+class CookieProfile(Base):
+    """A cookie profile present in SAVETUBE_COOKIES_DIR, by name. The
+    scheduler, which mounts the profiles, records them every tick, so the web
+    lists them without the mount."""
+
+    __tablename__ = "cookie_profile"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Membership(Base):
+    """Whether a cookie profile's account is a member of a channel, from the
+    last check (savetube.cookies)."""
+
+    __tablename__ = "membership"
+
+    channel_id: Mapped[str] = mapped_column(
+        ForeignKey("channel.id", ondelete="CASCADE"), primary_key=True
+    )
+    profile: Mapped[str] = mapped_column(Text, primary_key=True)
+    is_member: Mapped[bool]
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # The members-only video the check read.
+    video_id: Mapped[str] = mapped_column(String(16))
 
 
 class Source(Base):

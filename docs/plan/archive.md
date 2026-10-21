@@ -7,7 +7,9 @@
 - A tab's entries carry no `channel_id`, so the poll takes it from the listing. Playlist entries carry their own, and a private or deleted entry without one is skipped.
 - Every listed video that has a `video` row gets a `video_source` link, whether or not it passes the filters. A video that passes and is not yet stored gets a `pending` `video` row and an archive job, unless a job for it is queued or running, or three archive jobs for it have failed.
 - A poll puts no job on the procrastinate queue. A new archive job waits as `queued` until the scheduler's dispatcher queues it (Download limits).
-- A members-only entry, flat `availability` `subscriber_only`, does not pass when the source's channel has `use_cookies` off, because every download attempt would fail. It keeps its `listing_entry` row and its `video_source` link. The cancel rule for skipped titles (Title words) cancels its queued archive job. The first poll after `use_cookies` is turned on queues it.
+- A poll lists with the general cookie profile, or cookie-free when none is set (access.md, Cookies and account).
+- A members-only entry, flat `availability` `subscriber_only`, passes only when a present cookie profile is a confirmed member of the entry's channel. Otherwise every download attempt would fail. A skipped entry keeps its `listing_entry` row and its `video_source` link. The cancel rule for skipped titles (Title words) cancels its queued archive job. The first poll after a membership check confirms a member queues it.
+- After a poll that lists members-only entries, the membership checks of their channels run (access.md, Cookies and account).
 - `is_live`, `is_upcoming` and `post_live` entries are left to live detection.
 - The channel's date cutoff reads the entry's approximate timestamp ("3 weeks ago"), so it is only as exact as YouTube's relative date. A video uploaded a day before the cutoff can pass.
 - A failed archive job deletes its `.incoming/<video id>/`, because the retry after a real failure starts over (Resuming and verifying downloads).
@@ -53,8 +55,8 @@
 | `POST /api/sources/{id}/title-preview` | `{include_words, exclude_words}`, the source's own lists being edited | `{total, kept, titles: [{video_id, title, kept}]}` from the source's `listing_entry` rows, matched with the stored global and channel lists merged in |
 | `GET /api/words` | | the global `{include_words, exclude_words}` |
 | `PUT /api/words` | `{include_words, exclude_words}` | the global lists |
-| `GET /api/channels` | | every stored channel, uploader-only ones included. Each also carries `include_words`, `exclude_words`, `date_after`, `format`, `use_cookies`, `watch_lives`, and `tracked`, true when at least one source names the channel |
-| `PATCH /api/channels/{id}` | `{include_words?, exclude_words?, date_after?, format?, use_cookies?, watch_lives?}` | the channel |
+| `GET /api/channels` | | every stored channel, uploader-only ones included. Each also carries `include_words`, `exclude_words`, `date_after`, `format`, `watch_lives`, `tracked`, true when at least one source names the channel, and `memberships: [{profile, is_member, checked_at}]`, by profile name |
+| `PATCH /api/channels/{id}` | `{include_words?, exclude_words?, date_after?, format?, watch_lives?}` | the channel |
 
 - Word lists are trimmed, empty strings dropped, and duplicates removed after casefolding, keeping the first form.
 
@@ -82,7 +84,7 @@
 - A `PUT /api/download-settings` changes no job. The next dispatch, within 10 s, applies the new limits.
 - Migration `0006` deletes every `succeeded` procrastinate job and every `todo` archive procrastinate job. It clears `queue_job_id` and `deferred_until` on every `queued` archive job whose procrastinate job is not `doing`, so the dispatcher takes it. A `doing` job and its `job` row stay. The downgrade cancels every waiting archive job, so the old poll queues its video again.
 - Process health and job ownership are separate. Kubernetes judges health: worker and scheduler serve `GET /healthz` on `SAVETUBE_HEALTH_PORT` (default 8081) from their own asyncio loop, so a stuck loop fails the probe, and the chart sets a livenessProbe on it. The metrics port cannot serve this, because `prometheus_client` answers from its own thread while the loop hangs. Docker compose runs the same check as a `healthcheck`. Job ownership stays in Postgres as procrastinate's heartbeat lease.
-- A YouTube block pauses archive downloads. A block is a `DownloadFailed` whose text, lowercased, holds both "confirm you" and "not a bot", or "http error 429". The bot check text has a straight or a curly apostrophe, so no marker includes it. `savetube.jobs.BLOCK_MARKERS` holds the markers.
+- A YouTube block pauses archive downloads. A block is a `DownloadFailed` whose text, lowercased, holds both "confirm you" and "not a bot", or "http error 429". The bot check text has a straight or a curly apostrophe, so no marker includes it. `savetube.ytdl.BLOCK_MARKERS` holds the markers.
 - A blocked archive job is interrupted, not failed: it counts as no attempt, keeps `.incoming/<video id>/` and its pinned format, and logs `job.interrupted` at WARNING with reason "blocked by YouTube". The `interrupted` row's `log_tail` holds the yt-dlp text.
 - The first block past an expired pause adds 1 to `download_settings.block_count` and sets `blocked_until` to now plus the backoff, under the slot lock. The backoff is 30 min, doubling with each count, at most 12 h: 30 min, 1 h, 2 h, 4 h, 8 h, 12 h. It logs `dispatch.blocked` at WARNING with `until`, `backoff`, `count`, the job, the video, and the reason.
 - A block while a pause holds, such as jobs refused together, only interrupts its job.
@@ -95,8 +97,9 @@
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
-| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, timezone, blocked_until, block_count}`. The last two are read-only |
-| `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end}` | the settings |
+| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile, timezone, blocked_until, block_count}`. The last two are read-only |
+| `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile}`. A `cookie_profile` the scheduler has not recorded as present is a 422 | the settings |
+| `GET /api/cookie-profiles` | | `[{name}]`, the profiles the scheduler last recorded, by name. Never their content |
 | `GET /api/jobs` | | each job also carries `deferred_until` |
 | `PATCH /api/sources/{id}` | also `archiving` | the source, with `archiving` |
 

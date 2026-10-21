@@ -33,6 +33,31 @@ _SLEEP = {
 WAIT_FOR_VIDEO = (30, 120)
 
 
+# yt-dlp's text when YouTube refuses this client rather than the video. Each
+# group matches when all its lowercase parts are in the message. The bot check
+# reads "Sign in to confirm you’re not a bot", with a straight or curly
+# apostrophe, so no part includes it.
+BLOCK_MARKERS = (("confirm you", "not a bot"), ("http error 429",))
+# YouTube's text for a members-only video the account may not watch, in both
+# forms: "Join this channel to get access to members-only content like this
+# video, and other exclusive perks." and "This video is available to this
+# channel's members on level: ... Join this channel to get access to
+# members-only content and other exclusive perks."
+MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
+
+
+def youtube_block(message: str) -> bool:
+    """Whether a failure is YouTube refusing this client."""
+    text = message.lower()
+    return any(all(part in text for part in group) for group in BLOCK_MARKERS)
+
+
+def members_only(message: str) -> bool:
+    """Whether a failure is a members-only video the account may not watch."""
+    text = message.lower()
+    return any(marker in text for marker in MEMBERS_ONLY_MARKERS)
+
+
 def video_url(video_id: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
@@ -107,15 +132,17 @@ def list_entries(
         return ydl.sanitize_info(ydl.extract_info(url, download=False))
 
 
-def list_streams(channel_id: str) -> dict[str, Any]:
+def list_streams(channel_id: str, cookiefile: Path | None = None) -> dict[str, Any]:
     """The first page of the channel's Live tab: upcoming, live and past streams."""
-    params = {
+    params: dict[str, Any] = {
         "extract_flat": "in_playlist",
         "playlistend": 10,
         "quiet": True,
         "logger": YtdlpLogger(),
         "sleep_interval_requests": _SLEEP["sleep_interval_requests"],
     }
+    if cookiefile is not None:
+        params["cookiefile"] = str(cookiefile)
     with yt_dlp.YoutubeDL(params) as ydl:
         return ydl.sanitize_info(
             ydl.extract_info(
@@ -131,27 +158,35 @@ def fetch_feed(channel_id: str) -> str:
         return r.read().decode()
 
 
-def _probe(url: str) -> dict[str, Any]:
-    params = {
+def _probe(url: str, cookiefile: Path | None, *, formats_required: bool = False) -> dict[str, Any]:
+    params: dict[str, Any] = {
         "quiet": True,
         "logger": YtdlpLogger(),
         # An upcoming stream has no formats yet. Without this, yt-dlp raises
         # "This live event will begin in ..." instead of returning
         # `release_timestamp`.
-        "ignore_no_formats_error": True,
+        "ignore_no_formats_error": not formats_required,
         "sleep_interval_requests": _SLEEP["sleep_interval_requests"],
     }
+    if cookiefile is not None:
+        params["cookiefile"] = str(cookiefile)
     with yt_dlp.YoutubeDL(params) as ydl:
         return ydl.sanitize_info(ydl.extract_info(url, download=False))
 
 
-def probe_video(video_id: str) -> dict[str, Any]:
-    return _probe(video_url(video_id))
+def probe_video(video_id: str, cookiefile: Path | None = None) -> dict[str, Any]:
+    return _probe(video_url(video_id), cookiefile)
 
 
-def probe_live(channel_id: str) -> dict[str, Any]:
+def probe_live(channel_id: str, cookiefile: Path | None = None) -> dict[str, Any]:
     """The stream live on the channel now. Raises "is not currently live" otherwise."""
-    return _probe(f"https://www.youtube.com/channel/{channel_id}/live")
+    return _probe(f"https://www.youtube.com/channel/{channel_id}/live", cookiefile)
+
+
+def probe_member(video_id: str, cookiefile: Path) -> dict[str, Any]:
+    """A members-only video's info, formats included, read with one profile's
+    cookies. Raises YouTube's members-only text when the account is no member."""
+    return _probe(video_url(video_id), cookiefile, formats_required=True)
 
 
 def avatar_url(listing: dict[str, Any]) -> str | None:

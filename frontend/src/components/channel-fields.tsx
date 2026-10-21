@@ -1,7 +1,6 @@
 import { useState } from "react"
 
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -101,27 +100,6 @@ export function DateCutoffField({
         {value
           ? "Skip videos uploaded before this day. The check reads YouTube's approximate date, such as \"3 weeks ago\"."
           : "No cutoff: every video is kept."}
-      </p>
-    </div>
-  )
-}
-
-export function CookiesField({
-  checked,
-  onChange,
-}: {
-  checked: boolean
-  onChange: (on: boolean) => void
-}) {
-  return (
-    <div className="flex flex-col gap-1">
-      <Label className="font-normal">
-        <Checkbox checked={checked} onCheckedChange={(on) => onChange(on === true)} />
-        Use the account cookies
-      </Label>
-      <p className="pl-6 text-xs text-muted-foreground">
-        Needed for members-only videos. Public videos download without them, which keeps the
-        account out of reach of a ban.
       </p>
     </div>
   )

@@ -10,7 +10,7 @@ from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from yt_dlp.utils import DownloadError
 
-from savetube import limits, logs, words
+from savetube import cookies, limits, logs, words
 from savetube.db.models import (
     Channel,
     DownloadSettings,
@@ -19,6 +19,7 @@ from savetube.db.models import (
     JobKind,
     JobState,
     ListingEntry,
+    Membership,
     Source,
     SourceKind,
     StorageSample,
@@ -94,6 +95,12 @@ class DailyStat(_Out):
     count: int
 
 
+class MembershipOut(_Out):
+    profile: str
+    is_member: bool
+    checked_at: datetime
+
+
 class ChannelOut(_Out):
     id: str
     handle: str | None
@@ -103,13 +110,14 @@ class ChannelOut(_Out):
     exclude_words: list[str]
     date_after: date | None
     format: str
-    use_cookies: bool
     watch_lives: bool
     avatar_url: str | None
     video_count: int
     bytes: int
     # False for a channel known only as the uploader of a video a source lists.
     tracked: bool
+    # Each cookie profile's last membership check, by profile name.
+    memberships: list[MembershipOut] = []
 
 
 class SourceOut(_Out):
@@ -188,7 +196,6 @@ class ChannelPatch(BaseModel):
     # Null clears the cutoff, so only an omitted field leaves it alone.
     date_after: date | None = None
     format: Annotated[str | None, Field(min_length=1)] = None
-    use_cookies: bool | None = None
     watch_lives: bool | None = None
 
 
@@ -264,7 +271,6 @@ def _channels_query():
             Channel.exclude_words,
             Channel.date_after,
             Channel.format,
-            Channel.use_cookies,
             Channel.watch_lives,
             Channel.avatar_url,
             func.count(Video.id).label("video_count"),
@@ -277,10 +283,22 @@ def _channels_query():
     )
 
 
+async def _with_memberships(session: AsyncSession, rows) -> list[ChannelOut]:
+    out = [ChannelOut.model_validate(r) for r in rows]
+    by_channel = {c.id: c for c in out}
+    for m in await session.scalars(
+        select(Membership)
+        .where(Membership.channel_id.in_(list(by_channel)))
+        .order_by(Membership.profile)
+    ):
+        by_channel[m.channel_id].memberships.append(MembershipOut.model_validate(m))
+    return out
+
+
 @router.get("/channels")
 async def channels(session: Session) -> list[ChannelOut]:
     rows = await session.execute(_channels_query().order_by(Channel.name))
-    return [ChannelOut.model_validate(r) for r in rows]
+    return await _with_memberships(session, rows)
 
 
 @router.patch("/channels/{channel_id}")
@@ -321,7 +339,8 @@ def _logged(fields: dict[str, Any]) -> dict[str, Any]:
 
 async def _channel_out(session: AsyncSession, channel_id: str) -> ChannelOut:
     row = (await session.execute(_channels_query().where(Channel.id == channel_id))).one()
-    return ChannelOut.model_validate(row)
+    [out] = await _with_memberships(session, [row])
+    return out
 
 
 @router.get("/words")
@@ -759,7 +778,6 @@ class ChannelIn(WordsIn):
     watch_lives: bool = False
     date_after: date | None = None
     format: Annotated[str, Field(min_length=1)] = DEFAULT_FORMAT
-    use_cookies: bool = False
     poll_interval_minutes: Annotated[int, Field(ge=10, le=7 * 24 * 60)] = 360
 
 
@@ -801,7 +819,7 @@ async def create_channel(session: Session, body: ChannelIn) -> ChannelWithSource
     )
     channel.include_words, channel.exclude_words = body.include_words, body.exclude_words
     channel.date_after, channel.format = body.date_after, body.format
-    channel.use_cookies, channel.watch_lives = body.use_cookies, body.watch_lives
+    channel.watch_lives = body.watch_lives
     channel.avatar_url = body.avatar_url or channel.avatar_url
     # No relationship() orders inserts, so the FK target is flushed first.
     await session.flush()
@@ -937,6 +955,9 @@ class DownloadSettingsIn(BaseModel):
     rate_limit_bytes: Annotated[int | None, Field(gt=0)] = None
     window_start: _HHMM | None = None
     window_end: _HHMM | None = None
+    # A present cookie profile's name. Null runs polls, live probes and
+    # non-members downloads cookie-free.
+    cookie_profile: str | None = None
 
     @model_validator(mode="after")
     def _window(self) -> DownloadSettingsIn:
@@ -964,6 +985,7 @@ def _settings_out(row: DownloadSettings) -> DownloadSettingsOut:
         rate_limit_bytes=row.rate_limit_bytes,
         window_start=_hhmm(row.window_start),
         window_end=_hhmm(row.window_end),
+        cookie_profile=row.cookie_profile,
         timezone=TIMEZONE.key,
         blocked_until=row.blocked_until,
         block_count=row.block_count,
@@ -980,6 +1002,11 @@ async def replace_download_settings(
     session: Session, body: DownloadSettingsIn
 ) -> DownloadSettingsOut:
     """The scheduler's next dispatch applies the new limits to waiting jobs."""
+    present = await cookies.recorded_profiles(session)
+    if body.cookie_profile is not None and body.cookie_profile not in present:
+        raise HTTPException(
+            status_code=422, detail=f"no cookie profile named {body.cookie_profile}"
+        )
     row = await session.get(DownloadSettings, 1)
     if row is None:
         row = DownloadSettings(id=1)
@@ -988,6 +1015,7 @@ async def replace_download_settings(
     row.rate_limit_bytes = body.rate_limit_bytes
     row.window_start = time.fromisoformat(body.window_start) if body.window_start else None
     row.window_end = time.fromisoformat(body.window_end) if body.window_end else None
+    row.cookie_profile = body.cookie_profile
     await session.commit()
     emit(
         log,
@@ -998,5 +1026,17 @@ async def replace_download_settings(
         if body.rate_limit_bytes
         else "none",
         window=f"{body.window_start}-{body.window_end}" if body.window_start else "none",
+        cookie_profile=body.cookie_profile or "none",
     )
     return _settings_out(row)
+
+
+class CookieProfileOut(_Out):
+    name: str
+
+
+@router.get("/cookie-profiles")
+async def cookie_profiles(session: Session) -> list[CookieProfileOut]:
+    """The profiles the scheduler last found in SAVETUBE_COOKIES_DIR, by name.
+    The web pod does not mount them."""
+    return [CookieProfileOut(name=n) for n in await cookies.recorded_profiles(session)]

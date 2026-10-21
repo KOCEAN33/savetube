@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import integrity, logs
+from savetube import cookies, integrity, logs
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import (
@@ -32,6 +32,7 @@ from savetube.db.models import (
     Video,
     VideoState,
 )
+from savetube.layout import VideoType
 from savetube.limits import (
     TIMEZONE,
     admit,
@@ -47,7 +48,7 @@ from savetube.logs import emit, human_bytes, human_duration
 from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
 from savetube.poll import MAX_ARCHIVE_ATTEMPTS
 from savetube.storage import dir_size
-from savetube.ytdl import DEFAULT_FORMAT, build_params, copy_cookies, download, video_url
+from savetube.ytdl import DEFAULT_FORMAT, build_params, download, video_url, youtube_block
 
 log = logging.getLogger(__name__)
 
@@ -80,21 +81,11 @@ FORMAT_GONE = "Requested format is not available"
 # A partial directory no queued or running job wants is deleted after this.
 ORPHAN_DAYS = 7
 BLOCKED_LOG = "blocked by YouTube"
-# yt-dlp's text when YouTube refuses this client rather than the video. Each
-# group matches when all its lowercase parts are in the message. The bot check
-# reads "Sign in to confirm you’re not a bot", with a straight or curly
-# apostrophe, so no part includes it.
-BLOCK_MARKERS = (("confirm you", "not a bot"), ("http error 429",))
+NO_MEMBER = "no cookie profile is a confirmed member of the channel"
 
 
 class DownloadFailed(Exception):
     pass
-
-
-def youtube_block(message: str) -> bool:
-    """Whether a download failure is YouTube refusing this client."""
-    text = message.lower()
-    return any(all(part in text for part in group) for group in BLOCK_MARKERS)
 
 
 def _log_format(info: dict[str, Any]) -> None:
@@ -509,11 +500,19 @@ async def run(
                 return
             ratelimit = limits.rate_limit_bytes
         channel = await settings_channel(session, video_id)
-        use_cookies = channel is not None and channel.use_cookies
         fmt = channel.format if channel is not None else DEFAULT_FORMAT
         shorts = await from_shorts_tab(session, video_id)
         video = await session.get(Video, video_id)
         pinned = video.resume_format if video is not None else None
+        # A member profile serves its members-only videos only. Every other
+        # download takes the general profile.
+        members = video is not None and video.type is VideoType.MEMBERS
+        if members:
+            profile = await cookies.member_profile(
+                session, video.channel_id, cookies.profiles(settings)
+            )
+        else:
+            profile = await cookies.general(session)
         job.deferred_until = None
         job.state = JobState.RUNNING
         job.attempts += 1
@@ -548,7 +547,7 @@ async def run(
             **described,
             attempt=attempt_label,
             format_pref=fmt,
-            cookies="yes" if use_cookies else "no",
+            cookies=profile or "none",
             ratelimit=f"{human_bytes(ratelimit)}/s" if ratelimit else None,
         )
 
@@ -574,13 +573,10 @@ async def run(
                 prepare_incoming(settings.incoming_root, job_id)
             # Outside the working directory, so the cookie jar never moves into the tree.
             with tempfile.TemporaryDirectory(prefix="savetube-") as private:
-                cookiefile = None
-                if use_cookies:
-                    if settings.cookies_file is None:
-                        raise RuntimeError(
-                            "the channel uses cookies and SAVETUBE_COOKIES_FILE is unset"
-                        )
-                    cookiefile = copy_cookies(settings.cookies_file, Path(private))
+                if members and profile is None:
+                    # A poll passed the video while a member profile existed.
+                    raise DownloadFailed(NO_MEMBER)
+                cookiefile = cookies.cookiefile(settings, profile, Path(private))
 
                 def params(format: str) -> dict[str, Any]:
                     p = build_params(

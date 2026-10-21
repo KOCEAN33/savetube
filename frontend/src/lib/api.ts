@@ -45,12 +45,24 @@ export interface Channel {
   date_after: string | null
   // A yt-dlp format selector.
   format: string
-  use_cookies: boolean
   watch_lives: boolean
   // The profile picture YouTube serves. Null until a scan or a tab poll finds it.
   avatar_url: string | null
   // False for a channel known only as the uploader of a video a source lists.
   tracked: boolean
+  // Each cookie profile's last membership check, by profile name.
+  memberships: Membership[]
+}
+
+export interface Membership {
+  profile: string
+  is_member: boolean
+  checked_at: string
+}
+
+// A cookie file in SAVETUBE_COOKIES_DIR, by name. The API never sends its content.
+export interface CookieProfile {
+  name: string
 }
 
 export interface Source {
@@ -280,7 +292,6 @@ export interface TitleKept {
 export interface ChannelSettings {
   date_after: string | null
   format: string
-  use_cookies: boolean
   watch_lives: boolean
 }
 
@@ -303,6 +314,8 @@ export interface DownloadSettingsIn {
   rate_limit_bytes: number | null
   window_start: string | null
   window_end: string | null
+  // The profile of every poll, live probe and non-members download. Null: cookie-free.
+  cookie_profile: string | null
 }
 
 export interface DownloadSettings extends DownloadSettingsIn {
@@ -332,6 +345,7 @@ export const api = {
   sources: () => get<Source[]>("/api/sources"),
   globalWords: () => get<TitleWords>("/api/words"),
   downloadSettings: () => get<DownloadSettings>("/api/download-settings"),
+  cookieProfiles: () => get<CookieProfile[]>("/api/cookie-profiles"),
   // A POST that writes nothing: it lists live through yt-dlp, which can answer 502 or 504.
   channelPlaylists: (url: string) =>
     request<ChannelPlaylist[]>("POST", "/api/channel-playlists", { url }),

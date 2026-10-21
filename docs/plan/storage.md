@@ -4,7 +4,9 @@
 
 | Table | Holds |
 | --- | --- |
-| `channel` | channel id, handle, display name, avatar URL, the directory name fixed at first add, include and exclude title words, date cutoff, format selector, use cookies, watch lives |
+| `channel` | channel id, handle, display name, avatar URL, the directory name fixed at first add, include and exclude title words, date cutoff, format selector, watch lives |
+| `cookie_profile` | the cookie profile names the scheduler last found in `SAVETUBE_COOKIES_DIR`, each with the time it was seen |
+| `membership` | per channel and cookie profile: whether the profile's account is a member, when the check ran, the members-only video it read |
 | `global_words` | one row: the global include and exclude title words |
 | `source` | a channel tab, a channel's playlists, or a playlist URL, enabled flag, archiving flag, poll interval, include and exclude title words, other-channel flag, parent source, last poll time and error |
 | `listing_entry` | every video a source's last listings showed: source, video id, channel, title. Title word suggestions read it |
@@ -15,6 +17,7 @@
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- Migration `0010` adds `cookie_profile`, `membership` and `download_settings.cookie_profile`, and drops `channel.use_cookies`. Its downgrade adds `use_cookies` back as false on every channel.
 - Migration `0008` adds the job state `interrupted` and `video.resume_format`, `verified_at` and `verified_checks`. Its downgrade turns every `interrupted` job into `cancelled`, because the old code counts a failed job as an attempt.
 - Migration `0007` adds `channel.avatar_url` and `job.progress`. An existing channel gets its avatar on the next poll of one of its tab sources.
 - `job.progress` holds the current stream of a running archive download: format, percent, downloaded and total bytes, speed and ETA. The download child sends it through a pipe at most once a second. The worker process writes the latest value to the row at most every 5 s, so the child opens no database connection.

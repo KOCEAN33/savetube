@@ -53,14 +53,33 @@ capabilities:
       key: {{ .Values.database.key }}
 {{- end -}}
 
+{{/* The cookie profiles, when cookies.existingSecret is set: every key
+`<name>.txt` of the Secret is the profile `<name>`. Only the pods that run
+yt-dlp mount them. The internet-facing web pod never does. */}}
+{{- define "savetube.cookiesEnv" -}}
+- name: SAVETUBE_COOKIES_DIR
+  value: /secrets/cookies
+{{- end -}}
+
+{{- define "savetube.cookiesMount" -}}
+- name: cookies
+  mountPath: /secrets/cookies
+  readOnly: true
+{{- end -}}
+
+{{- define "savetube.cookiesVolume" -}}
+- name: cookies
+  secret:
+    secretName: {{ .Values.cookies.existingSecret }}
+{{- end -}}
+
 {{/* Env for a container that downloads or reads the archive tree. */}}
 {{- define "savetube.archiveEnv" -}}
 {{ include "savetube.dbEnv" . }}
 - name: SAVETUBE_ARCHIVE_ROOT
   value: /archive
 {{- if .Values.cookies.existingSecret }}
-- name: SAVETUBE_COOKIES_FILE
-  value: /secrets/cookies/{{ .Values.cookies.key }}
+{{ include "savetube.cookiesEnv" . }}
 {{- end }}
 {{- end -}}
 
@@ -70,9 +89,7 @@ capabilities:
 - name: tmp
   mountPath: /tmp
 {{- if .Values.cookies.existingSecret }}
-- name: cookies
-  mountPath: /secrets/cookies
-  readOnly: true
+{{ include "savetube.cookiesMount" . }}
 {{- end }}
 {{- end -}}
 
@@ -83,12 +100,7 @@ capabilities:
 - name: tmp
   emptyDir: {}
 {{- if .Values.cookies.existingSecret }}
-- name: cookies
-  secret:
-    secretName: {{ .Values.cookies.existingSecret }}
-    items:
-      - key: {{ .Values.cookies.key }}
-        path: {{ .Values.cookies.key }}
+{{ include "savetube.cookiesVolume" . }}
 {{- end }}
 {{- end -}}
 

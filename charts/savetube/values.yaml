@@ -49,9 +49,9 @@ archive:
   existingClaim: ""
 
 cookies:
-  # A Secret holding a Netscape cookie file. Empty runs every download cookie-free.
+  # A Secret whose every key `<name>.txt` is a Netscape cookie file, the cookie
+  # profile `<name>`. Empty leaves no profile, so every request runs cookie-free.
   existingSecret: ""
-  key: cookies.txt
 
 podSecurityContext:
   runAsUser: 1000
