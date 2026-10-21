@@ -1,8 +1,10 @@
 """Runs against a real Postgres. SAVETUBE_TEST_DATABASE_URL is an admin URL whose
-role has CREATEDB. Each run creates and drops its own database, savetube_test."""
+role has CREATEDB. Each run creates and drops its own database, savetube_test_<random>,
+so concurrent runs against one server do not collide."""
 
 import asyncio
 import os
+import secrets
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -32,7 +34,7 @@ from savetube.web.app import create_app
 from savetube.web.auth import User, current_user
 
 ADMIN_URL = os.environ.get("SAVETUBE_TEST_DATABASE_URL", "")
-TEST_DB = "savetube_test"
+TEST_DB = f"savetube_test_{secrets.token_hex(6)}"
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
 

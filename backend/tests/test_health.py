@@ -49,3 +49,8 @@ async def test_healthz_fails_while_the_loop_is_blocked():
         time.sleep(1.5)  # noqa: ASYNC251 - blocks the loop on purpose, as a stuck hook would
         await asyncio.to_thread(t.join)
         assert "error" in result, result
+        # The timed-out probe still waits in the listen backlog. Closing the server
+        # before the loop accepts it leaks a transport that asyncio collects late.
+        # A good answer here means the loop has accepted the stale connection.
+        answer = await asyncio.to_thread(_get, f"http://127.0.0.1:{port}/healthz", 5)
+        assert answer == (200, b"ok\n")
