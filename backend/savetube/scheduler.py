@@ -168,15 +168,24 @@ async def dispatch_archives(report: DispatchLog) -> None:
         report(await dispatch(session, datetime.now(UTC), enqueue))
 
 
+# A live worker misses heartbeats during a short database outage, such as a
+# Postgres failover, so 30 s, procrastinate's default, reclaims its jobs. A
+# worker that the others pruned leaves its jobs with no worker, and those read
+# as stalled at any threshold. The run's ownership check covers both.
+STALLED_HEARTBEAT_SECONDS = 300
+
+
 async def reclaim(settings: Settings) -> None:
     from procrastinate.jobs import Status
 
     from savetube.queue import ARCHIVE_QUEUE, app
 
     async def stalled() -> list[tuple[int, int]]:
-        # A worker without a heartbeat for 30 s, procrastinate's default and
-        # the worker's own stalled_worker_timeout.
-        found = await app.job_manager.get_stalled_jobs(queue=ARCHIVE_QUEUE, task_name="archive")
+        found = await app.job_manager.get_stalled_jobs(
+            queue=ARCHIVE_QUEUE,
+            task_name="archive",
+            seconds_since_heartbeat=STALLED_HEARTBEAT_SECONDS,
+        )
         return [(j.id, j.task_kwargs["job_id"]) for j in found if j.id is not None]
 
     async def finish(queue_job_id: int) -> None:

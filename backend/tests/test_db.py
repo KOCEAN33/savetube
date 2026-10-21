@@ -4162,6 +4162,173 @@ async def test_a_pause_interrupts_a_running_archive_download_and_keeps_its_parts
     assert line.levelno == logging.INFO and _fields(line)["reason"] == "paused by user"
 
 
+SECOND_RUN_START = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+
+
+async def _reclaim_and_start_again(settings):
+    """The scheduler reclaims job 1 from a live worker, and a second run of it
+    starts, pins its own format, and works in the same directory."""
+    from savetube.jobs import reclaim_stalled
+
+    async def stalled():
+        return [(500, 1)]
+
+    async def finish(queue_job_id):
+        pass
+
+    engine = make_engine(settings.sqlalchemy_url)
+    await reclaim_stalled(make_sessionmaker(engine), settings, stalled=stalled, finish=finish)
+    await engine.dispose()
+    _sql(
+        settings,
+        "UPDATE job SET state = 'running', attempts = 1, queue_job_id = 501,"
+        f" started_at = '{SECOND_RUN_START.isoformat()}' WHERE id = 1",
+        "UPDATE video SET state = 'downloading', resume_format = '140' WHERE id = 'v1'",
+    )
+
+
+def _assert_left_to_the_second_run(settings, jobs, video, caplog):
+    import logging
+
+    # Only the reclaim wrote a history row.
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert history.log_tail == "worker stopped during the download"
+    owner = jobs[1]
+    assert (owner.state, owner.queue_job_id, owner.attempts) == (JobState.RUNNING, 501, 1)
+    assert owner.started_at == SECOND_RUN_START and owner.finished_at is None
+    assert (video.state, video.resume_format) == (VideoState.DOWNLOADING, "140")
+    assert video.dir_path is None
+    assert (settings.incoming_root / "v1").is_dir()
+    [line] = _events(caplog, "job.disowned")
+    fields = _fields(line)
+    assert line.levelno == logging.WARNING
+    assert (fields["job"], fields["video"]) == (1, "v1")
+    assert fields["reason"]
+    assert _events(caplog, "job.failed") == []
+    assert _events(caplog, "job.done") == []
+    assert [_fields(r)["reason"] for r in _events(caplog, "job.interrupted")] == [
+        "worker stopped during the download"
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_run_whose_job_was_reclaimed_stops_and_leaves_the_directory(
+    settings, caplog, monkeypatch
+):
+    import logging
+
+    from savetube import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.05)
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    cancelled = asyncio.Event()
+
+    async def downloading(params, report):
+        _part(params)
+        await report({"event": "format", "format_id": "251"})
+        await _reclaim_and_start_again(settings)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(_run_steps(settings, _Steps(downloading)), 10)
+
+    assert cancelled.is_set()
+    _assert_left_to_the_second_run(settings, jobs, video, caplog)
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+
+
+@pytest.mark.anyio
+async def test_a_disowned_run_that_finishes_moves_nothing_into_the_tree(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    finished = _finished()
+
+    async def done_after_reclaim(params, report):
+        info = await finished(params, report)
+        await _reclaim_and_start_again(settings)
+        return info
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(_run_steps(settings, _Steps(done_after_reclaim)), 10)
+
+    _assert_left_to_the_second_run(settings, jobs, video, caplog)
+    assert (settings.incoming_root / "v1" / "v1.webm").read_bytes() == b"mmmmm"
+    assert not (settings.archive_root / "A [UC1]").exists()
+
+
+@pytest.mark.anyio
+async def test_a_disowned_run_that_fails_writes_nothing(settings, caplog):
+    import logging
+
+    from savetube.jobs import DownloadFailed
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+
+    async def fails_after_reclaim(params, report):
+        _part(params)
+        await _reclaim_and_start_again(settings)
+        raise DownloadFailed("ERROR: something broke")
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(_run_steps(settings, _Steps(fails_after_reclaim)), 10)
+
+    _assert_left_to_the_second_run(settings, jobs, video, caplog)
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+
+
+@pytest.mark.anyio
+async def test_a_disowned_run_reports_nothing_onto_the_new_owners_row(settings, caplog):
+    import logging
+
+    from savetube.jobs import DownloadFailed
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+
+    async def reports_after_reclaim(params, report):
+        _part(params)
+        await _reclaim_and_start_again(settings)
+        _sql(settings, """UPDATE job SET progress = '{"percent": 50.0}' WHERE id = 1""")
+        await report({"percent": 10.0})
+        await report({"event": "format", "format_id": "251"})
+        raise DownloadFailed("ERROR: something broke")
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await asyncio.wait_for(
+            _run_steps(settings, _Steps(reports_after_reclaim)), 10
+        )
+
+    _assert_left_to_the_second_run(settings, jobs, video, caplog)
+    assert jobs[1].progress == {"percent": 50.0}
+
+
+@pytest.mark.anyio
+async def test_reclaim_takes_a_worker_as_stalled_after_300_s_without_a_heartbeat(
+    settings, monkeypatch
+):
+    from savetube import scheduler
+    from savetube.queue import app
+
+    asked = []
+
+    async def get_stalled_jobs(**kwargs):
+        asked.append(kwargs)
+        return []
+
+    engine = make_engine(settings.sqlalchemy_url)
+    monkeypatch.setattr(scheduler, "default_sessionmaker", lambda: make_sessionmaker(engine))
+    monkeypatch.setattr(app.job_manager, "get_stalled_jobs", get_stalled_jobs)
+    await scheduler.reclaim(settings)
+    await engine.dispose()
+    [kwargs] = asked
+    assert kwargs["seconds_since_heartbeat"] == 300
+    assert (kwargs["queue"], kwargs["task_name"]) == ("archive", "archive")
+
+
 @pytest.mark.anyio
 async def test_a_pause_never_cancels_a_live_recording(settings, monkeypatch):
     from savetube import jobs as jobs_module
