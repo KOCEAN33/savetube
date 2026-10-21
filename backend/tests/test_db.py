@@ -2219,6 +2219,8 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
             ("https://www.youtube.com/@VESPERBELL/videos", "tab", None, VESP, True, []),
             (f"{PL}B", "playlist", "◀︎KASUKA Stream▶︎", VESP, True, []),
         ]
+        # Other uploaders' playlist entries download by default. A tab never takes the flag.
+        assert [s["other_channels"] for s in body["sources"]] == [False, False, True]
         again = client.post("/api/channels", json=_channel_body(tabs=["videos"], playlists=[]))
         assert again.status_code == 409
 
@@ -2268,11 +2270,15 @@ def test_api_tracks_all_playlists_of_a_new_channel(settings):
     with _api(settings) as client:
         body = client.post(
             "/api/channels",
-            json=_channel_body(tabs=["videos"], all_playlists=True, playlists=[]),
+            json=_channel_body(
+                tabs=["videos"], all_playlists=True, playlists=[], other_channels=False
+            ),
         ).json()
-    assert [(s["url"], s["kind"], s["archiving"]) for s in body["sources"]] == [
-        ("https://www.youtube.com/@VESPERBELL/videos", "tab", True),
-        ("https://www.youtube.com/@VESPERBELL/playlists", "playlists", True),
+    assert [
+        (s["url"], s["kind"], s["archiving"], s["other_channels"]) for s in body["sources"]
+    ] == [
+        ("https://www.youtube.com/@VESPERBELL/videos", "tab", True, False),
+        ("https://www.youtube.com/@VESPERBELL/playlists", "playlists", True, False),
     ]
 
 
@@ -2707,3 +2713,28 @@ def test_api_channel_counts_use_the_channel_page_rule(settings):
         patched = client.patch("/api/channels/UC1", json={"watch_lives": False}).json()
     assert counts == {"UC1": (2, 120), "UC2": (2, 23)}
     assert (patched["video_count"], patched["bytes"]) == (2, 120)
+
+
+def test_api_marks_a_channel_tracked_only_when_a_source_names_it(settings):
+    # UC2 is stored only as the uploader of a video UC1's playlist lists.
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]'),"
+        " ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
+        " other_channels) VALUES"
+        " (1, 'https://www.youtube.com/playlist?list=PLa', 'playlist', 'UC1', true, 360, true),"
+        " (2, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', false, 360, false)",
+        "INSERT INTO video (id, channel_id, type, title, state, size_bytes) VALUES"
+        " ('guest', 'UC2', 'videos', 'guest', 'complete', 5)",
+        "INSERT INTO video_source (video_id, source_id) VALUES ('guest', 1)",
+    )
+    with _api(settings) as client:
+        listed = client.get("/api/channels").json()
+        patched = client.patch("/api/channels/UC2", json={"watch_lives": False}).json()
+    # Every channel stays listed for the Videos page filter. Two sources do not double counts.
+    assert [(c["id"], c["tracked"], c["video_count"]) for c in listed] == [
+        ("UC1", True, 1),
+        ("UC2", False, 1),
+    ]
+    assert patched["tracked"] is False

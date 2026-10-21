@@ -30,7 +30,12 @@ import {
   type TitleWords,
   type VideoTab,
 } from "@/lib/api"
-import { DEFAULT_FORMAT, VIDEO_TABS } from "@/lib/channel"
+import {
+  DEFAULT_FORMAT,
+  OTHER_CHANNELS_HINT,
+  OTHER_CHANNELS_LABEL,
+  VIDEO_TABS,
+} from "@/lib/channel"
 import { EXCLUDE_HINT, INCLUDE_HINT, addWord, type WordList } from "@/lib/words"
 
 const STEPS = ["Channel", "What to archive", "Title words", "Download settings"]
@@ -41,6 +46,7 @@ interface Choice {
   tabs: VideoTab[]
   playlists: PlaylistMode
   picked: string[]
+  otherChannels: boolean
   watchLives: boolean
 }
 
@@ -255,6 +261,18 @@ function ChooseStep({
             ))}
           </ul>
         )}
+        {choice.playlists !== "none" && (
+          <div className="flex flex-col gap-1 pt-2">
+            <Label className="font-normal">
+              <Checkbox
+                checked={choice.otherChannels}
+                onCheckedChange={(on) => onChange({ ...choice, otherChannels: on === true })}
+              />
+              {OTHER_CHANNELS_LABEL}
+            </Label>
+            <p className="text-xs text-muted-foreground">{OTHER_CHANNELS_HINT}</p>
+          </div>
+        )}
       </fieldset>
     </div>
   )
@@ -367,6 +385,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
     tabs: [],
     playlists: "none",
     picked: [],
+    otherChannels: true,
     watchLives: false,
   })
   const [words, setWords] = useState<TitleWords>({ include_words: [], exclude_words: [] })
@@ -389,6 +408,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
       tabs: VIDEO_TABS.map((t) => t.tab).filter((t) => result.tabs[t] !== null),
       playlists: "none",
       picked: [],
+      otherChannels: true,
       watchLives: false,
     })
   }
@@ -413,6 +433,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
         choice.playlists === "some"
           ? scan.playlists.filter((p) => choice.picked.includes(p.url))
           : [],
+      other_channels: choice.otherChannels,
       watch_lives: choice.watchLives,
       ...words,
       date_after: dateAfter,

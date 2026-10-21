@@ -108,6 +108,8 @@ class ChannelOut(_Out):
     avatar_url: str | None
     video_count: int
     bytes: int
+    # False for a channel known only as the uploader of a video a source lists.
+    tracked: bool
 
 
 class SourceOut(_Out):
@@ -264,6 +266,7 @@ def _channels_query():
             Channel.avatar_url,
             func.count(Video.id).label("video_count"),
             _size.label("bytes"),
+            select(Source.id).where(Source.channel_id == Channel.id).exists().label("tracked"),
         )
         # The channel page's rule: uploaded by the channel or listed by its sources.
         .outerjoin(Video, _of_channel(Channel.id) & _stored)
@@ -748,6 +751,8 @@ class ChannelIn(WordsIn):
     # Track all: one `playlists` source. Otherwise one source per picked playlist.
     all_playlists: bool = False
     playlists: list[PlaylistPick] = []
+    # Applies to the playlist sources only. A tab keeps what its channel tab lists.
+    other_channels: bool = True
     watch_lives: bool = False
     date_after: date | None = None
     format: Annotated[str, Field(min_length=1)] = DEFAULT_FORMAT
@@ -804,6 +809,7 @@ async def create_channel(session: Session, body: ChannelIn) -> ChannelWithSource
             title=title,
             channel_id=channel.id,
             poll_interval_minutes=body.poll_interval_minutes,
+            other_channels=body.other_channels and kind is not SourceKind.TAB,
             archiving=True,
         )
         for url, kind, title in wanted

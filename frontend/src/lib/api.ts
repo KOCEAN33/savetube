@@ -48,6 +48,8 @@ export interface Channel {
   watch_lives: boolean
   // The profile picture YouTube serves. Null until a scan or a tab poll finds it.
   avatar_url: string | null
+  // False for a channel known only as the uploader of a video a source lists.
+  tracked: boolean
 }
 
 export interface Source {
@@ -287,6 +289,7 @@ export interface ChannelIn extends TitleWords, ChannelSettings {
   tabs: VideoTab[]
   all_playlists: boolean
   playlists: { url: string; title: string }[]
+  other_channels: boolean
 }
 
 export type ChannelPatch = Partial<TitleWords & ChannelSettings>
