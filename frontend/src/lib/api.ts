@@ -369,6 +369,9 @@ export const api = {
     request<TitleKept[]>("POST", "/api/title-preview", body),
   jobs: (query: { kind?: JobKind; state?: JobState[]; channel_id?: string; limit?: number }) =>
     get<Job[]>("/api/jobs", query),
+  // Every state is present, zero when no job holds it.
+  jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
+    get<Record<JobState, number>>("/api/jobs/counts", query),
   videos: (query: {
     // The uploader.
     channel_id?: string

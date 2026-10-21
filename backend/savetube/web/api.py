@@ -253,6 +253,8 @@ async def me(user: CurrentUser) -> User:
 _size = func.coalesce(func.sum(Video.size_bytes), 0)
 # Statistics count what sits in the tree, not pending or failed downloads.
 _stored = Video.state == VideoState.COMPLETE
+# A channel the user added: at least one source names it.
+_tracked = select(Source.id).where(Source.channel_id == Channel.id).exists()
 
 
 @router.get("/stats/summary")
@@ -274,7 +276,10 @@ async def summary(session: Session) -> Summary:
             _size.label("bytes"),
             func.count(Video.id).label("count"),
         )
-        .join(Video, (Video.channel_id == Channel.id) & _stored)
+        # The channel list's rule: tracked channels only, and a video counts
+        # when the channel uploaded it or one of its sources lists it.
+        .join(Video, _of_channel(Channel.id) & _stored)
+        .where(_tracked)
         .group_by(Channel.id)
         .order_by(_size.desc())
     )
@@ -321,7 +326,7 @@ def _channels_query():
             Channel.avatar_url,
             func.count(Video.id).label("video_count"),
             _size.label("bytes"),
-            select(Source.id).where(Source.channel_id == Channel.id).exists().label("tracked"),
+            _tracked.label("tracked"),
         )
         # The channel page's rule: uploaded by the channel or listed by its sources.
         .outerjoin(Video, _of_channel(Channel.id) & _stored)
@@ -955,6 +960,21 @@ async def jobs(
         )
         for j, title, cid, name in await session.execute(q)
     ]
+
+
+@router.get("/jobs/counts")
+async def job_counts(
+    session: Session, kind: JobKind | None = None, channel_id: str | None = None
+) -> dict[JobState, int]:
+    """The number of jobs in each state, every state present."""
+    q = select(Job.state, func.count()).group_by(Job.state)
+    if kind:
+        q = q.where(Job.kind == kind)
+    if channel_id:
+        q = q.outerjoin(Video, Video.id == Job.video_id).where(_of_channel(channel_id))
+    counts = dict.fromkeys(JobState, 0)
+    counts.update({state: n for state, n in await session.execute(q)})
+    return counts
 
 
 @router.get("/videos")

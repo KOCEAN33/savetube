@@ -145,6 +145,12 @@ def test_api_reports_only_stored_videos(settings):
         )
         c.execute(
             sa.text(
+                "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes)"
+                " VALUES ('https://www.youtube.com/@a/videos', 'tab', 'UC1', true, 360)"
+            )
+        )
+        c.execute(
+            sa.text(
                 "INSERT INTO video"
                 " (id, channel_id, type, title, duration, size_bytes, state, completed_at) VALUES"
                 "         ('v1', 'UC1', 'videos', 'alpha_1', 60, 100, 'complete', now()),"
@@ -3022,6 +3028,61 @@ def test_api_channel_counts_use_the_channel_page_rule(settings):
         patched = client.patch("/api/channels/UC1", json={"watch_lives": False}).json()
     assert counts == {"UC1": (2, 120), "UC2": (2, 23)}
     assert (patched["video_count"], patched["bytes"]) == (2, 120)
+
+
+def test_api_channel_statistics_follow_the_channel_list_rule(settings):
+    # UC2 uploaded a video UC1's playlist lists and another one no source lists.
+    # No source names UC2.
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]'),"
+        " ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
+        " other_channels) VALUES"
+        " (1, 'https://www.youtube.com/playlist?list=PLa', 'playlist', 'UC1', true, 360, true),"
+        " (2, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', true, 360, false)",
+        "INSERT INTO video (id, channel_id, type, title, state, size_bytes) VALUES"
+        " ('own', 'UC1', 'videos', 'own', 'complete', 100),"
+        " ('guest', 'UC2', 'videos', 'guest', 'complete', 20),"
+        " ('pending', 'UC2', 'videos', 'p', 'pending', 7),"
+        " ('elsewhere', 'UC2', 'videos', 'b only', 'complete', 3)",
+        "INSERT INTO video_source (video_id, source_id) VALUES"
+        " ('own', 2), ('guest', 1), ('guest', 2), ('pending', 1)",
+    )
+    with _api(settings) as client:
+        summary = client.get("/api/stats/summary").json()
+    # Two sources listing one video count it once.
+    assert summary["by_channel"] == [{"channel_id": "UC1", "name": "A", "bytes": 120, "count": 2}]
+    assert (summary["total_bytes"], summary["video_count"]) == (123, 3)
+
+
+def test_api_counts_jobs_by_state(settings):
+    _job_rows(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v2', 'UC2', 'videos', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'running', 'busy1', 1), (3, 'archive', 'queued', 'busy2', 0),"
+        " (4, 'archive', 'queued', 'v2', 0), (5, 'record', 'queued', 'busy2', 0)",
+    )
+    with _api(settings) as client:
+        archive = client.get("/api/jobs/counts", params={"kind": "archive"}).json()
+        of_uc1 = client.get(
+            "/api/jobs/counts", params={"kind": "archive", "channel_id": "UC1"}
+        ).json()
+        every = client.get("/api/jobs/counts").json()
+    assert archive == {
+        "queued": 3,
+        "running": 1,
+        "succeeded": 0,
+        "failed": 0,
+        "missed": 0,
+        "cancelled": 0,
+        "interrupted": 0,
+    }
+    assert (of_uc1["queued"], of_uc1["running"]) == (2, 1)
+    assert every["queued"] == 4
 
 
 def test_api_marks_a_channel_tracked_only_when_a_source_names_it(settings):
