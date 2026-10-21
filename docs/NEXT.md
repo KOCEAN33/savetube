@@ -2,7 +2,7 @@
 
 ## Goal
 
-Check the archive features of `v0.2.0` in production through a browser, then review live recording with the user before building the recorder path.
+The user tries the add-channel flow of `v0.3.0` in production and gives feedback, then review live recording with the user before building the recorder path.
 
 ## Current progress
 
@@ -15,7 +15,7 @@ Check the archive features of `v0.2.0` in production through a browser, then rev
 - Deploy: homelab-workloads `savetube/` holds the ApplicationSet, `envs/default.yaml`, `envs/prod.yaml`, and `manifests/prod/` with the ExternalSecrets `savetube-db` and `savetube-session` plus the static PV and PVC `savetube-archive`. Application and namespace are `savetube-prod`, and the release name is `savetube`.
 - The chart is pinned: the ApplicationSet element's `chartRevision` names a savetube release tag, now `v0.2.0`. A release moves only `image.tag`. Raise `chartRevision` by hand when the chart changes, after the image the new chart needs is running. Before the pin, the chart tracked main: the `v0.2.0` merge synced the new livenessProbe onto the `0.1.2` image, and worker and scheduler restarted for about five minutes until the tag commit landed.
 - savetube, homelab-workloads and homelab-platform each send push events to the Argo CD webhook `https://argocd.hiriri.com/api/webhook`. The secret is field `github-secret` of the 1Password item `argocd-webhook` in the Homelab vault.
-- Running in `savetube-prod`: `v0.2.0` web, worker and scheduler. Migrations `0001`-`0004` applied. `https://savetube.lab.hiriri.com/healthz` answers 200, and `/auth/login` redirects to Zitadel with PKCE.
+- Running in `savetube-prod`: `v0.3.0` web, worker and scheduler. Migrations `0001`-`0005` applied. `https://savetube.lab.hiriri.com/healthz` answers 200, and `/auth/login` redirects to Zitadel with PKCE.
 - A browser login has not been tried end to end.
 - Zitadel: project `savetube`, Web application with PKCE (auth method `None`), grant type Authorization Code, client ID `395908165327192123` in `envs/prod.yaml`.
 - Postgres: the production role and `Database` `savetube` on Cluster `postgres` (homelab-platform `manifest/postgres/`). 1Password items `savetube-db` and `savetube-session`, each one field (`password`, `secret`).
@@ -24,6 +24,8 @@ Check the archive features of `v0.2.0` in production through a browser, then rev
 - Live detection runs in the scheduler and queues `record` jobs. A check against real channels found two live and two upcoming streams on NASA and none on VESPERBELL. Nothing records them yet.
 - Not built: recorder Job creation, Discord notifications, job-state metrics, cancel, a manual retry, the `missed` reconciliation, ServiceMonitor, canary CronJob.
 - Released in `v0.2.0` through pull request #4, checked locally against real VESPERBELL listings: channel playlists, title words at global, channel and source level, listing before downloading, download limits, stalled-job reclaim, `/healthz` with livenessProbe. The design is in `docs/plan/archive.md`.
+- Released in `v0.3.0` through pull request #5: per-channel settings replace rules, and adding a channel is one modal (`docs/plan/frontend.md`). The "record lives" checkbox turns on detection only, because no recorder exists.
+- UI rough edges seen in the `v0.3.0` screenshots: the channel page repeats the tabs as a "Tab sources" list, shows per-tab words ("Words for Live (past streams) only"), the scan step shows counts but no titles, and labels read "1 videos" and "Last 0 job(s)".
 - No CI runs on a pull request, because `image.yml` triggers only on a push to main.
 - The user's decisions behind the design, which the plan states as rules: word lists merge by union with no per-source opt-out, a global include word restricts every source on purpose, words apply to live detection too, children of a "track all" source are disabled and never deleted, health is Kubernetes' job and job ownership stays in the Postgres lease, limits are global only and the rate limit is per download, a download running at the window end finishes.
 
