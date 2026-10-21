@@ -6,11 +6,11 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from yt_dlp.utils import DownloadError
 
-from savetube import limits, words
+from savetube import limits, logs, words
 from savetube.db.models import (
     Channel,
     DownloadSettings,
@@ -23,15 +23,17 @@ from savetube.db.models import (
     SourceKind,
     StorageSample,
     Video,
+    VideoSource,
     VideoState,
 )
 from savetube.layout import VideoType
 from savetube.limits import TIMEZONE
+from savetube.logs import emit
 from savetube.pipeline import get_or_create_channel
 from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
 from savetube.web.auth import CurrentUser, User, current_user
-from savetube.ytdl import DEFAULT_FORMAT, list_entries
+from savetube.ytdl import DEFAULT_FORMAT, avatar_url, list_entries
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +105,7 @@ class ChannelOut(_Out):
     format: str
     use_cookies: bool
     watch_lives: bool
+    avatar_url: str | None
     video_count: int
     bytes: int
 
@@ -136,6 +139,9 @@ class JobOut(_Out):
     miss_reason: str | None
     scheduled_at: datetime | None
     deferred_until: datetime | None
+    # A running download's current stream, written every few seconds:
+    # {format, pct, done, total, speed, eta}. pct is null without a total.
+    progress: dict[str, Any] | None
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
@@ -255,10 +261,12 @@ def _channels_query():
             Channel.format,
             Channel.use_cookies,
             Channel.watch_lives,
+            Channel.avatar_url,
             func.count(Video.id).label("video_count"),
             _size.label("bytes"),
         )
-        .outerjoin(Video, (Video.channel_id == Channel.id) & _stored)
+        # The channel page's rule: uploaded by the channel or listed by its sources.
+        .outerjoin(Video, _of_channel(Channel.id) & _stored)
         .group_by(Channel.id)
     )
 
@@ -275,11 +283,34 @@ async def update_channel(session: Session, channel_id: str, body: ChannelPatch) 
     if channel is None:
         raise HTTPException(status_code=404)
     _normalize(body)
+    changed = {}
     for field, value in body.model_dump(exclude_unset=True).items():
         if value is not None or field == "date_after":
             setattr(channel, field, value)
+            changed[field] = value
     await session.commit()
+    emit(
+        log,
+        logging.INFO,
+        "channel.update",
+        channel=channel_id,
+        name=channel.name,
+        **_logged(changed),
+    )
     return await _channel_out(session, channel_id)
+
+
+def _logged(fields: dict[str, Any]) -> dict[str, Any]:
+    """Settings fields for a log line: a word list as its count."""
+    out = {}
+    for k, v in fields.items():
+        if isinstance(v, list):
+            out[k] = len(v)
+        elif isinstance(v, bool):
+            out[k] = "on" if v else "off"
+        else:
+            out[k] = v
+    return out
 
 
 async def _channel_out(session: AsyncSession, channel_id: str) -> ChannelOut:
@@ -304,6 +335,14 @@ async def replace_global_words(session: Session, body: WordsIn) -> WordsIn:
         session.add(row)
     row.include_words, row.exclude_words = body.include_words, body.exclude_words
     await session.commit()
+    emit(
+        log,
+        logging.INFO,
+        "words.update",
+        scope="global",
+        include=len(body.include_words),
+        exclude=len(body.exclude_words),
+    )
     return body
 
 
@@ -424,6 +463,15 @@ async def create_sources(session: Session, body: SourceIn) -> list[SourceOut]:
     ]
     session.add_all(created)
     await session.commit()
+    for s in created:
+        emit(
+            log,
+            logging.INFO,
+            "source.create",
+            source=s.id,
+            url=s.url,
+            **_logged(body.model_dump(exclude={"url", "tabs"}, exclude_defaults=True)),
+        )
     return [SourceOut.model_validate(s) for s in created]
 
 
@@ -444,6 +492,7 @@ async def update_source(session: Session, source_id: int, body: SourcePatch) -> 
             update(Source).where(Source.parent_id == source_id).values(**inherited)
         )
     await session.commit()
+    emit(log, logging.INFO, "source.update", source=source_id, url=source.url, **_logged(changes))
     return SourceOut.model_validate(source)
 
 
@@ -456,6 +505,7 @@ async def poll_now(session: Session, source_id: int) -> SourceOut:
     source = await _source(session, source_id)
     source.last_polled_at = None
     await session.commit()
+    emit(log, logging.INFO, "source.poll_now", source=source_id, url=source.url)
     return SourceOut.model_validate(source)
 
 
@@ -469,8 +519,10 @@ async def delete_source(session: Session, source_id: int) -> None:
         raise HTTPException(
             status_code=409, detail="a playlist of a tracked channel can only be disabled"
         )
+    url = source.url
     await session.delete(source)
     await session.commit()
+    emit(log, logging.INFO, "source.delete", source=source_id, url=url)
 
 
 @router.post("/sources/{source_id}/title-preview")
@@ -554,8 +606,10 @@ async def channel_playlists(
         async with asyncio.timeout(CHANNEL_PLAYLISTS_TIMEOUT):
             listing = await _list(scanner, url, None)
     except TimeoutError:
+        _scan_failed(url, 504, "timed out")
         raise HTTPException(status_code=504, detail="listing the playlists timed out") from None
     except DownloadError as e:
+        _scan_failed(url, 502, str(e))
         raise HTTPException(status_code=502, detail=str(e)) from None
     playlists = _playlists(listing)
     sources = dict(
@@ -571,6 +625,10 @@ async def channel_playlists(
         )
         for e, u in playlists
     ]
+
+
+def _scan_failed(url: str, status: int, reason: str) -> None:
+    emit(log, logging.WARNING, "scan.failed", url=url, status=status, reason=logs.cut(reason))
 
 
 class ScanEntry(_Out):
@@ -589,6 +647,7 @@ class ChannelScan(_Out):
     channel_id: str
     handle: str | None
     name: str
+    avatar_url: str | None
     # Keyed by tab. Null for a tab the channel lacks.
     tabs: dict[str, list[ScanEntry] | None]
     playlists: list[ScanPlaylist]
@@ -619,8 +678,10 @@ async def channel_scan(
                 _scan_one(scanner, f"{base}/{Tab.PLAYLISTS}", None),
             )
     except TimeoutError:
+        _scan_failed(base, 504, "timed out")
         raise HTTPException(status_code=504, detail="scanning the channel timed out") from None
     except DownloadError as e:
+        _scan_failed(base, 502, str(e))
         raise HTTPException(status_code=502, detail=str(e)) from None
     owner = next((x for x in (*tabs, playlists) if x and x.get("channel_id")), None)
     if owner is None:
@@ -641,6 +702,7 @@ async def channel_scan(
         channel_id=owner["channel_id"],
         handle=owner.get("uploader_id"),
         name=owner.get("channel") or owner.get("uploader") or owner["channel_id"],
+        avatar_url=next((a for x in tabs if x and (a := avatar_url(x))), None),
         tabs=entries,
         playlists=[
             ScanPlaylist(id=e["id"], title=e.get("title") or e["id"], url=u)
@@ -681,6 +743,7 @@ class ChannelIn(WordsIn):
     channel_id: Annotated[str, Field(min_length=1, max_length=64)]
     handle: str | None = None
     name: Annotated[str, Field(min_length=1)]
+    avatar_url: str | None = None
     tabs: list[Literal[Tab.VIDEOS, Tab.SHORTS, Tab.STREAMS]] = []
     # Track all: one `playlists` source. Otherwise one source per picked playlist.
     all_playlists: bool = False
@@ -731,6 +794,7 @@ async def create_channel(session: Session, body: ChannelIn) -> ChannelWithSource
     channel.include_words, channel.exclude_words = body.include_words, body.exclude_words
     channel.date_after, channel.format = body.date_after, body.format
     channel.use_cookies, channel.watch_lives = body.use_cookies, body.watch_lives
+    channel.avatar_url = body.avatar_url or channel.avatar_url
     # No relationship() orders inserts, so the FK target is flushed first.
     await session.flush()
     created = [
@@ -746,6 +810,15 @@ async def create_channel(session: Session, body: ChannelIn) -> ChannelWithSource
     ]
     session.add_all(created)
     await session.commit()
+    emit(
+        log,
+        logging.INFO,
+        "channel.create",
+        channel=channel.id,
+        name=channel.name,
+        sources=",".join(str(s.id) for s in created),
+        archiving="on",
+    )
     out = await _channel_out(session, body.channel_id)
     return ChannelWithSources(
         **out.model_dump(), sources=[SourceOut.model_validate(s) for s in created]
@@ -765,11 +838,23 @@ async def channel_words(session: Session, channel_id: str) -> list[WordCount]:
     return [WordCount(word=w, count=n) for w, n in words.rank(list(titles))]
 
 
+def _of_channel(channel_id: str | ColumnElement[str]) -> ColumnElement[bool]:
+    """Videos the channel uploaded or one of its sources lists. A collaboration
+    on the channel's tab is stored under the uploader the video's info names."""
+    listed = (
+        select(VideoSource.video_id)
+        .join(Source, Source.id == VideoSource.source_id)
+        .where(Source.channel_id == channel_id)
+    )
+    return (Video.channel_id == channel_id) | Video.id.in_(listed)
+
+
 @router.get("/jobs")
 async def jobs(
     session: Session,
     kind: JobKind | None = None,
-    state: JobState | None = None,
+    # Repeat the parameter for several states.
+    state: Annotated[list[JobState] | None, Query()] = None,
     channel_id: str | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[JobOut]:
@@ -782,9 +867,9 @@ async def jobs(
     if kind:
         q = q.where(Job.kind == kind)
     if state:
-        q = q.where(Job.state == state)
+        q = q.where(Job.state.in_(state))
     if channel_id:
-        q = q.where(Video.channel_id == channel_id)
+        q = q.where(_of_channel(channel_id))
     own = JobOut.model_fields.keys() - {"title", "channel_id"}
     return [
         JobOut(**{f: getattr(j, f) for f in own}, title=title, channel_id=cid)
@@ -796,7 +881,10 @@ async def jobs(
 async def videos(
     session: Session,
     channel_id: str | None = None,
+    # The channel page's view: also the videos the channel's sources list.
+    listed_by: str | None = None,
     type: VideoType | None = None,
+    state: VideoState | None = None,
     q: str | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -804,8 +892,12 @@ async def videos(
     where = []
     if channel_id:
         where.append(Video.channel_id == channel_id)
+    if listed_by:
+        where.append(_of_channel(listed_by))
     if type:
         where.append(Video.type == type)
+    if state:
+        where.append(Video.state == state)
     if q:
         pattern = f"%{q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
         where.append(or_(Video.title.ilike(pattern), Video.id == q))
@@ -883,4 +975,14 @@ async def replace_download_settings(
     row.window_start = time.fromisoformat(body.window_start) if body.window_start else None
     row.window_end = time.fromisoformat(body.window_end) if body.window_end else None
     await session.commit()
+    emit(
+        log,
+        logging.INFO,
+        "settings.download",
+        max_concurrent=body.max_concurrent,
+        rate_limit=f"{logs.human_bytes(body.rate_limit_bytes)}/s"
+        if body.rate_limit_bytes
+        else "none",
+        window=f"{body.window_start}-{body.window_end}" if body.window_start else "none",
+    )
     return _settings_out(row)

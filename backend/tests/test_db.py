@@ -1648,7 +1648,7 @@ class _Runner:
     def __init__(self):
         self.params = None
 
-    async def __call__(self, url, params):
+    async def __call__(self, url, params, report):
         from savetube.jobs import DownloadFailed
 
         self.params = params
@@ -2413,3 +2413,297 @@ def test_migration_0006_hands_waiting_archive_jobs_to_the_dispatcher(settings):
     # queued job, so a waiting job without a queue job is cancelled for the
     # next poll to queue it again.
     assert states == {1: "cancelled", 2: "queued", 3: "cancelled", 4: "succeeded"}
+
+
+class _ProgressRunner:
+    """Reports one progress update, then fails like a stopped download."""
+
+    PROGRESS = {
+        "format": "140",
+        "pct": 25.0,
+        "done": 1048576,
+        "total": 4194304,
+        "speed": 524288.0,
+        "eta": 6,
+    }
+
+    async def __call__(self, url, params, report):
+        from savetube.jobs import DownloadFailed
+
+        await report(self.PROGRESS)
+        raise DownloadFailed("stopped by the test")
+
+
+@pytest.mark.anyio
+async def test_a_download_stores_its_progress_on_the_job_row_for_the_api(settings):
+    from savetube.jobs import DownloadFailed, run
+
+    _job_rows(settings)
+    engine = make_engine(settings.sqlalchemy_url)
+    with pytest.raises(DownloadFailed):
+        await run(
+            1,
+            settings,
+            live=False,
+            runner=_ProgressRunner(),
+            sessionmaker=make_sessionmaker(engine),
+        )
+    await engine.dispose()
+    with _api(settings) as client:
+        [job] = client.get("/api/jobs", params={"channel_id": "UC1"}).json()
+    assert job["progress"] == _ProgressRunner.PROGRESS
+
+
+def _fields(record):
+    return dict(getattr(record, "savetube_fields", {}))
+
+
+@pytest.mark.anyio
+async def test_a_failed_archive_logs_its_attempt_and_the_third_is_an_error(settings, caplog):
+    import logging
+
+    _job_rows(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (9, 'archive', 'failed', 'v1', 1)",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await _run(settings)
+    events = {r.getMessage(): r for r in caplog.records if r.name == "savetube.jobs"}
+    start = _fields(events["job.start"])
+    assert (start["job"], start["video"], start["channel"], start["title"]) == (1, "v1", "A", "t")
+    assert start["attempt"] == "2/3" and start["cookies"] == "no"
+    failed = events["job.failed"]
+    assert failed.levelno == logging.WARNING
+    assert _fields(failed)["attempt"] == "2/3"
+    assert _fields(failed)["reason"] == "DownloadFailed: stopped by the test"
+    assert failed.exc_info is None
+
+    caplog.clear()
+    # The poll's retry is a new job row, after two failed ones.
+    _sql(
+        settings,
+        "UPDATE job SET id = 10 WHERE id = 1",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (1, 'archive', 'queued', 'v1', 0)",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await _run(settings)
+    [failed] = [r for r in caplog.records if r.getMessage() == "job.failed"]
+    assert failed.levelno == logging.ERROR and _fields(failed)["attempt"] == "3/3"
+
+
+@pytest.mark.anyio
+async def test_poll_done_counts_each_skip_reason(settings, caplog):
+    import logging
+
+    from savetube.poll import poll_source
+
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name, date_after, include_words) VALUES"
+        " ('UC1', 'Chan', 'Chan [UC1]', '2026-01-01', '{keep}')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@chan/videos', 'tab', 'UC1', true, 360)",
+    )
+    listing = {
+        "channel_id": "UC1",
+        "channel": "Chan",
+        "entries": [
+            {"id": "a", "title": "keep new", "timestamp": 1789948800},
+            {"id": "b", "title": "drop me"},
+            {"id": "c", "title": "keep old", "timestamp": 1735689600},
+            {"id": "d", "title": "keep members", "availability": "subscriber_only"},
+            {"id": "e", "title": "keep soon", "live_status": "is_upcoming"},
+        ],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await poll_source(
+            make_sessionmaker(engine), 1, settings, lister=lambda u, c: listing, cancel=_cancel
+        )
+    await engine.dispose()
+    events = {r.getMessage(): _fields(r) for r in caplog.records}
+    assert events["poll.start"]["url"] == "https://www.youtube.com/@chan/videos"
+    done = events["poll.done"]
+    done.pop("took")
+    assert done == {
+        "source": 1,
+        "listed": 5,
+        "passed": 1,
+        "queued": 1,
+        "stored": 0,
+        "in_flight": 0,
+        "gave_up": 0,
+        "cancelled": 0,
+        "skip_words": 1,
+        "skip_members": 1,
+        "skip_other": 0,
+        "skip_date": 1,
+        "skip_live": 1,
+        "skip_private": 0,
+    }
+
+
+# The thumbnails of a channel tab listing, as yt-dlp lists @VESPERBELL/videos.
+AVATAR = "https://yt3.googleusercontent.com/LW2I=s900-c-k-c0x00ffffff-no-rj"
+CHANNEL_THUMBNAILS = [
+    {
+        "url": "https://yt3.googleusercontent.com/MUU0=w1060-fcrop64",
+        "height": 175,
+        "width": 1060,
+        "id": "0",
+    },
+    {"url": "https://yt3.googleusercontent.com/MUU0=s0", "id": "banner_uncropped"},
+    {"url": AVATAR, "height": 900, "width": 900, "id": "7"},
+    {"url": "https://yt3.googleusercontent.com/LW2I=s0", "id": "avatar_uncropped"},
+]
+
+
+def test_api_scan_and_create_carry_the_channel_avatar(settings):
+    scan, _ = _scanner()
+
+    def with_avatar(url, limit):
+        listing = scan(url, limit)
+        return {**listing, "thumbnails": CHANNEL_THUMBNAILS}
+
+    with _api(settings, with_avatar) as client:
+        body = client.post(
+            "/api/channel-scan", json={"url": "https://www.youtube.com/@VESPERBELL"}
+        ).json()
+        assert body["avatar_url"] == AVATAR
+        created = client.post(
+            "/api/channels", json=_channel_body(avatar_url=body["avatar_url"])
+        ).json()
+        assert created["avatar_url"] == AVATAR
+        assert client.get("/api/channels").json()[0]["avatar_url"] == AVATAR
+
+
+@pytest.mark.anyio
+async def test_a_tab_poll_gives_an_existing_channel_its_avatar(settings):
+    from savetube.poll import poll_source
+
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'Chan', 'Chan [UC1]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@chan/videos', 'tab', 'UC1', true, 360)",
+    )
+    listing = {
+        "channel_id": "UC1",
+        "channel": "Chan",
+        "thumbnails": CHANNEL_THUMBNAILS,
+        "entries": [],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await poll_source(sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel)
+    async with sessionmaker() as session:
+        assert (await session.get(Channel, "UC1")).avatar_url == AVATAR
+    await engine.dispose()
+
+
+def test_api_lists_a_channels_stored_videos_by_state(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v1', 'UC1', 'videos', 'stored', 'complete'), ('v2', 'UC1', 'videos', 'p', 'pending')",
+    )
+    with _api(settings) as client:
+        page = client.get("/api/videos", params={"channel_id": "UC1", "state": "complete"}).json()
+    assert [v["id"] for v in page["items"]] == ["v1"] and page["total"] == 1
+
+
+def test_api_filters_jobs_by_several_states(settings):
+    _job_rows(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'running', 'busy1', 1), (3, 'archive', 'failed', 'busy2', 1)",
+    )
+    with _api(settings) as client:
+        active = client.get("/api/jobs", params={"state": ["running", "queued"]}).json()
+        failed = client.get("/api/jobs", params={"state": "failed"}).json()
+    assert [j["id"] for j in active] == [2, 1]
+    assert [j["id"] for j in failed] == [3]
+
+
+def test_a_channel_page_sees_videos_its_tabs_list_from_another_uploader(settings):
+    # A collaboration lists on the channel's tab, but its info names the other
+    # channel, so it is stored under that one.
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]'),"
+        " ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', true, 360)",
+        "INSERT INTO video (id, channel_id, type, title, state, upload_date) VALUES"
+        " ('own', 'UC1', 'videos', 'own', 'complete', '2026-01-02'),"
+        " ('collab', 'UC2', 'videos', 'collab', 'complete', '2026-01-01'),"
+        " ('elsewhere', 'UC2', 'videos', 'b only', 'complete', '2026-01-03')",
+        "INSERT INTO video_source (video_id, source_id) VALUES ('collab', 1)",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (1, 'archive', 'succeeded', 'collab', 1), (2, 'archive', 'succeeded', 'elsewhere', 1)",
+    )
+    with _api(settings) as client:
+        listed = client.get("/api/videos", params={"listed_by": "UC1"}).json()
+        uploaded = client.get("/api/videos", params={"channel_id": "UC1"}).json()
+        jobs = client.get("/api/jobs", params={"channel_id": "UC1"}).json()
+    assert [v["id"] for v in listed["items"]] == ["own", "collab"] and listed["total"] == 2
+    # The Videos page filter stays the uploader.
+    assert [v["id"] for v in uploaded["items"]] == ["own"]
+    assert [j["id"] for j in jobs] == [1]
+
+
+@pytest.mark.anyio
+async def test_a_failed_live_check_is_one_warning_with_the_channel_name(settings, caplog):
+    import logging
+    import urllib.error
+
+    from savetube.live import check_logged
+
+    _watch(settings)
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    def gone(channel_id):
+        raise urllib.error.HTTPError("https://www.youtube.com/feeds", 404, "Not Found", {}, None)
+
+    def broken(channel_id):
+        raise ValueError("feed parser broke")
+
+    checks = {"probe": lambda v: UPCOMING, "probe_live": _not_live, "list_streams": _no_streams}
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await check_logged(sessionmaker, NASA, fetch_feed=gone, seen={}, **checks)
+        await check_logged(sessionmaker, NASA, fetch_feed=broken, seen={}, **checks)
+    await engine.dispose()
+    expected, unexpected = [r for r in caplog.records if r.getMessage() == "live.check_failed"]
+    assert expected.levelno == logging.WARNING and expected.exc_info is None
+    assert _fields(expected) == {
+        "channel": "NASA",
+        "reason": "HTTPError: HTTP Error 404: Not Found",
+    }
+    assert unexpected.levelno == logging.ERROR and unexpected.exc_info is not None
+    assert _fields(unexpected)["channel"] == "NASA"
+
+
+def test_api_channel_counts_use_the_channel_page_rule(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]'),"
+        " ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', true, 360)",
+        "INSERT INTO video (id, channel_id, type, title, state, size_bytes) VALUES"
+        " ('own', 'UC1', 'videos', 'own', 'complete', 100),"
+        " ('collab', 'UC2', 'videos', 'collab', 'complete', 20),"
+        " ('pending', 'UC2', 'videos', 'p', 'pending', NULL),"
+        " ('elsewhere', 'UC2', 'videos', 'b only', 'complete', 3)",
+        "INSERT INTO video_source (video_id, source_id) VALUES ('collab', 1), ('pending', 1)",
+    )
+    with _api(settings) as client:
+        listed = client.get("/api/channels").json()
+        counts = {c["id"]: (c["video_count"], c["bytes"]) for c in listed}
+        patched = client.patch("/api/channels/UC1", json={"watch_lives": False}).json()
+    assert counts == {"UC1": (2, 120), "UC2": (2, 23)}
+    assert (patched["video_count"], patched["bytes"]) == (2, 120)

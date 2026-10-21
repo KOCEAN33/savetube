@@ -32,3 +32,10 @@ def test_the_password_stays_out_of_repr():
 def test_another_scheme_is_refused():
     with pytest.raises(ValueError):
         Settings(database_url="mysql://u@db/x")
+
+
+def test_log_level_defaults_to_info_and_reads_any_case():
+    assert Settings().log_level == "INFO"
+    assert Settings(log_level="debug").log_level == "DEBUG"
+    with pytest.raises(ValueError):
+        Settings(log_level="loud")

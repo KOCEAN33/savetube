@@ -32,13 +32,15 @@ export function VideosPage() {
   const q = params.get("q") ?? ""
   const type = params.get("type") ?? undefined
   const channelId = params.get("channel_id") ?? undefined
+  // From a channel page: its uploads and the videos its sources list.
+  const listedBy = params.get("listed_by") ?? undefined
   const offset = Number(params.get("offset") ?? 0)
 
   const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
   const videos = useQuery({
-    queryKey: ["videos", { q, type, channelId, offset }],
+    queryKey: ["videos", { q, type, channelId, listedBy, offset }],
     queryFn: () =>
-      api.videos({ q, type, channel_id: channelId, limit: PAGE_SIZE, offset }),
+      api.videos({ q, type, channel_id: channelId, listed_by: listedBy, limit: PAGE_SIZE, offset }),
     placeholderData: keepPreviousData,
   })
   const channelName = new Map(channels.data?.map((c) => [c.id, c.name]))
@@ -82,7 +84,10 @@ export function VideosPage() {
           ))}
         </SelectContent>
       </Select>
-      <Select value={channelId ?? ALL} onValueChange={(v) => update({ channel_id: v })}>
+      <Select
+        value={channelId ?? listedBy ?? ALL}
+        onValueChange={(v) => update({ channel_id: v, listed_by: undefined })}
+      >
         <SelectTrigger size="sm" className="w-48" aria-label="Channel">
           <SelectValue />
         </SelectTrigger>

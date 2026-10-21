@@ -1,5 +1,6 @@
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import type { UseQueryResult } from "@tanstack/react-query"
+import { ChevronRightIcon } from "lucide-react"
 
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -47,6 +48,43 @@ export function PageSection({
         {actions}
       </div>
       <div className="overflow-hidden rounded-lg border">{children}</div>
+    </section>
+  )
+}
+
+// A PageSection whose body the title folds away. The open state persists per
+// `storageKey` in localStorage, so every channel page opens the same sections.
+export function CollapsibleSection({
+  title,
+  storageKey,
+  children,
+}: {
+  title: string
+  storageKey: string
+  children: ReactNode
+}) {
+  const key = `savetube.section.${storageKey}`
+  const [open, setOpen] = useState(() => localStorage.getItem(key) === "open")
+
+  function toggle() {
+    localStorage.setItem(key, open ? "closed" : "open")
+    setOpen(!open)
+  }
+
+  return (
+    <section className="flex flex-col gap-3">
+      <button
+        type="button"
+        className="flex w-fit items-center gap-1 text-lg font-semibold hover:underline"
+        aria-expanded={open}
+        onClick={toggle}
+      >
+        <ChevronRightIcon
+          className={`size-5 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        {title}
+      </button>
+      {open && <div className="overflow-hidden rounded-lg border">{children}</div>}
     </section>
   )
 }

@@ -23,7 +23,7 @@ export function LivePage() {
   const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
   const jobs = useQuery({
     queryKey: ["jobs", "record", state],
-    queryFn: () => api.jobs({ kind: "record", state, limit: LIMIT }),
+    queryFn: () => api.jobs({ kind: "record", state: state ? [state] : undefined, limit: LIMIT }),
     refetchInterval: 15_000,
   })
   const channelName = new Map(channels.data?.map((c) => [c.id, c.name]))

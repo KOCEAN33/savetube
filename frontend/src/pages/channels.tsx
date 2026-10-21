@@ -4,6 +4,7 @@ import { PlusIcon } from "lucide-react"
 import { Link } from "react-router"
 
 import { AddChannelDialog } from "@/components/add-channel-dialog"
+import { ChannelAvatar } from "@/components/channel-avatar"
 import { Page, PageSection, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -36,13 +37,18 @@ function ChannelRow({ channel, sources }: { channel: Channel; sources: Source[] 
   return (
     <TableRow>
       <TableCell>
-        <Link
-          className="font-medium hover:underline"
-          to={`/channels/${encodeURIComponent(channel.id)}`}
-        >
-          {channel.name}
-        </Link>
-        <div className="text-xs text-muted-foreground">{channel.handle ?? channel.id}</div>
+        <div className="flex items-center gap-3">
+          <ChannelAvatar name={channel.name} url={channel.avatar_url} size="lg" />
+          <div>
+            <Link
+              className="font-medium hover:underline"
+              to={`/channels/${encodeURIComponent(channel.id)}`}
+            >
+              {channel.name}
+            </Link>
+            <div className="text-xs text-muted-foreground">{channel.handle ?? channel.id}</div>
+          </div>
+        </div>
       </TableCell>
       <TableCell>
         <div className="flex flex-wrap gap-1">

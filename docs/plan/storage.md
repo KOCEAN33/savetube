@@ -4,16 +4,19 @@
 
 | Table | Holds |
 | --- | --- |
-| `channel` | channel id, handle, display name, the directory name fixed at first add, include and exclude title words, date cutoff, format selector, use cookies, watch lives |
+| `channel` | channel id, handle, display name, avatar URL, the directory name fixed at first add, include and exclude title words, date cutoff, format selector, use cookies, watch lives |
 | `global_words` | one row: the global include and exclude title words |
 | `source` | a channel tab, a channel's playlists, or a playlist URL, enabled flag, archiving flag, poll interval, include and exclude title words, other-channel flag, parent source, last poll time and error |
 | `listing_entry` | every video a source's last listings showed: source, video id, channel, title. Title word suggestions read it |
 | `video` | video id, channel, type, title, upload date, duration, live status, availability, format ids, file paths, `size_bytes`, `completed_at`, state |
 | `video_source` | which sources reference a video, so a playlist never copies a file |
-| `job` | kind (archive, record), state, attempts, miss reason, log tail, timestamps |
+| `job` | kind (archive, record), state, attempts, miss reason, log tail, the running download's progress, timestamps |
 | `storage_sample` | hourly free and used bytes of the dataset |
 | `video.info` | the full yt-dlp info dict as JSONB |
 
+- `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- Migration `0007` adds `channel.avatar_url` and `job.progress`. An existing channel gets its avatar on the next poll of one of its tab sources.
+- `job.progress` holds the current stream of a running archive download: format, percent, downloaded and total bytes, speed and ETA. The download child sends it through a pipe at most once a second. The worker process writes the latest value to the row at most every 5 s, so the child opens no database connection.
 - Migration `0005` moves the settings onto `channel` from the rules of the channel's sources, then drops `source.rule_id` and the `rule` table. Where those rules differ, `watch_lives` and `use_cookies` are on when any was on, `date_after` takes the earliest, and `format` comes from the lowest source id.
 - The `.info.json` beside each video is the source of truth. A rescan of the tree rebuilds `video` without network calls.
 - A playlist is a relation, not a directory. A video sits once under its uploader's channel, and the UI shows the playlist view.

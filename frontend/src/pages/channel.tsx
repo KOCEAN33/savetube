@@ -3,9 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CornerDownRightIcon, ExternalLinkIcon, MoreHorizontalIcon } from "lucide-react"
 import { Link, useParams } from "react-router"
 
+import { ChannelAvatar } from "@/components/channel-avatar"
 import { CookiesField, DateCutoffField, QualityField } from "@/components/channel-fields"
-import { JobsTable } from "@/components/jobs-table"
-import { ErrorBox, Page, PageSection, QueryState } from "@/components/query-state"
+import { ChannelJobs } from "@/components/channel-jobs"
+import { ChannelVideos } from "@/components/channel-videos"
+import { CollapsibleSection, ErrorBox, Page, PageSection } from "@/components/query-state"
 import { TitlePreview, WordListEditor, WordSuggestions } from "@/components/source-words"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -654,11 +656,6 @@ export function ChannelPage() {
   const { id = "" } = useParams()
   const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
   const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 15_000 })
-  const jobs = useQuery({
-    queryKey: ["jobs", "archive", id],
-    queryFn: () => api.jobs({ kind: "archive", channel_id: id, limit: 200 }),
-    refetchInterval: 15_000,
-  })
   const channel = channels.data?.find((c) => c.id === id)
   const own = sources.data?.filter((s) => s.channel_id === id) ?? []
 
@@ -680,42 +677,46 @@ export function ChannelPage() {
   return (
     <Page>
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-baseline gap-2">
-            <h2 className="text-2xl font-semibold">{channel.name}</h2>
-            <a
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
-              href={channelBase(channel.id, own)}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {channel.handle ?? channel.id}
-              <ExternalLinkIcon className="size-3.5" />
-            </a>
+        <div className="flex items-center gap-4">
+          <ChannelAvatar name={channel.name} url={channel.avatar_url} className="size-16" />
+          <div className="flex flex-col gap-1">
+            <div className="flex items-baseline gap-2">
+              <h2 className="text-2xl font-semibold">{channel.name}</h2>
+              <a
+                className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
+                href={channelBase(channel.id, own)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {channel.handle ?? channel.id}
+                <ExternalLinkIcon className="size-3.5" />
+              </a>
+            </div>
+            <span className="font-mono text-xs text-muted-foreground">{channel.dir_name}</span>
           </div>
-          <span className="font-mono text-xs text-muted-foreground">{channel.dir_name}</span>
         </div>
         <div className="flex items-center gap-4 text-sm">
           <span>{formatCount(channel.video_count)} videos</span>
           <span>{formatBytes(channel.bytes)}</span>
           <Button variant="outline" size="sm" asChild>
-            <Link to={`/videos?channel_id=${encodeURIComponent(channel.id)}`}>Browse videos</Link>
+            <Link to={`/videos?listed_by=${encodeURIComponent(channel.id)}`}>Browse videos</Link>
           </Button>
         </div>
       </div>
-      <PageSection title="What to archive">
+      <CollapsibleSection title="What to archive" storageKey="channel.archive">
         <ArchiveSection channel={channel} sources={own} />
-      </PageSection>
-      <PageSection title="Title words">
+      </CollapsibleSection>
+      <CollapsibleSection title="Title words" storageKey="channel.words">
         <WordsSection channel={channel} sources={own} />
-      </PageSection>
-      <PageSection title="Download settings">
+      </CollapsibleSection>
+      <CollapsibleSection title="Download settings" storageKey="channel.settings">
         <SettingsSection key={channel.id} channel={channel} />
+      </CollapsibleSection>
+      <PageSection title="Downloads">
+        <ChannelJobs channelId={channel.id} />
       </PageSection>
-      <PageSection title="Archive jobs">
-        <QueryState query={jobs}>
-          {(rows) => <JobsTable jobs={rows} empty="No archive job yet." />}
-        </QueryState>
+      <PageSection title="Stored videos">
+        <ChannelVideos channelId={channel.id} />
       </PageSection>
     </Page>
   )
