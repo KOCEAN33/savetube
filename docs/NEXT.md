@@ -16,7 +16,6 @@ Get production downloading again after YouTube's bot check blocked it, ship the 
 - Resume was shown locally: SIGTERM at 351,516 bytes, the next worker resumed from there with attempts unchanged (`/tmp/savetube-shots/resume-log.txt`, gone after reboot). A resumed download reaching `download.verified` was not shown, because the bot check started. ffprobe and ffmpeg checks have never run on a real file: this Mac has neither.
 - Released this session: `v0.3.0` per-channel settings and the add-channel modal, `v0.3.1` scheduler dispatch (no procrastinate row per waiting job) and members-only skip without cookies, `v0.4.0` logfmt logging, channel avatar, download progress, channel videos, `v0.5.0` playlist videos from other channels (checkbox, default on for new channels) and `tracked` channels.
 - CULUA is the one production channel: Videos and Live tabs, 5 playlists, words `歌枠`, `歌ってみた`, `Official Music Video`, cookies off. Its 5 playlists still have other-channels off unless the user turned the checkbox on.
-- Chart pin rule: a release moves only `image.tag`. When a release changes `charts/`, raise `chartRevision` in homelab-workloads after the new image runs. `v0.5.0` to the next release changes the chart.
 - Every deploy so far killed running downloads. `v0.5.0` and older count them as failed attempts. The resume release fixes that from its own deploy on, but the deploy that ships it still kills the old workers' downloads the old way.
 - Argo CD webhooks: savetube, homelab-workloads and homelab-platform push to `https://argocd.hiriri.com/api/webhook`. The secret is field `github-secret` of the 1Password item `argocd-webhook` in the Homelab vault.
 - Deploy pipeline, Zitadel, Postgres, storage: unchanged, see `docs/plan/operations.md` and homelab-workloads `savetube/`.
@@ -52,7 +51,7 @@ Get production downloading again after YouTube's bot check blocked it, ship the 
    2. Treat "Sign in to confirm you're not a bot" (and similar blocks) as not an attempt, and pause all dispatch with a growing backoff while it lasts. Log it as `dispatch.blocked`.
    3. Give back the attempts the bot check used: failed archive jobs whose `log_tail` holds the bot text become `interrupted` (a migration or a one-off script the user runs).
    4. Pick a mitigation with the user. The open question above lists them.
-2. Release `develop` (resume, integrity, job paging): PR to main, merge, watch the rollout and migration `0008`, then raise `chartRevision` to the new tag. Check ffprobe and ffmpeg run on a real file in the worker pod, and that a later deploy resumes a running download.
+2. Release `develop` (resume, integrity, job paging): PR to main, merge, watch the rollout and migration `0008`. Check ffprobe and ffmpeg run on a real file in the worker pod, and that a later deploy resumes a running download.
 3. In-browser playback, which the user approved: mount `tank/youtube` read-only in the web pod, serve media with HTTP Range, add a `<video>` element on the video page. Chrome and Firefox play the stored mkv with VP9 or AV1 and Opus. Safari needs mp4 or WebM, so store WebM when the codecs allow or remux on the fly.
 4. Follow-ups:
    - The add-channel step 4 summary omits the other-channels choice.
