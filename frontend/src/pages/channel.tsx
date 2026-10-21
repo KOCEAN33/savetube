@@ -265,8 +265,10 @@ function ArchiveSection({ channel, sources }: { channel: Channel; sources: Sourc
   const playlistSources = parent ? [parent, ...picks] : picks
   const otherOn = playlistSources.filter((s) => s.other_channels).length
   const otherMixed = otherOn > 0 && otherOn < playlistSources.length
-  // A new playlist source follows the current value, and starts on like the add-channel flow.
-  const newOther = otherOn > 0 || playlistSources.length === 0
+  // Before the first playlist source the checkbox holds the choice for it, on
+  // like the add-channel flow. After that a new playlist source follows the current value.
+  const [firstOther, setFirstOther] = useState(true)
+  const newOther = playlistSources.length === 0 ? firstOther : otherOn > 0
 
   const create = useMutation({
     mutationFn: (body: SourceIn) => mutations.createSources(body),
@@ -432,25 +434,36 @@ function ArchiveSection({ channel, sources }: { channel: Channel; sources: Sourc
           {!parent && picks.length === 0 && (
             <p className="text-xs text-muted-foreground">No playlist is archived.</p>
           )}
-          {playlistSources.length > 0 && (
-            <div className="flex flex-col gap-1 pt-2">
-              <Label className="font-normal">
+          <div className="flex flex-col gap-1 pt-2">
+            <Label className="font-normal">
+              {playlistSources.length === 0 ? (
+                <Checkbox
+                  disabled={busy}
+                  checked={firstOther}
+                  onCheckedChange={(on) => setFirstOther(on === true)}
+                />
+              ) : (
                 <Checkbox
                   disabled={busy}
                   checked={otherMixed ? "indeterminate" : otherOn > 0}
                   onCheckedChange={(on) => setOther.mutate(on === true)}
                 />
-                {OTHER_CHANNELS_LABEL}
-              </Label>
-              {otherMixed && (
-                <p className="text-xs text-muted-foreground">
-                  Mixed: {otherOn} of {playlistSources.length} playlist sources have it on.
-                  Changing it sets every one.
-                </p>
               )}
-              <p className="text-xs text-muted-foreground">{OTHER_CHANNELS_HINT}</p>
-            </div>
-          )}
+              {OTHER_CHANNELS_LABEL}
+            </Label>
+            {playlistSources.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                Applies to the playlists you add with the buttons above.
+              </p>
+            )}
+            {otherMixed && (
+              <p className="text-xs text-muted-foreground">
+                Mixed: {otherOn} of {playlistSources.length} playlist sources have it on.
+                Changing it sets every one.
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">{OTHER_CHANNELS_HINT}</p>
+          </div>
         </fieldset>
       </div>
       <div className="flex flex-col gap-2">

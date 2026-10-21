@@ -7,16 +7,17 @@
 - Sidebar: Dashboard, Channels, Live, Settings, Videos. Videos stays as built and gets its own review later.
 - Live lists record jobs: detected, upcoming and recorded streams. Archive download jobs show on their channel's page.
 - Settings holds the download limits, the general cookie profile, and the global title words. The profile select offers "None (cookie-free)" and each present profile from `GET /api/cookie-profiles`.
-- The site header holds the pause switch for every archive download (archive.md, Pausing downloads), on every page. While paused it shows a "Downloads paused" badge and a Resume button. "Pause downloads" opens a confirmation modal first, because a pause stops the running downloads. Resume applies at once. Settings shows the same switch above the download limits.
+- The site header holds the pause switch for every archive download (archive.md, Pausing downloads), on every page. While paused it shows a "Downloads paused" badge and a Resume button. "Pause downloads" opens a confirmation modal first, because a pause stops the running downloads. Resume applies at once. The switch refetches the flag every 15 s, so a change from another tab shows. Settings shows the same switch above the download limits.
 - Every create and edit form opens in a large modal in the middle of the screen, never a side sheet.
 
 ## Dashboard
 
 - A "Downloads" card at the top shows archive downloads across every channel. Production holds many channels, so one channel's page cannot show them all.
-- The card's header counts the running and the queued jobs. Each running job shows its uploader channel, the video title linked to the video page, and the progress the channel page shows.
+- The card's header counts the running and the queued jobs from `GET /api/jobs/counts`. Each running job shows its uploader channel, the video title linked to the video page, and the progress the channel page shows.
 - "Recently failed and interrupted" lists the latest 10 `failed` and `interrupted` archive runs, and "Show more" adds 10. Each shows the channel, the title, the finish time and the job's `reason`. Opening the reason shows the full `log_tail`.
 - The card refetches every 3 s while a download runs, and every 15 s otherwise.
 - The statistics cards, the chart and the per-channel table follow the card.
+- The per-channel table lists tracked channels only and counts a channel's videos by the channel list's rule (Channel page). A video two tracked channels claim counts under both, so the shares can sum past 100%.
 
 ## Adding a channel
 
@@ -25,7 +26,7 @@ One modal takes a channel from URL to downloading. No setting needs to exist fir
 1. The user pastes a channel URL. A first scan lists the first 30 entries of the Videos, Shorts and Live tabs and the channel's playlists. It does not list the whole channel.
 2. The user picks what to archive: each tab, all or some playlists, and whether to record lives. With playlists chosen, the checkbox "Also download videos other channels uploaded to these playlists" sets `other_channels` on the playlist sources. It starts checked.
 3. The user adds include and exclude title words. The scanned titles show which ones the words keep and which they filter out, updated as the words change. Word suggestions come from the scanned titles.
-4. The user sets the date cutoff and quality, and saves. Saving creates the channel and its sources with `archiving` on, so downloads start on the next scheduler tick.
+4. The user sets the date cutoff and quality, and saves. The summary lists the choices, and with playlists chosen it states whether videos other channels uploaded download. Saving creates the channel and its sources with `archiving` on, so downloads start on the next scheduler tick.
 
 The channel page edits the same settings later: tabs, playlists, live recording, title words, date cutoff, quality, poll interval, and pausing downloads (`archiving`).
 
@@ -35,7 +36,8 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 - The channel list, the channel page header and the scan step of the add-channel modal show the channel's avatar. The browser loads it from YouTube's image host, and the first letter of the name stands in until it loads or while no avatar is stored.
 - "Download settings" shows each cookie profile's membership result for the channel and its check time, read-only. A membership comes only from the automatic check.
 - "What to archive", "Title words" and "Download settings" fold under their title. Each starts folded, and the browser keeps each section's open state in `localStorage`, shared by every channel page.
-- The Playlists area of "What to archive" shows the `other_channels` checkbox while the channel has a playlist source. It reads every top-level `playlist` and `playlists` source. When their values differ, it shows as mixed with a count, and a change sets every one. A `playlists` parent copies the value to its children. A playlist source added from the channel page takes the current value, and on when the channel has no playlist source yet.
+- The Playlists area of "What to archive" always shows the `other_channels` checkbox. While the channel has a playlist source, it reads every top-level `playlist` and `playlists` source. When their values differ, it shows as mixed with a count, and a change sets every one. A `playlists` parent copies the value to its children. A playlist source added from the channel page takes the current value, and a mixed value counts as on.
+- While the channel has no playlist source, the checkbox holds the value for the first one and starts checked. "Track all playlists" and "Pick playlists" create their sources with it. The value lives in the page, so a reload resets it to checked.
 - Under both checkboxes, a line states that a video downloads once, sits under its uploader's channel folder, and shows on this channel's page.
 - "Downloads" shows the running archive download first: its title and the current stream's percent, downloaded and total bytes, speed and ETA. The queued jobs follow, oldest first, which is the order the dispatcher takes them. The latest succeeded, failed, cancelled and interrupted jobs come last, and a failed or interrupted row shows its `reason`, with the full `log_tail` on hover. The queued and finished lists each show 10 jobs, and "Show more" adds 10.
 - The downloads refetch every 3 s while a download runs, and every 15 s otherwise. The worker writes progress every 5 s, so a faster refetch shows nothing new.
@@ -51,6 +53,7 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 | `POST /api/title-preview` | `{channel_id?, titles, include_words, exclude_words}` | each title with `kept`, matched with the stored global lists and, when `channel_id` names a stored channel, its lists merged in |
 | `POST /api/channels` | the scan's channel URL, `channel_id`, `handle`, `name` and `avatar_url`, chosen tabs, chosen playlists or all playlists, `other_channels` (default true, applied to playlist sources only), `watch_lives`, words, `date_after`, `format` | the channel with its sources |
 | `GET /api/jobs` | `kind`, `state` (repeat it for several states), `channel_id`, `limit` | jobs, newest first. `channel_id` matches the jobs of videos the channel uploaded or its sources list. Each job carries the video's `title`, its uploader's `channel_id` and `channel_name`, `log_tail`, and `reason`. A running download carries `progress` `{format, pct, done, total, speed, eta}`, and `pct` is null without a total |
+| `GET /api/jobs/counts` | `kind`, `channel_id` | `{state: count}` with every job state, 0 when no job holds it. `channel_id` matches as in `GET /api/jobs` |
 | `GET /api/videos` | `channel_id` (the uploader), `listed_by` (the uploader or a channel whose sources list the video), `type`, `state`, `q`, `limit`, `offset` | `{total, items}`, newest upload first |
 
 ## Statistics
@@ -60,7 +63,7 @@ The dashboard reads Postgres. No second metrics store backs it.
 | Widget | Source |
 | --- | --- |
 | Total stored size, video count, hours archived | `sum(size_bytes)`, `count(*)`, `sum(duration)` over `video` |
-| Size and count by channel and by type | the same, grouped by `channel_id`, `type` |
+| Size and count by channel and by type | the same, grouped by tracked channel under the channel list's rule, and by `type` |
 | Bytes added per day or week | `video.completed_at` bucketed with `date_trunc` |
 | Live recordings: recorded, failed, missed | `job` where kind is record, grouped by state |
 | Queue: pending, running, failed | procrastinate's job table |
