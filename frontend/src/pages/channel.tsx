@@ -47,7 +47,12 @@ import {
   type SourceIn,
   type TitleWords,
 } from "@/lib/api"
-import { channelBase, VIDEO_TABS } from "@/lib/channel"
+import {
+  channelBase,
+  OTHER_CHANNELS_HINT,
+  OTHER_CHANNELS_LABEL,
+  VIDEO_TABS,
+} from "@/lib/channel"
 import { formatBytes, formatCount, formatDateTime } from "@/lib/format"
 import { EXCLUDE_HINT, INCLUDE_HINT, addWord, type WordList } from "@/lib/words"
 
@@ -157,12 +162,14 @@ function PlaylistPickerDialog({
   onOpenChange,
   archiving,
   interval,
+  otherChannels,
 }: {
   base: string
   open: boolean
   onOpenChange: (open: boolean) => void
   archiving: boolean
   interval: number
+  otherChannels: boolean
 }) {
   const invalidate = useInvalidate()
   const [picked, setPicked] = useState<string[]>([])
@@ -177,7 +184,12 @@ function PlaylistPickerDialog({
     mutationFn: async () => {
       // One call per playlist URL, as the API takes one URL per request.
       for (const url of picked)
-        await mutations.createSources({ url, archiving, poll_interval_minutes: interval })
+        await mutations.createSources({
+          url,
+          archiving,
+          poll_interval_minutes: interval,
+          other_channels: otherChannels,
+        })
     },
     onSettled: invalidate,
     onSuccess: () => {
@@ -248,6 +260,12 @@ function ArchiveSection({ channel, sources }: { channel: Channel; sources: Sourc
   const parent = top.find((s) => s.kind === "playlists")
   const picks = top.filter((s) => s.kind === "playlist")
   const children = parent ? sources.filter((s) => s.parent_id === parent.id) : []
+  // A `playlists` parent copies the flag to its children, so only top-level sources are set.
+  const playlistSources = parent ? [parent, ...picks] : picks
+  const otherOn = playlistSources.filter((s) => s.other_channels).length
+  const otherMixed = otherOn > 0 && otherOn < playlistSources.length
+  // A new playlist source follows the current value, and starts on like the add-channel flow.
+  const newOther = otherOn > 0 || playlistSources.length === 0
 
   const create = useMutation({
     mutationFn: (body: SourceIn) => mutations.createSources(body),
@@ -265,13 +283,19 @@ function ArchiveSection({ channel, sources }: { channel: Channel; sources: Sourc
     },
     onSettled: invalidate,
   })
+  const setOther = useMutation({
+    mutationFn: async (other_channels: boolean) => {
+      for (const s of playlistSources) await mutations.updateSource(s.id, { other_channels })
+    },
+    onSettled: invalidate,
+  })
   const watch = useMutation({
     mutationFn: (watch_lives: boolean) => mutations.updateChannel(channel.id, { watch_lives }),
     onSettled: invalidate,
   })
-  const busy = create.isPending || toggle.isPending || setAll.isPending
+  const busy = create.isPending || toggle.isPending || setAll.isPending || setOther.isPending
   const enabledTabs = VIDEO_TABS.filter(({ tab }) => tabSource(tab)?.enabled)
-  const error = create.error ?? toggle.error ?? setAll.error ?? watch.error
+  const error = create.error ?? toggle.error ?? setAll.error ?? setOther.error ?? watch.error
 
   function setTab(tab: string, on: boolean) {
     const existing = tabSource(tab)
@@ -382,6 +406,7 @@ function ArchiveSection({ channel, sources }: { channel: Channel; sources: Sourc
                     tabs: ["playlists"],
                     archiving: !paused,
                     poll_interval_minutes: interval,
+                    other_channels: newOther,
                   })
                 }
               >
@@ -406,6 +431,25 @@ function ArchiveSection({ channel, sources }: { channel: Channel; sources: Sourc
           {!parent && picks.length === 0 && (
             <p className="text-xs text-muted-foreground">No playlist is archived.</p>
           )}
+          {playlistSources.length > 0 && (
+            <div className="flex flex-col gap-1 pt-2">
+              <Label className="font-normal">
+                <Checkbox
+                  disabled={busy}
+                  checked={otherMixed ? "indeterminate" : otherOn > 0}
+                  onCheckedChange={(on) => setOther.mutate(on === true)}
+                />
+                {OTHER_CHANNELS_LABEL}
+              </Label>
+              {otherMixed && (
+                <p className="text-xs text-muted-foreground">
+                  Mixed: {otherOn} of {playlistSources.length} playlist sources have it on.
+                  Changing it sets every one.
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">{OTHER_CHANNELS_HINT}</p>
+            </div>
+          )}
         </fieldset>
       </div>
       <div className="flex flex-col gap-2">
@@ -425,6 +469,7 @@ function ArchiveSection({ channel, sources }: { channel: Channel; sources: Sourc
         onOpenChange={setPicking}
         archiving={!paused}
         interval={interval}
+        otherChannels={newOther}
       />
     </div>
   )

@@ -23,6 +23,8 @@
 - Each playlist stays its own source, so `video_source` keeps playlist membership for the playlist view.
 - `source.title` holds the playlist's title for a `playlist` source. The parent poll sets it on create and refreshes it on every poll, and a playlist's own poll refreshes it from its listing. `GET /api/sources` carries `title`, null for a tab.
 - `source.other_channels`, default off, decides whether a playlist source archives videos uploaded by other channels. Off keeps only entries whose `channel_id` equals the source's channel. A child always keeps its parent's channel. A playlist source without a parent takes its channel from the listing's `channel_id`. With `other_channels` off and no channel, the poll queues nothing and sets `last_error`.
+- `POST /api/channels` sets `other_channels` on its playlist and `playlists` sources, on by default. Its tab sources always keep it off. `POST /api/sources` defaults it to off.
+- A video another channel uploaded is stored once, under its uploader's channel directory. `store()` creates the uploader's `channel` row and directory on its first download. The source's channel page lists the video through its `video_source` link.
 
 ## Title words
 
@@ -51,7 +53,7 @@
 | `POST /api/sources/{id}/title-preview` | `{include_words, exclude_words}`, the source's own lists being edited | `{total, kept, titles: [{video_id, title, kept}]}` from the source's `listing_entry` rows, matched with the stored global and channel lists merged in |
 | `GET /api/words` | | the global `{include_words, exclude_words}` |
 | `PUT /api/words` | `{include_words, exclude_words}` | the global lists |
-| `GET /api/channels` | | each channel also carries `include_words`, `exclude_words`, `date_after`, `format`, `use_cookies`, `watch_lives` |
+| `GET /api/channels` | | every stored channel, uploader-only ones included. Each also carries `include_words`, `exclude_words`, `date_after`, `format`, `use_cookies`, `watch_lives`, and `tracked`, true when at least one source names the channel |
 | `PATCH /api/channels/{id}` | `{include_words?, exclude_words?, date_after?, format?, use_cookies?, watch_lives?}` | the channel |
 
 - Word lists are trimmed, empty strings dropped, and duplicates removed after casefolding, keeping the first form.

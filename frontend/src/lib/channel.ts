@@ -8,6 +8,12 @@ export const VIDEO_TABS: { tab: VideoTab; label: string }[] = [
   { tab: "streams", label: "Live (past streams)" },
 ]
 
+export const OTHER_CHANNELS_LABEL =
+  "Also download videos other channels uploaded to these playlists"
+
+export const OTHER_CHANNELS_HINT =
+  "A video downloads once. It is stored under its uploader's channel folder and shows on this channel's page."
+
 export const JOB_STATES: JobState[] = [
   "queued",
   "running",

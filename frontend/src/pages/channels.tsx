@@ -99,8 +99,7 @@ export function ChannelsPage() {
       >
         <QueryState query={channels}>
           {(rows) => {
-            // A channel known only as another playlist's uploader has no source.
-            const added = rows.filter((c) => byChannel.has(c.id))
+            const added = rows.filter((c) => c.tracked)
             return (
               <Table>
                 <TableHeader className="bg-muted">

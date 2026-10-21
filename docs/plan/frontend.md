@@ -14,7 +14,7 @@
 One modal takes a channel from URL to downloading. No setting needs to exist first.
 
 1. The user pastes a channel URL. A first scan lists the first 30 entries of the Videos, Shorts and Live tabs and the channel's playlists. It does not list the whole channel.
-2. The user picks what to archive: each tab, all or some playlists, and whether to record lives.
+2. The user picks what to archive: each tab, all or some playlists, and whether to record lives. With playlists chosen, the checkbox "Also download videos other channels uploaded to these playlists" sets `other_channels` on the playlist sources. It starts checked.
 3. The user adds include and exclude title words. The scanned titles show which ones the words keep and which they filter out, updated as the words change. Word suggestions come from the scanned titles.
 4. The user sets the date cutoff, quality and cookie use, and saves. Saving creates the channel and its sources with `archiving` on, so downloads start on the next scheduler tick.
 
@@ -22,8 +22,11 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 
 ## Channel page
 
+- The Channels page lists only channels with `tracked` true, which `GET /api/channels` sets when at least one source names the channel. A channel stored only as the uploader of another channel's playlist video stays in `channel`, and the video pages and the Videos page channel filter still reach it.
 - The channel list, the channel page header and the scan step of the add-channel modal show the channel's avatar. The browser loads it from YouTube's image host, and the first letter of the name stands in until it loads or while no avatar is stored.
 - "What to archive", "Title words" and "Download settings" fold under their title. Each starts folded, and the browser keeps each section's open state in `localStorage`, shared by every channel page.
+- The Playlists area of "What to archive" shows the `other_channels` checkbox while the channel has a playlist source. It reads every top-level `playlist` and `playlists` source. When their values differ, it shows as mixed with a count, and a change sets every one. A `playlists` parent copies the value to its children. A playlist source added from the channel page takes the current value, and on when the channel has no playlist source yet.
+- Under both checkboxes, a line states that a video downloads once, sits under its uploader's channel folder, and shows on this channel's page.
 - "Downloads" shows the running archive download first: its title and the current stream's percent, downloaded and total bytes, speed and ETA. The queued jobs follow, oldest first, which is the order the dispatcher takes them. The 20 latest succeeded, failed and cancelled jobs come last.
 - The downloads refetch every 3 s while a download runs, and every 15 s otherwise. The worker writes progress every 5 s, so a faster refetch shows nothing new.
 - A download shows no progress while yt-dlp fetches the metadata, subtitles and chat replay, because the progress counts the media only.
@@ -36,7 +39,7 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 | --- | --- | --- |
 | `POST /api/channel-scan` | `{url}`, a channel URL | channel id, handle, name and `avatar_url`, the first-page entries `{video_id, title}` of each tab, and the playlists `{id, title, url}`. Listed live through yt-dlp, 502 on a yt-dlp error, 504 after 120 s |
 | `POST /api/title-preview` | `{channel_id?, titles, include_words, exclude_words}` | each title with `kept`, matched with the stored global lists and, when `channel_id` names a stored channel, its lists merged in |
-| `POST /api/channels` | the scan's channel URL, `channel_id`, `handle`, `name` and `avatar_url`, chosen tabs, chosen playlists or all playlists, `watch_lives`, words, `date_after`, `format`, `use_cookies` | the channel with its sources |
+| `POST /api/channels` | the scan's channel URL, `channel_id`, `handle`, `name` and `avatar_url`, chosen tabs, chosen playlists or all playlists, `other_channels` (default true, applied to playlist sources only), `watch_lives`, words, `date_after`, `format`, `use_cookies` | the channel with its sources |
 | `GET /api/jobs` | `kind`, `state` (repeat it for several states), `channel_id`, `limit` | jobs, newest first. `channel_id` matches the jobs of videos the channel uploaded or its sources list. A running download carries `progress` `{format, pct, done, total, speed, eta}`, and `pct` is null without a total |
 | `GET /api/videos` | `channel_id` (the uploader), `listed_by` (the uploader or a channel whose sources list the video), `type`, `state`, `q`, `limit`, `offset` | `{total, items}`, newest upload first |
 
