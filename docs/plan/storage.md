@@ -22,6 +22,7 @@
 - Migration `0008` adds the job state `interrupted` and `video.resume_format`, `verified_at` and `verified_checks`. Its downgrade turns every `interrupted` job into `cancelled`, because the old code counts a failed job as an attempt.
 - Migration `0007` adds `channel.avatar_url` and `job.progress`. An existing channel gets its avatar on the next poll of one of its tab sources.
 - `job.progress` holds the current stream of a running archive download: format, percent, downloaded and total bytes, speed and ETA. The download child sends it through a pipe at most once a second. The worker process writes the latest value to the row at most every 5 s, so the child opens no database connection.
+- The scheduler's hourly database cleanup clears `job.progress` on every job that is not `running`, deletes finished procrastinate jobs and their events after 30 days, and deletes the `interrupted` archive rows of a video 30 days after its latest succeeded archive job (archive.md, Resuming and verifying downloads).
 - Migration `0005` moves the settings onto `channel` from the rules of the channel's sources, then drops `source.rule_id` and the `rule` table. Where those rules differ, `watch_lives` and `use_cookies` are on when any was on, `date_after` takes the earliest, and `format` comes from the lowest source id.
 - The `.info.json` beside each video is the source of truth. A rescan of the tree rebuilds `video` without network calls.
 - A playlist is a relation, not a directory. A video sits once under its uploader's channel, and the UI shows the playlist view.

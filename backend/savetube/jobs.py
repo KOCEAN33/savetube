@@ -994,6 +994,7 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
         # A recording works in `.incoming/<job id>/`.
         wanted |= {str(i) for i in await session.scalars(select(Job.id).where(active))}
     cutoff = time.time() - ORPHAN_DAYS * 86400
+    deleted = []
     for d in root.iterdir():
         if not d.is_dir() or d.name in wanted:
             continue
@@ -1002,6 +1003,7 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
             continue
         size = dir_size(d)
         shutil.rmtree(d, ignore_errors=True)
+        deleted.append(d.name)
         emit(
             log,
             logging.INFO,
@@ -1010,3 +1012,10 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
             size=human_bytes(size),
             idle=human_duration(time.time() - newest),
         )
+    if deleted:
+        # The pin names formats of parts that are now gone.
+        async with sessionmaker() as session:
+            await session.execute(
+                update(Video).where(Video.id.in_(deleted)).values(resume_format=None)
+            )
+            await session.commit()

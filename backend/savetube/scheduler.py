@@ -16,6 +16,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 
 from savetube import cookies
+from savetube.cleanup import clean_database
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
@@ -42,7 +43,7 @@ TICK_SECONDS = 60
 DISPATCH_SECONDS = 10
 SAMPLE_EVERY = timedelta(hours=1)
 SUMMARY_SECONDS = 600
-# Partial directories age in days, so an hourly look is enough.
+# Partial directories and finished rows age in days, so an hourly look is enough.
 CLEANUP_SECONDS = 3600
 
 
@@ -262,6 +263,13 @@ async def run(settings: Settings) -> None:
                 _every(
                     "incoming cleanup",
                     lambda: clean_incoming(default_sessionmaker(), settings),
+                    CLEANUP_SECONDS,
+                )
+            )
+            tg.create_task(
+                _every(
+                    "database cleanup",
+                    lambda: clean_database(default_sessionmaker()),
                     CLEANUP_SECONDS,
                 )
             )
