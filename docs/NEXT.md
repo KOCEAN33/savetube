@@ -2,21 +2,29 @@
 
 ## Goal
 
-Get production downloading again after YouTube's bot check blocked it, ship the resume and integrity work already on `develop`, then build in-browser playback.
+Get production downloading again after YouTube's bot check blocked it, then build in-browser playback.
 
 ## Current progress
 
-- **Production is blocked by YouTube's bot check since 2026-10-21 13:44 KST.** Archive jobs fail in 2-3 s with "Sign in to confirm you're not a bot" (111 log lines in 30 min). In those 30 min, 20 jobs succeeded and 113 failed. The same check hit local e2e runs from this Mac at about 13:40, so the home egress IP is the likely target. Likely triggers: max_concurrent 5 in production plus local e2e traffic. Unverified.
-- Each bot-check failure counts as an attempt (`MAX_ARCHIVE_ATTEMPTS` 3). At the last check, 92 videos had 1 failed attempt and 25 had 2. A third failure gives a video up for good.
-- The user was asked to close the download window in Settings (for example 03:00-03:01) to stop dispatch. Whether they did is unchecked.
-- Running in `savetube-prod`: `v0.5.0`. Migrations `0001`-`0007` applied. Chart pinned at `chartRevision: v0.4.0` in homelab-workloads `savetube/appset.yaml`.
-- `develop` is 2 commits ahead of main and pushed, not released:
-  - `258eaf7` resume and integrity: interrupted downloads become `interrupted` rows that attempt counting ignores, partial files stay in `.incoming/<video id>/` and resume with the pinned format, SIGTERM marks jobs interrupted, integrity checks (exact filesize, ffprobe duration and streams, `ffmpeg -c copy -f null` after a resume). Migration `0008`. Chart change: worker `terminationGracePeriodSeconds: 30`. Design in `docs/plan/archive.md` "Resuming and verifying downloads".
-  - `8d67370` the channel page's queued and finished job lists show 10 and grow by 10.
-- Resume was shown locally: SIGTERM at 351,516 bytes, the next worker resumed from there with attempts unchanged (`/tmp/savetube-shots/resume-log.txt`, gone after reboot). A resumed download reaching `download.verified` was not shown, because the bot check started. ffprobe and ffmpeg checks have never run on a real file: this Mac has neither.
-- Released this session: `v0.3.0` per-channel settings and the add-channel modal, `v0.3.1` scheduler dispatch (no procrastinate row per waiting job) and members-only skip without cookies, `v0.4.0` logfmt logging, channel avatar, download progress, channel videos, `v0.5.0` playlist videos from other channels (checkbox, default on for new channels) and `tracked` channels.
-- CULUA is the one production channel: Videos and Live tabs, 5 playlists, words `歌枠`, `歌ってみた`, `Official Music Video`, cookies off. Its 5 playlists still have other-channels off unless the user turned the checkbox on.
-- Every deploy so far killed running downloads. `v0.5.0` and older count them as failed attempts. The resume release fixes that from its own deploy on, but the deploy that ships it still kills the old workers' downloads the old way.
+- **No archive download has succeeded in production since 2026-10-21 13:48 KST.** YouTube's bot check ("Sign in to confirm you're not a bot") started failing jobs at 13:44. The same check hit local e2e runs from this Mac at about 13:40, so the home egress IP is the likely target. Unverified.
+- Until about 18:40 KST the channel-level pause (source `archiving` off) held CULUA's downloads. The user then turned it off, picked `burner` as the general cookie profile, and set `max_concurrent` 1. At 18:42 one archive job ran and 115 waited.
+- Archive jobs at 18:38 KST:
+
+  | state | count |
+  |---|---|
+  | succeeded | 128 |
+  | interrupted | 111 |
+  | failed | 31 |
+  | cancelled | 14 |
+
+- Running in `savetube-prod`: `v0.6.1`, chart `v0.6.1`. Migrations `0001`-`0010` applied. The deploy job moves `image.tag` and `chartRevision` together (`docs/plan/operations.md` Versioning).
+- Released `v0.6.0`:
+  - Resume and integrity: interrupted downloads keep their parts and resume, SIGTERM marks jobs interrupted, files pass size, ffprobe and `ffmpeg -c copy -f null` checks. Migration `0008`. Design in `docs/plan/archive.md` "Resuming and verifying downloads".
+  - YouTube-block pause: a bot check or HTTP 429 makes the job interrupted with no attempt used, and pauses all archive dispatch for 30 min, doubling to 12 h. Migration `0009` gave back the attempts earlier bot-check failures used.
+  - Cookie profiles: each `<name>.txt` key of Secret `savetube-cookies` is a profile. A general profile in Settings serves polls and non-members downloads, and members-only content uses a profile confirmed as a member. Migration `0010` dropped `channel.use_cookies`.
+  - Channel page job lists show 10 and grow by 10.
+- Resume has not run on a real production download, and ffprobe and ffmpeg checks have never run on a real file.
+- CULUA is the one production channel: Videos and Live tabs, 5 playlists, words `歌枠`, `歌ってみた`, `Official Music Video`. Its 5 playlists still have other-channels off unless the user turned the checkbox on.
 - Argo CD webhooks: savetube, homelab-workloads and homelab-platform push to `https://argocd.hiriri.com/api/webhook`. The secret is field `github-secret` of the 1Password item `argocd-webhook` in the Homelab vault.
 - Deploy pipeline, Zitadel, Postgres, storage: unchanged, see `docs/plan/operations.md` and homelab-workloads `savetube/`.
 - The user's design decisions are rules in `docs/plan/`. This session's: no separate rule concept, settings live on the channel. One modal adds a channel. Sidebar Dashboard, Channels, Live, Settings, Videos. Centered modals, never side sheets. Playlist videos from other channels download once under the uploader's folder.
@@ -38,7 +46,7 @@ Get production downloading again after YouTube's bot check blocked it, ship the 
 
 ## Open questions
 
-- Which mitigation clears the bot check: cookies from a separate account, the bgutil PO token (does a token reach a request at all?), `curl-cffi` impersonation, lower concurrency with `-t sleep` intervals, or waiting it out? `docs/plan/background.md` notes the ban risk for a logged-in account.
+- Which mitigation clears the bot check if `burner` does not: the bgutil PO token (does a token reach a request at all?), `curl-cffi` impersonation, lower concurrency with `-t sleep` intervals, or waiting it out? `docs/plan/background.md` notes the ban risk for a logged-in account.
 - An intermittent `PytestUnraisableExceptionWarning` (an asyncio server transport collected late, probably the health server in a test) shows in about 1 of 6 runs.
 - Chat replay downloads again on every resume.
 - If procrastinate marks a live worker stalled, two downloads can share `.incoming/<video id>/`.
@@ -47,19 +55,20 @@ Get production downloading again after YouTube's bot check blocked it, ship the 
 ## Next steps
 
 1. Bot check, before anything else:
-   1. Read production logs and the DB to confirm downloads stopped and whether the bot check still answers.
-   2. Treat "Sign in to confirm you're not a bot" (and similar blocks) as not an attempt, and pause all dispatch with a growing backoff while it lasts. Log it as `dispatch.blocked`.
-   3. Give back the attempts the bot check used: failed archive jobs whose `log_tail` holds the bot text become `interrupted` (a migration or a one-off script the user runs).
-   4. Pick a mitigation with the user. The open question above lists them.
-2. Release `develop` (resume, integrity, job paging): PR to main, merge, watch the rollout and migration `0008`. Check ffprobe and ffmpeg run on a real file in the worker pod, and that a later deploy resumes a running download.
-3. In-browser playback, which the user approved: mount `tank/youtube` read-only in the web pod, serve media with HTTP Range, add a `<video>` element on the video page. Chrome and Firefox play the stored mkv with VP9 or AV1 and Opus. Safari needs mp4 or WebM, so store WebM when the codecs allow or remux on the fly.
-4. Follow-ups:
+   1. Check whether downloads through `burner` at concurrency 1 pass the bot check, and whether a block logs `dispatch.blocked` and pauses dispatch.
+   2. Pick a further mitigation with the user if the block returns. The open question above lists them.
+2. Downloads control and status, which the user asked for. Production will hold many channels, so one channel's page is the wrong place for either:
+   - A global pause in the header or the sidebar. Today the only pause is per channel (source `archiving`, `frontend/src/pages/channel.tsx`). Ask the user whether the channel-level pause stays, and whether a global pause also stops running downloads or only new dispatch.
+   - The dashboard shows what downloads now: the channel and the video of each running job, with its progress.
+3. On the first real downloads, check that ffprobe and ffmpeg run in the worker pod, and that a later deploy resumes a running download.
+4. In-browser playback, which the user approved: mount `tank/youtube` read-only in the web pod, serve media with HTTP Range, add a `<video>` element on the video page. Chrome and Firefox play the stored mkv with VP9 or AV1 and Opus. Safari needs mp4 or WebM, so store WebM when the codecs allow or remux on the fly.
+5. Follow-ups:
    - The add-channel step 4 summary omits the other-channels choice.
    - The channel page has no way to set other-channels before a playlist exists.
    - `JobOut` omits `log_tail`, so interrupted and failed reasons show only in the database.
    - The dashboard's per-channel statistics count by uploader and include uploader-only channels.
    - Narrowing words does not cancel a queued job whose video another source also lists.
-5. Review live recording with the user before building the recorder path.
+6. Review live recording with the user before building the recorder path.
 
 ## Suggested skills
 
