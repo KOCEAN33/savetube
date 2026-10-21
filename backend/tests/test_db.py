@@ -3038,6 +3038,33 @@ def test_a_channel_page_sees_videos_its_tabs_list_from_another_uploader(settings
     assert [j["id"] for j in jobs] == [1]
 
 
+def test_api_lists_a_source_s_videos_a_playlists_parent_s_and_oldest_first(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO source (id, url, kind, channel_id, parent_id, enabled, poll_interval_minutes)"
+        " VALUES (1, 'https://www.youtube.com/@a/playlists', 'playlists', 'UC1', NULL, true, 360),"
+        " (2, 'https://www.youtube.com/playlist?list=PL2', 'playlist', 'UC1', 1, true, 360),"
+        " (3, 'https://www.youtube.com/playlist?list=PL3', 'playlist', 'UC1', 1, true, 360),"
+        " (4, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', NULL, true, 360)",
+        "INSERT INTO video (id, channel_id, type, title, state, upload_date) VALUES"
+        " ('p2', 'UC1', 'videos', 'in PL2', 'complete', '2026-01-03'),"
+        " ('p3', 'UC1', 'videos', 'in PL3', 'complete', '2026-01-02'),"
+        " ('tab', 'UC1', 'videos', 'tab only', 'complete', '2026-01-01')",
+        "INSERT INTO video_source (video_id, source_id) VALUES"
+        " ('p2', 2), ('p3', 3), ('p2', 4), ('tab', 4)",
+    )
+    with _api(settings) as client:
+        one = client.get("/api/videos", params={"source_id": 2}).json()
+        parent = client.get("/api/videos", params={"source_id": 1}).json()
+        tab = client.get("/api/videos", params={"source_id": 4, "q": "tab"}).json()
+        oldest = client.get("/api/videos", params={"source_id": 1, "order": "oldest"}).json()
+    assert [v["id"] for v in one["items"]] == ["p2"] and one["total"] == 1
+    assert [v["id"] for v in parent["items"]] == ["p2", "p3"] and parent["total"] == 2
+    assert [v["id"] for v in tab["items"]] == ["tab"]
+    assert [v["id"] for v in oldest["items"]] == ["p3", "p2"]
+
+
 @pytest.mark.anyio
 async def test_a_failed_live_check_is_one_warning_with_the_channel_name(settings, caplog):
     import logging

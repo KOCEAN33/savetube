@@ -983,9 +983,13 @@ async def videos(
     channel_id: str | None = None,
     # The channel page's view: also the videos the channel's sources list.
     listed_by: str | None = None,
+    # Videos the source lists. A `playlists` parent lists through its children.
+    source_id: int | None = None,
     type: VideoType | None = None,
     state: VideoState | None = None,
     q: str | None = None,
+    # By upload date. A video without one sorts last either way.
+    order: Literal["newest", "oldest"] = "newest",
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> VideoPage:
@@ -994,6 +998,12 @@ async def videos(
         where.append(Video.channel_id == channel_id)
     if listed_by:
         where.append(_of_channel(listed_by))
+    if source_id is not None:
+        sources = select(Source.id).where(
+            (Source.id == source_id) | (Source.parent_id == source_id)
+        )
+        listed = select(VideoSource.video_id).where(VideoSource.source_id.in_(sources))
+        where.append(Video.id.in_(listed))
     if type:
         where.append(Video.type == type)
     if state:
@@ -1002,10 +1012,11 @@ async def videos(
         pattern = f"%{q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
         where.append(or_(Video.title.ilike(pattern), Video.id == q))
     total = await session.scalar(select(func.count()).select_from(Video).where(*where))
+    by_date = Video.upload_date.desc() if order == "newest" else Video.upload_date.asc()
     items = await session.scalars(
         select(Video)
         .where(*where)
-        .order_by(Video.upload_date.desc().nulls_last(), Video.id)
+        .order_by(by_date.nulls_last(), Video.id)
         .limit(limit)
         .offset(offset)
     )

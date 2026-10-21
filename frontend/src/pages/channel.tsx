@@ -1,12 +1,19 @@
 import { useState, type FormEvent } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { CornerDownRightIcon, ExternalLinkIcon, MoreHorizontalIcon } from "lucide-react"
-import { Link, useParams } from "react-router"
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  CornerDownRightIcon,
+  ExternalLinkIcon,
+  MoreHorizontalIcon,
+  SearchIcon,
+} from "lucide-react"
+import { Link, useParams, useSearchParams } from "react-router"
 
 import { ChannelAvatar } from "@/components/channel-avatar"
 import { DateCutoffField, QualityField } from "@/components/channel-fields"
 import { ChannelJobs } from "@/components/channel-jobs"
-import { ChannelVideos } from "@/components/channel-videos"
+import { PlaylistFolds, StoredVideos } from "@/components/channel-videos"
 import { CollapsibleSection, ErrorBox, Page, PageSection } from "@/components/query-state"
 import { TitlePreview, WordListEditor, WordSuggestions } from "@/components/source-words"
 import { Badge } from "@/components/ui/badge"
@@ -38,6 +45,7 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { useDebounced } from "@/hooks/use-debounced"
 import {
   api,
   mutations,
@@ -47,25 +55,18 @@ import {
   type Source,
   type SourceIn,
   type TitleWords,
+  type VideoOrder,
+  type VideoType,
 } from "@/lib/api"
 import {
   channelBase,
   OTHER_CHANNELS_HINT,
   OTHER_CHANNELS_LABEL,
+  sourceLabel,
   VIDEO_TABS,
 } from "@/lib/channel"
 import { formatBytes, formatCount, formatDateTime } from "@/lib/format"
 import { EXCLUDE_HINT, INCLUDE_HINT, addWord, type WordList } from "@/lib/words"
-
-// Short name for a source: the playlist title, or the tab.
-function sourceLabel(s: Source): string {
-  if (s.title) return s.title
-  if (s.kind === "playlists") return "All playlists"
-  const list = new URL(s.url).searchParams.get("list")
-  if (list) return list
-  const tab = s.url.slice(s.url.lastIndexOf("/") + 1)
-  return VIDEO_TABS.find((t) => t.tab === tab)?.label ?? tab
-}
 
 function useInvalidate() {
   const queryClient = useQueryClient()
@@ -737,6 +738,205 @@ function WordsSection({ channel, sources }: { channel: Channel; sources: Source[
   )
 }
 
+const TABS = ["videos", "shorts", "live", "members", "playlists", "downloads"] as const
+type ChannelTab = (typeof TABS)[number]
+const TAB_LABEL: Record<ChannelTab, string> = {
+  videos: "Videos",
+  shorts: "Shorts",
+  live: "Live",
+  members: "Members",
+  playlists: "Playlists",
+  downloads: "Downloads",
+}
+const TAB_TYPE: Partial<Record<ChannelTab, VideoType>> = {
+  videos: "videos",
+  shorts: "shorts",
+  live: "lives",
+  members: "members",
+}
+const isTab = (v: string | null): v is ChannelTab => TABS.includes(v as ChannelTab)
+
+// Complete videos per type by the channel list rule, for the tab counts.
+function useTypeTotals(channelId: string): Partial<Record<VideoType, number>> {
+  const types = Object.values(TAB_TYPE)
+  const results = useQueries({
+    queries: types.map((type) => ({
+      queryKey: ["videos", { listedBy: channelId, type, state: "complete", limit: 1 }],
+      queryFn: () => api.videos({ listed_by: channelId, type, state: "complete", limit: 1 }),
+    })),
+  })
+  return Object.fromEntries(types.map((t, i) => [t, results[i].data?.total]))
+}
+
+function ChannelHeader({ channel, sources }: { channel: Channel; sources: Source[] }) {
+  const top = sources.filter((s) => s.parent_id === null)
+  const paused = top.length > 0 && top.every((s) => !s.archiving)
+  const failing = sources.filter((s) => s.enabled && s.last_error).length
+  const lastPoll = sources
+    .map((s) => s.last_polled_at)
+    .filter((t) => t !== null)
+    .sort()
+    .at(-1)
+  const stats = [
+    ["Stored", formatCount(channel.video_count)],
+    ["Size", formatBytes(channel.bytes)],
+    ["Sources", formatCount(sources.length)],
+    ["Last poll", lastPoll ? formatDateTime(lastPoll) : "waiting"],
+  ]
+  return (
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div className="flex min-w-0 items-center gap-3">
+        <ChannelAvatar name={channel.name} url={channel.avatar_url} className="size-12" />
+        <div className="flex min-w-0 flex-col">
+          <h2 className="truncate text-lg font-semibold" title={channel.name}>
+            {channel.name}
+          </h2>
+          <a
+            className="flex w-fit items-center gap-1 text-xs text-muted-foreground hover:underline"
+            href={channelBase(channel.id, sources)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {channel.handle ?? channel.id}
+            <ExternalLinkIcon className="size-3" />
+          </a>
+        </div>
+      </div>
+      <dl className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
+        {stats.map(([label, value]) => (
+          <div key={label} className="flex items-baseline gap-1.5">
+            <dt className="text-muted-foreground">{label}</dt>
+            <dd className="tabular-nums">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="flex flex-wrap gap-1">
+        {channel.watch_lives && <Badge>recording lives</Badge>}
+        {paused && <Badge variant="secondary">paused</Badge>}
+        {failing > 0 && <Badge variant="destructive">{failing} failing</Badge>}
+      </div>
+    </div>
+  )
+}
+
+// The channel page body before this layout: what to archive, words, settings
+// with the membership list, and the job lists.
+function DownloadsTab({ channel, sources }: { channel: Channel; sources: Source[] }) {
+  return (
+    <div className="flex flex-col gap-6">
+      <CollapsibleSection title="What to archive" storageKey="channel.archive">
+        <ArchiveSection channel={channel} sources={sources} />
+      </CollapsibleSection>
+      <CollapsibleSection title="Title words" storageKey="channel.words">
+        <WordsSection channel={channel} sources={sources} />
+      </CollapsibleSection>
+      <CollapsibleSection title="Download settings" storageKey="channel.settings">
+        <SettingsSection key={channel.id} channel={channel} />
+      </CollapsibleSection>
+      <PageSection title="Downloads">
+        <ChannelJobs channelId={channel.id} />
+      </PageSection>
+    </div>
+  )
+}
+
+function ChannelView({ channel, sources }: { channel: Channel; sources: Source[] }) {
+  const [params, setParams] = useSearchParams()
+  const param = params.get("tab")
+  const tab: ChannelTab = isTab(param) ? param : "videos"
+  const [search, setSearch] = useState<Partial<Record<ChannelTab, string>>>({})
+  const [order, setOrder] = useState<VideoOrder>("newest")
+  const q = search[tab] ?? ""
+  const term = useDebounced(q.trim(), 300)
+  const totals = useTypeTotals(channel.id)
+  const playlists = sources.filter((s) => s.kind === "playlist")
+  const type = TAB_TYPE[tab]
+  // Members shows only while the channel has a members-only video, or while the URL picks it.
+  const tabs = TABS.filter((t) => t !== "members" || (totals.members ?? 0) > 0 || tab === t)
+  const count = (t: ChannelTab) => {
+    const ty = TAB_TYPE[t]
+    if (ty) return totals[ty]
+    if (t === "playlists") return playlists.length
+    return undefined
+  }
+
+  function selectTab(next: ChannelTab) {
+    const updated = new URLSearchParams(params)
+    if (next === "videos") updated.delete("tab")
+    else updated.set("tab", next)
+    setParams(updated)
+  }
+
+  return (
+    <div className="flex flex-col gap-5 px-4 py-4 md:py-6 lg:px-6">
+      <ChannelHeader channel={channel} sources={sources} />
+      <div className="flex flex-wrap items-center gap-3">
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          spacing={0}
+          aria-label="Channel section"
+          value={tab}
+          onValueChange={(v) => isTab(v) && selectTab(v)}
+          className="flex-wrap"
+        >
+          {tabs.map((t) => (
+            <ToggleGroupItem
+              key={t}
+              value={t}
+              className="px-3 data-[state=on]:bg-foreground data-[state=on]:text-background"
+            >
+              {TAB_LABEL[t]}
+              {count(t) !== undefined && (
+                <span className="text-xs tabular-nums opacity-60">{formatCount(count(t) ?? 0)}</span>
+              )}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        {tab !== "downloads" && (
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <SearchIcon className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
+              <Input
+                type="search"
+                aria-label={`Search ${TAB_LABEL[tab]}`}
+                placeholder={tab === "playlists" ? "Filter playlists" : `Search ${TAB_LABEL[tab]}`}
+                className="w-56 pl-8"
+                value={q}
+                onChange={(e) => setSearch({ ...search, [tab]: e.target.value })}
+              />
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setOrder(order === "newest" ? "oldest" : "newest")}
+            >
+              {order === "newest" ? <ArrowDownIcon /> : <ArrowUpIcon />}
+              {order === "newest" ? "Newest first" : "Oldest first"}
+            </Button>
+          </div>
+        )}
+      </div>
+      {tab === "downloads" ? (
+        <DownloadsTab channel={channel} sources={sources} />
+      ) : (
+        <div className="overflow-hidden rounded-lg border">
+          {type ? (
+            <StoredVideos
+              scope={{ listedBy: channel.id, type }}
+              q={term}
+              order={order}
+              tiles={type === "shorts"}
+            />
+          ) : (
+            <PlaylistFolds playlists={playlists} q={term} order={order} />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function ChannelPage() {
   const { id = "" } = useParams()
   const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
@@ -759,50 +959,6 @@ export function ChannelPage() {
       </Page>
     )
 
-  return (
-    <Page>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex items-center gap-4">
-          <ChannelAvatar name={channel.name} url={channel.avatar_url} className="size-16" />
-          <div className="flex flex-col gap-1">
-            <div className="flex items-baseline gap-2">
-              <h2 className="text-2xl font-semibold">{channel.name}</h2>
-              <a
-                className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
-                href={channelBase(channel.id, own)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {channel.handle ?? channel.id}
-                <ExternalLinkIcon className="size-3.5" />
-              </a>
-            </div>
-            <span className="font-mono text-xs text-muted-foreground">{channel.dir_name}</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-4 text-sm">
-          <span>{formatCount(channel.video_count)} videos</span>
-          <span>{formatBytes(channel.bytes)}</span>
-          <Button variant="outline" size="sm" asChild>
-            <Link to={`/videos?listed_by=${encodeURIComponent(channel.id)}`}>Browse videos</Link>
-          </Button>
-        </div>
-      </div>
-      <CollapsibleSection title="What to archive" storageKey="channel.archive">
-        <ArchiveSection channel={channel} sources={own} />
-      </CollapsibleSection>
-      <CollapsibleSection title="Title words" storageKey="channel.words">
-        <WordsSection channel={channel} sources={own} />
-      </CollapsibleSection>
-      <CollapsibleSection title="Download settings" storageKey="channel.settings">
-        <SettingsSection key={channel.id} channel={channel} />
-      </CollapsibleSection>
-      <PageSection title="Downloads">
-        <ChannelJobs channelId={channel.id} />
-      </PageSection>
-      <PageSection title="Stored videos">
-        <ChannelVideos channelId={channel.id} />
-      </PageSection>
-    </Page>
-  )
+  // Keyed so the search boxes and the sort start fresh on another channel.
+  return <ChannelView key={channel.id} channel={channel} sources={own} />
 }

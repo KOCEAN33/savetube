@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router"
+import { createBrowserRouter, Navigate } from "react-router"
 
 import { AppLayout, NotFound, RouteError } from "@/components/app-layout"
 
@@ -12,7 +12,8 @@ export const router = createBrowserRouter([
         errorElement: <RouteError />,
         children: [
           { path: "/", lazy: () => import("@/pages/dashboard").then((m) => ({ Component: m.DashboardPage })) },
-          { path: "/channels", lazy: () => import("@/pages/channels").then((m) => ({ Component: m.ChannelsPage })) },
+          // The sidebar lists the channels. An old link to the list lands on Home.
+          { path: "/channels", element: <Navigate to="/" replace /> },
           { path: "/channels/:id", lazy: () => import("@/pages/channel").then((m) => ({ Component: m.ChannelPage })) },
           { path: "/live", lazy: () => import("@/pages/live").then((m) => ({ Component: m.LivePage })) },
           { path: "/settings", lazy: () => import("@/pages/settings").then((m) => ({ Component: m.SettingsPage })) },
