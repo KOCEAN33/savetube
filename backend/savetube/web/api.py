@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Any, Literal
@@ -27,6 +28,7 @@ from savetube.db.models import (
     VideoSource,
     VideoState,
 )
+from savetube.jobs import BLOCKED_LOG, NO_MEMBER, SHUTDOWN_LOG, STALLED_LOG
 from savetube.layout import VideoType
 from savetube.limits import TIMEZONE
 from savetube.logs import emit
@@ -34,7 +36,7 @@ from savetube.pipeline import get_or_create_channel
 from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
 from savetube.web.auth import CurrentUser, User, current_user
-from savetube.ytdl import DEFAULT_FORMAT, avatar_url, list_entries
+from savetube.ytdl import DEFAULT_FORMAT, avatar_url, list_entries, members_only, youtube_block
 
 log = logging.getLogger(__name__)
 
@@ -137,14 +139,60 @@ class SourceOut(_Out):
     last_error: str | None
 
 
+# yt-dlp's wrapping around the message itself: the exception name, its
+# "ERROR:" prefix, a "[download] Got error:" retry line, and an
+# "[extractor] <video id>:" tag.
+_YTDLP_NOISE = re.compile(
+    r"^(?:\w+Error:\s*)?(?:ERROR:\s*)?(?:\[download\]\s*Got error:\s*)?(?:\[\w+\]\s*[\w-]+:\s*)?"
+)
+# Lowercase parts that all appear in a transient network failure.
+_NETWORK_MARKERS = (
+    ("timed out",),
+    ("bytes read", "more expected"),
+    ("network is unreachable",),
+    ("failed to establish a new connection",),
+    ("connection reset",),
+    ("connection refused",),
+)
+_REASON_CHARS = 120
+
+
+def job_reason(log_tail: str | None) -> str | None:
+    """One plain line for a finished job's log_tail."""
+    if not log_tail:
+        return None
+    text = log_tail.lower()
+    if youtube_block(log_tail):
+        return BLOCKED_LOG
+    if log_tail.startswith(STALLED_LOG):
+        return "worker stopped"
+    if log_tail.startswith(SHUTDOWN_LOG):
+        return "worker shut down"
+    if NO_MEMBER in log_tail or members_only(log_tail):
+        return "members-only, no member cookie profile"
+    if "integrity check failed" in text:
+        check = text.split("integrity check failed:", 1)[-1].split()
+        return f"integrity check failed: {check[0]}" if check else "integrity check failed"
+    if any(all(part in text for part in group) for group in _NETWORK_MARKERS):
+        return "network error"
+    # yt-dlp puts a carriage return before its retry line, so lines do not split it.
+    flat = " ".join(log_tail.split())
+    line = _YTDLP_NOISE.sub("", flat) or flat
+    return line if len(line) <= _REASON_CHARS else line[: _REASON_CHARS - 3] + "..."
+
+
 class JobOut(_Out):
     id: int
     kind: JobKind
     state: JobState
     video_id: str | None
-    # The video's title and channel, null for a job without a video.
+    # The video's title and its uploader channel, null for a job without a video.
     title: str | None
     channel_id: str | None
+    channel_name: str | None
+    # The run's error or interruption text, and one plain line made from it.
+    log_tail: str | None
+    reason: str | None
     attempts: int
     miss_reason: str | None
     scheduled_at: datetime | None
@@ -886,8 +934,9 @@ async def jobs(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[JobOut]:
     q = (
-        select(Job, Video.title, Video.channel_id)
+        select(Job, Video.title, Video.channel_id, Channel.name)
         .outerjoin(Video, Video.id == Job.video_id)
+        .outerjoin(Channel, Channel.id == Video.channel_id)
         .order_by(Job.id.desc())
         .limit(limit)
     )
@@ -897,10 +946,16 @@ async def jobs(
         q = q.where(Job.state.in_(state))
     if channel_id:
         q = q.where(_of_channel(channel_id))
-    own = JobOut.model_fields.keys() - {"title", "channel_id"}
+    own = JobOut.model_fields.keys() - {"title", "channel_id", "channel_name", "reason"}
     return [
-        JobOut(**{f: getattr(j, f) for f in own}, title=title, channel_id=cid)
-        for j, title, cid in await session.execute(q)
+        JobOut(
+            **{f: getattr(j, f) for f in own},
+            title=title,
+            channel_id=cid,
+            channel_name=name,
+            reason=job_reason(j.log_tail),
+        )
+        for j, title, cid, name in await session.execute(q)
     ]
 
 

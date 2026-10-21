@@ -2653,6 +2653,25 @@ def test_api_lists_a_channels_archive_jobs_with_titles(settings):
     assert [(j["id"], j["title"], j["channel_id"]) for j in jobs] == [(2, "other", "UC2")]
 
 
+def test_api_jobs_carry_the_channel_name_and_the_failure_reason(settings):
+    _job_rows(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail) VALUES"
+        " (2, 'archive', 'failed', 'busy1', 1,"
+        " E'DownloadError: ERROR: \\r[download] Got error: 10 bytes read, 5 more expected'),"
+        " (3, 'archive', 'interrupted', 'busy2', 0, 'worker stopped during the download')",
+    )
+    with _api(settings) as client:
+        jobs = client.get("/api/jobs", params={"state": ["failed", "interrupted"]}).json()
+    assert [
+        (j["id"], j["title"], j["channel_id"], j["channel_name"], j["reason"]) for j in jobs
+    ] == [
+        (3, "t", "UC1", "A", "worker stopped"),
+        (2, "t", "UC1", "A", "network error"),
+    ]
+    assert jobs[1]["log_tail"].endswith("10 bytes read, 5 more expected")
+
+
 def test_migration_0006_hands_waiting_archive_jobs_to_the_dispatcher(settings):
     from alembic import command
 

@@ -4,6 +4,7 @@ import multiprocessing
 import pytest
 
 from savetube.jobs import pump_progress, youtube_block
+from savetube.web.api import job_reason
 from savetube.ytdl import network_error
 
 
@@ -110,3 +111,64 @@ def test_a_youtube_block_is_the_bot_check_or_429(message, block):
 )
 def test_a_network_error_is_a_dropped_or_timed_out_connection(message, network):
     assert network_error(message) is network
+
+
+@pytest.mark.parametrize(
+    ("log_tail", "reason"),
+    [
+        # Production log tails, video ids kept.
+        (
+            "DownloadError: ERROR: [youtube] LflYydfdhT4: Sign in to confirm you’re not a bot."
+            " Use --cookies-from-browser or --cookies for the authentication.",
+            "blocked by YouTube",
+        ),
+        ("blocked by YouTube: ERROR: HTTP Error 429: Too Many Requests", "blocked by YouTube"),
+        (
+            "DownloadError: ERROR: \r[download] Got error: HTTPSConnectionPool(host='rr7"
+            "---sn-3u-bh2zl.googlevideo.com', port=443): Read timed out. (read timeout=20.0)",
+            "network error",
+        ),
+        (
+            "DownloadError: ERROR: \r[download] Got error:"
+            " 4392287 bytes read, 5689076 more expected",
+            "network error",
+        ),
+        (
+            "DownloadError: ERROR: \r[download] Got error: HTTPSConnection(host='x', port=443):"
+            " Failed to establish a new connection: [Errno 101] Network is unreachable",
+            "network error",
+        ),
+        (
+            "DownloadError: ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            "unable to download video data: HTTP Error 403: Forbidden",
+        ),
+        (
+            "DownloadError: ERROR: [youtube] a-b_1: Video unavailable. This video is private",
+            "Video unavailable. This video is private",
+        ),
+        ("worker stopped during the download", "worker stopped"),
+        ("worker shut down during the download", "worker shut down"),
+        (
+            "no cookie profile is a confirmed member of the channel",
+            "members-only, no member cookie profile",
+        ),
+        (
+            "DownloadError: ERROR: [youtube] v1: Join this channel to get access to"
+            " members-only content like this video, and other exclusive perks.",
+            "members-only, no member cookie profile",
+        ),
+        (
+            "integrity check failed: size 137: 100 bytes, expected 200",
+            "integrity check failed: size",
+        ),
+        (None, None),
+        ("", None),
+    ],
+)
+def test_a_job_reason_is_one_plain_line_of_its_log_tail(log_tail, reason):
+    assert job_reason(log_tail) == reason
+
+
+def test_a_long_job_reason_is_cut_to_one_short_line():
+    reason = job_reason("ERROR: " + "word " * 100)
+    assert len(reason) == 120 and reason.startswith("word word") and reason.endswith("...")

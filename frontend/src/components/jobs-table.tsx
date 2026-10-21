@@ -10,7 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import type { Job, JobState, MissReason } from "@/lib/api"
-import { JOB_STATES } from "@/lib/channel"
+import { JOB_STATES, jobStateVariant } from "@/lib/channel"
 import { formatClock, formatDateTime } from "@/lib/format"
 
 const MISS_REASON_LABEL: Record<MissReason, string> = {
@@ -19,10 +19,9 @@ const MISS_REASON_LABEL: Record<MissReason, string> = {
   recorder_failed: "recorder failed",
 }
 
-function stateVariant(state: JobState) {
-  if (state === "failed" || state === "missed") return "destructive" as const
-  if (state === "succeeded") return "secondary" as const
-  return "outline" as const
+// A succeeded or cancelled job's log_tail explains no failure.
+function hasFailureReason(job: Job) {
+  return (job.state === "failed" || job.state === "interrupted") && job.reason !== null
 }
 
 export function JobStateCounts({ jobs }: { jobs: Job[] }) {
@@ -32,7 +31,7 @@ export function JobStateCounts({ jobs }: { jobs: Job[] }) {
     <div className="flex flex-wrap gap-2 border-b p-3 text-sm">
       <span className="text-muted-foreground">Last {jobs.length} job(s):</span>
       {JOB_STATES.filter((s) => counts.has(s)).map((s) => (
-        <Badge key={s} variant={stateVariant(s)}>
+        <Badge key={s} variant={jobStateVariant(s)}>
           {s} {counts.get(s)}
         </Badge>
       ))}
@@ -107,7 +106,7 @@ export function JobsTable({
               </TableCell>
             )}
             <TableCell>
-              <Badge variant={stateVariant(j.state)}>{j.state}</Badge>
+              <Badge variant={jobStateVariant(j.state)}>{j.state}</Badge>
               {j.state === "queued" && j.deferred_until && (
                 <span className="ml-2 text-xs text-muted-foreground">
                   waits until {formatClock(j.deferred_until)}
@@ -116,6 +115,14 @@ export function JobsTable({
               {j.miss_reason && (
                 <span className="ml-2 text-xs text-muted-foreground">
                   {MISS_REASON_LABEL[j.miss_reason]}
+                </span>
+              )}
+              {hasFailureReason(j) && (
+                <span
+                  className="ml-2 text-xs text-muted-foreground"
+                  title={j.log_tail ?? undefined}
+                >
+                  {j.reason}
                 </span>
               )}
             </TableCell>
