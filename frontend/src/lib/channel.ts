@@ -21,6 +21,7 @@ export const JOB_STATES: JobState[] = [
   "failed",
   "missed",
   "cancelled",
+  "interrupted",
 ]
 
 // The channel URL without a tab, from one of its tab or playlists sources.

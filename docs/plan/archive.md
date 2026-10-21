@@ -10,7 +10,7 @@
 - A members-only entry, flat `availability` `subscriber_only`, does not pass when the source's channel has `use_cookies` off, because every download attempt would fail. It keeps its `listing_entry` row and its `video_source` link. The cancel rule for skipped titles (Title words) cancels its queued archive job. The first poll after `use_cookies` is turned on queues it.
 - `is_live`, `is_upcoming` and `post_live` entries are left to live detection.
 - The channel's date cutoff reads the entry's approximate timestamp ("3 weeks ago"), so it is only as exact as YouTube's relative date. A video uploaded a day before the cutoff can pass.
-- A failed archive job deletes its `.incoming/<job id>/`, because the retry is a new job with a new directory.
+- A failed archive job deletes its `.incoming/<video id>/`, because the retry after a real failure starts over (Resuming and verifying downloads).
 - Every write to `/api/*` needs an `X-Requested-With` header. A cross-origin page cannot send it without a CORS preflight, and SameSite=lax still sends the cookie on a POST from a sibling `hiriri.com` subdomain.
 
 ## Channel playlists
@@ -82,7 +82,7 @@
 - A `PUT /api/download-settings` changes no job. The next dispatch, within 10 s, applies the new limits.
 - Migration `0006` deletes every `succeeded` procrastinate job and every `todo` archive procrastinate job. It clears `queue_job_id` and `deferred_until` on every `queued` archive job whose procrastinate job is not `doing`, so the dispatcher takes it. A `doing` job and its `job` row stay. The downgrade cancels every waiting archive job, so the old poll queues its video again.
 - Process health and job ownership are separate. Kubernetes judges health: worker and scheduler serve `GET /healthz` on `SAVETUBE_HEALTH_PORT` (default 8081) from their own asyncio loop, so a stuck loop fails the probe, and the chart sets a livenessProbe on it. The metrics port cannot serve this, because `prometheus_client` answers from its own thread while the loop hangs. Docker compose runs the same check as a `healthcheck`. Job ownership stays in Postgres as procrastinate's heartbeat lease.
-- The scheduler reclaims an archive job left `running` by a dead worker every minute. It reads procrastinate's stalled jobs, found by the worker heartbeat. The `job` row becomes `failed` with `log_tail` "worker stopped during the download", and its `.incoming/<job id>/` is deleted. Without this, a dead worker's jobs hold download slots forever. The next poll queues the video again, within `MAX_ARCHIVE_ATTEMPTS`.
+- The scheduler reclaims an archive job left `running` by a dead worker every minute. It reads procrastinate's stalled jobs, found by the worker heartbeat. The job is interrupted with `log_tail` "worker stopped during the download" and logs `job.interrupted` at WARNING. Without this, a dead worker's jobs hold download slots forever.
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
@@ -90,3 +90,26 @@
 | `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end}` | the settings |
 | `GET /api/jobs` | | each job also carries `deferred_until` |
 | `PATCH /api/sources/{id}` | also `archiving` | the source, with `archiving` |
+
+## Resuming and verifying downloads
+
+- An archive download works in `.incoming/<video id>/`, so every job for one video uses the same directory. A recording keeps `.incoming/<job id>/` and starts from the first segment on every attempt.
+- An interrupted run is one the worker stopped: a worker shutdown, or a reclaim after the worker died. It counts as no attempt. Only `failed` jobs count toward `MAX_ARCHIVE_ATTEMPTS`.
+- An interruption keeps the job's id, so the job keeps its place in the queue. The run that started becomes its own `job` row with state `interrupted`, its start and end time, and the reason in `log_tail`. The job goes back to `queued` with no procrastinate job and `attempts` back where it was, so the dispatcher queues it again within 10 s. A dispatched job that no worker started goes back to waiting with no `interrupted` row.
+- An interruption keeps `.incoming/<video id>/`. The video goes back to `pending`.
+- On SIGTERM the worker stops taking jobs and cancels its downloads at once (`shutdown_graceful_timeout=0`). A cancel kills the download child, whose `.part` files stay, marks the job interrupted, and logs `job.interrupted` at INFO. The child ignores SIGINT and SIGTERM, so only the parent ends a download.
+- The worker's `terminationGracePeriodSeconds` is 30. A shutdown takes a few seconds, one kill and one database write per download. A worker still running at the deadline is killed, and the reclaim interrupts its jobs once procrastinate sees its heartbeat stop.
+- `download.format` stores the chosen format ids, such as `137+140`, in `video.resume_format`. The child sends them to the parent through the progress pipe.
+- A retry with a pinned format and an existing directory passes the pinned format ids to yt-dlp instead of the channel's selector, with `continuedl` on, so yt-dlp continues each `.part` file. It logs `download.resume` with the bytes in the directory and in `.part` files.
+- When yt-dlp answers "Requested format is not available" to the pinned format, the run logs `download.restart` at WARNING, deletes the directory and the pin, and downloads again with the channel's selector in the same attempt.
+- A pin without its directory is cleared, and the download starts with the channel's selector.
+- A succeeded download moves the directory into the tree and clears the pin. A failed one deletes the directory and clears the pin.
+- The scheduler deletes, every hour, a directory under `.incoming/` with no file written for 7 days whose name is neither the video of a queued or running archive job nor the id of a queued or running job. It logs `incoming.deleted`. Seven days is longer than any wait for a download window, and a waiting job's directory is never deleted. Cancelled jobs and a video whose source stops archiving leave such directories.
+- Before the move into the tree, `savetube.integrity` checks the download:
+  - size: each stream file before the merge has the size of its format's exact `filesize`. A format with only `filesize_approx` is not checked. The child reports each finished stream's size, because the merge deletes the stream files.
+  - probe: `ffprobe` reads the final file. Its duration is within the larger of 2 s and 1% of the info dict's `duration`, when the info dict has one. It has a video stream when the format's `vcodec` is not `none`, and an audio stream when its `acodec` is not `none`.
+  - packets: a resumed download also gets `ffmpeg -v error -xerror -i <file> -c copy -f null -`. A stream copy decodes nothing, so a multi-hour file takes about as long as reading it. Any error output fails the check.
+- Without `ffprobe` or `ffmpeg` on the path, probe and packets are skipped with a DEBUG line. The image carries both.
+- A failed check logs `download.integrity_failed` at WARNING with the check and its numbers. The run deletes the directory and the pin and downloads from zero once, in the same attempt. A second failure fails the job with `log_tail` "integrity check failed: <check> ...", which counts as an attempt.
+- A passed download logs `download.verified` with the checks that ran. `video.verified_at` and `video.verified_checks` hold the result, and `GET /api/videos` and `GET /api/videos/{id}` carry both.
+- The channel's Downloads list shows `interrupted` rows among the finished jobs.

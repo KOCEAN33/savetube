@@ -4,6 +4,7 @@ role has CREATEDB. Each run creates and drops its own database, savetube_test.""
 import asyncio
 import os
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
@@ -1936,20 +1937,21 @@ async def test_a_parent_passes_archiving_to_its_children(settings):
 
 
 @pytest.mark.anyio
-async def test_reclaim_fails_the_jobs_of_a_dead_worker(settings):
-    from savetube.jobs import STALLED_LOG, reclaim_stalled
+async def test_reclaim_interrupts_the_jobs_of_a_dead_worker_and_keeps_their_parts(settings):
+    from savetube.jobs import reclaim_stalled
 
     _job_rows(
         settings,
-        "UPDATE job SET state = 'running', attempts = 1 WHERE id = 1",
+        "UPDATE job SET state = 'running', attempts = 1, started_at = now() WHERE id = 1",
         "UPDATE video SET state = 'downloading' WHERE id = 'v1'",
         "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id) VALUES"
         " (2, 'archive', 'queued', 'busy1', 0, 701),"
         " (3, 'archive', 'running', 'busy2', 1, 702)",
+        "SELECT setval('job_id_seq', 200)",
     )
-    incoming = settings.incoming_root / "1"
+    incoming = settings.incoming_root / "v1" / ".tmp"
     incoming.mkdir(parents=True)
-    (incoming / "v1.mkv.part").write_bytes(b"x")
+    (incoming / "v1.f251.webm.part").write_bytes(b"x")
     finished = []
 
     async def stalled():
@@ -1964,13 +1966,18 @@ async def test_reclaim_fails_the_jobs_of_a_dead_worker(settings):
     async with sessionmaker() as session:
         jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
         video = await session.get(Video, "v1")
-    assert STALLED_LOG == "worker stopped during the download"
-    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, STALLED_LOG)
-    assert jobs[1].finished_at is not None
-    assert jobs[2].state is JobState.FAILED
+    # The stopped run is a row of its own. The job waits for the dispatcher again.
+    [history] = [j for j in jobs.values() if j.id not in (1, 2, 3)]
+    assert (history.state, history.video_id, history.kind) == ("interrupted", "v1", JobKind.ARCHIVE)
+    assert history.log_tail == "worker stopped during the download"
+    assert history.attempts == 1
+    assert history.started_at is not None and history.finished_at is not None
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    # A dispatched job no worker ran goes back to waiting, with no history row.
+    assert (jobs[2].state, jobs[2].queue_job_id) == (JobState.QUEUED, None)
     assert jobs[3].state is JobState.RUNNING
-    assert video.state is VideoState.FAILED
-    assert not incoming.exists()
+    assert video.state is VideoState.PENDING
+    assert (incoming / "v1.f251.webm.part").read_bytes() == b"x"
     assert finished == [700, 701]
     await engine.dispose()
 
@@ -2738,3 +2745,331 @@ def test_api_marks_a_channel_tracked_only_when_a_source_names_it(settings):
         ("UC2", False, 1),
     ]
     assert patched["tracked"] is False
+
+
+class _Steps:
+    """A runner that plays one step per call and records each call's params."""
+
+    def __init__(self, *steps):
+        self.steps = list(steps)
+        self.calls = []
+
+    async def __call__(self, url, params, report):
+        self.calls.append(params)
+        return await self.steps.pop(0)(params, report)
+
+
+def _home(params):
+    return Path(params["paths"]["home"])
+
+
+def _part(params, name="v1.f251.webm.part", size=2048):
+    tmp = _home(params) / ".tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    (tmp / name).write_bytes(b"x" * size)
+
+
+AUDIO_INFO = {
+    "id": "v1",
+    "title": "t",
+    "channel_id": "UC1",
+    "channel": "A",
+    "upload_date": "20260315",
+    "duration": 60,
+    "format_id": "251",
+    "vcodec": "none",
+    "acodec": "opus",
+}
+
+
+def _finished(stream_size=5, expected=5):
+    """A step that downloads the whole audio file and reports its stream."""
+
+    async def step(params, report):
+        home = _home(params)
+        home.mkdir(parents=True, exist_ok=True)
+        media = home / "v1.webm"
+        media.write_bytes(b"m" * stream_size)
+        await report({"event": "format", "format_id": "251"})
+        await report(
+            {"event": "stream", "format_id": "251", "size": stream_size, "expected": expected}
+        )
+        return {**AUDIO_INFO, "requested_downloads": [{"filepath": str(media)}]}
+
+    return step
+
+
+def _failing(message):
+    async def step(params, report):
+        from savetube.jobs import DownloadFailed
+
+        raise DownloadFailed(message)
+
+    return step
+
+
+class _FakeTools:
+    """ffprobe that finds the expected audio stream, ffmpeg with no errors."""
+
+    def __init__(self):
+        self.packet_runs = 0
+
+    def probe(self, path):
+        return {"format": {"duration": "60.0"}, "streams": [{"codec_type": "audio"}]}
+
+    def packets(self, path):
+        self.packet_runs += 1
+        return ""
+
+
+async def _run_steps(settings, runner, tools=None):
+    from savetube.jobs import run
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    try:
+        await run(
+            1,
+            settings,
+            live=False,
+            runner=runner,
+            sessionmaker=sessionmaker,
+            tools=tools or _FakeTools(),
+        )
+    except Exception as e:
+        if type(e).__name__ != "DownloadFailed":
+            raise
+    async with sessionmaker() as session:
+        jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
+        video = await session.get(Video, "v1")
+    await engine.dispose()
+    return jobs, video
+
+
+def _events(caplog, name):
+    return [r for r in caplog.records if r.getMessage() == name]
+
+
+@pytest.mark.anyio
+async def test_a_worker_shutdown_interrupts_the_download_and_keeps_its_parts(settings, caplog):
+    import logging
+
+    from savetube.jobs import run
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    started = asyncio.Event()
+
+    async def downloading(params, report):
+        _part(params)
+        await report({"event": "format", "format_id": "251"})
+        started.set()
+        await asyncio.Event().wait()
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        task = asyncio.create_task(
+            run(1, settings, live=False, runner=_Steps(downloading), sessionmaker=sessionmaker)
+        )
+        await asyncio.wait_for(started.wait(), 10)
+        # procrastinate cancels the task when the worker shuts down.
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    async with sessionmaker() as session:
+        jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
+        video = await session.get(Video, "v1")
+    await engine.dispose()
+
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert (history.state, history.video_id) == ("interrupted", "v1")
+    assert history.log_tail == "worker shut down during the download"
+    assert history.attempts == 1 and history.finished_at is not None
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert jobs[1].started_at is None and jobs[1].progress is None
+    assert video.state is VideoState.PENDING and video.resume_format == "251"
+    assert (settings.incoming_root / "v1" / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+    [line] = _events(caplog, "job.interrupted")
+    assert line.levelno == logging.INFO
+    assert (_fields(line)["job"], _fields(line)["video"]) == (1, "v1")
+
+
+@pytest.mark.anyio
+async def test_a_retry_resumes_the_parts_with_the_pinned_format_and_counts_no_attempt(
+    settings, caplog
+):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa'",
+        "UPDATE video SET resume_format = '251' WHERE id = 'v1'",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (8, 'archive', 'interrupted', 'v1', 1), (9, 'archive', 'interrupted', 'v1', 1)",
+    )
+    _part({"paths": {"home": str(settings.incoming_root / "v1")}})
+    tools = _FakeTools()
+    runner = _Steps(_finished())
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner, tools)
+    [params] = runner.calls
+    assert params["format"] == "251" and params["continuedl"] is True
+    assert _home(params) == settings.incoming_root / "v1"
+    # Interrupted runs are not failed attempts.
+    assert _fields(_events(caplog, "job.start")[0])["attempt"] == "1/3"
+    [resume] = _events(caplog, "download.resume")
+    assert resume.levelno == logging.INFO
+    assert _fields(resume)["present"] == "2KiB" and _fields(resume)["format"] == "251"
+    assert jobs[1].state is JobState.SUCCEEDED
+    # A resumed download gets the packet pass.
+    assert tools.packet_runs == 1
+    assert video.verified_checks == ["size", "probe", "packets"]
+    assert video.resume_format is None
+    assert not (settings.incoming_root / "v1").exists()
+
+
+@pytest.mark.anyio
+async def test_a_pinned_format_no_longer_offered_starts_over_and_a_real_failure_clears_the_parts(
+    settings, caplog
+):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa'",
+        "UPDATE video SET resume_format = '251' WHERE id = 'v1'",
+    )
+    old = {"paths": {"home": str(settings.incoming_root / "v1")}}
+    _part(old)
+    seen = []
+
+    async def gone_at_retry(params, report):
+        from savetube.jobs import DownloadFailed
+
+        seen.append(sorted(p.name for p in _home(params).rglob("*")))
+        raise DownloadFailed("HTTP Error 403: Forbidden")
+
+    runner = _Steps(
+        _failing(
+            "DownloadError: ERROR: [youtube] v1: Requested format is not available."
+            " Use --list-formats for a list of available formats"
+        ),
+        gone_at_retry,
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner)
+    assert [p["format"] for p in runner.calls] == ["251", "wa"]
+    # The restart downloads into an empty directory.
+    assert seen == [[]]
+    [restart] = _events(caplog, "download.restart")
+    assert restart.levelno == logging.WARNING and _fields(restart)["format"] == "251"
+    assert jobs[1].state is JobState.FAILED and jobs[1].log_tail == "HTTP Error 403: Forbidden"
+    assert video.resume_format is None
+    assert not (settings.incoming_root / "v1").exists()
+
+
+@pytest.mark.anyio
+async def test_a_fresh_download_is_verified_without_the_packet_pass(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    tools = _FakeTools()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _Steps(_finished()), tools)
+    assert jobs[1].state is JobState.SUCCEEDED and video.state is VideoState.COMPLETE
+    assert tools.packet_runs == 0
+    assert video.verified_checks == ["size", "probe"] and video.verified_at is not None
+    assert _events(caplog, "download.resume") == []
+    [verified] = _events(caplog, "download.verified")
+    assert verified.levelno == logging.INFO and _fields(verified)["checks"] == "size,probe"
+    with _api(settings) as client:
+        detail = client.get("/api/videos/v1").json()
+    assert detail["verified_checks"] == ["size", "probe"] and detail["verified_at"] is not None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("second_ok", [True, False])
+async def test_an_integrity_failure_downloads_again_from_zero_once(settings, caplog, second_ok):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    seen = []
+
+    def short_stream():
+        inner = _finished(stream_size=4, expected=5)
+
+        async def step(params, report):
+            seen.append(sorted(p.name for p in _home(params).rglob("*")))
+            return await inner(params, report)
+
+        return step
+
+    second = _finished() if second_ok else short_stream()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _Steps(short_stream(), second))
+    [first, *rest] = _events(caplog, "download.integrity_failed")
+    assert first.levelno == logging.WARNING
+    assert _fields(first)["check"] == "size"
+    assert (_fields(first)["size"], _fields(first)["expected"]) == (4, 5)
+    if second_ok:
+        assert jobs[1].state is JobState.SUCCEEDED and rest == []
+    else:
+        # The second run started from an empty directory too.
+        assert seen == [[], []]
+        assert jobs[1].state is JobState.FAILED
+        assert jobs[1].log_tail.startswith("integrity check failed: size")
+        assert not (settings.incoming_root / "v1").exists()
+    # One job row, one attempt, either way.
+    assert list(jobs) == [1] and jobs[1].attempts == 1
+
+
+@pytest.mark.anyio
+async def test_cleanup_deletes_partial_directories_no_job_wants_after_7_days(settings):
+    import os
+    import time
+
+    from savetube.jobs import clean_incoming
+
+    _job_rows(
+        settings,
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('old', 'UC1', 'videos', 't', 'pending'), ('fresh', 'UC1', 'videos', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (42, 'record', 'running', 'busy2', 1), (43, 'archive', 'cancelled', 'old', 0)",
+    )
+    week = time.time() - 8 * 86400
+    for name, stale in (("old", True), ("v1", True), ("fresh", False), ("42", True), ("7", True)):
+        d = settings.incoming_root / name / ".tmp"
+        d.mkdir(parents=True)
+        f = d / "x.part"
+        f.write_bytes(b"x")
+        if stale:
+            os.utime(f, (week, week))
+            os.utime(d, (week, week))
+            os.utime(d.parent, (week, week))
+    engine = make_engine(settings.sqlalchemy_url)
+    await clean_incoming(make_sessionmaker(engine), settings)
+    await engine.dispose()
+    # v1 has a queued archive job, 42 is a running recording, fresh is new.
+    assert sorted(p.name for p in settings.incoming_root.iterdir()) == ["42", "fresh", "v1"]
+
+
+def test_migration_0008_turns_interrupted_jobs_into_cancelled_on_downgrade(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    _job_rows(
+        settings,
+        "UPDATE video SET resume_format = '251' WHERE id = 'v1'",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'interrupted', 'v1', 1)",
+    )
+    command.downgrade(alembic_config(settings.sqlalchemy_url), "0007")
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
+    engine.dispose()
+    # The old code counts a failed job as an attempt, so an interrupted one
+    # becomes cancelled.
+    assert states == {1: "queued", 2: "cancelled"}

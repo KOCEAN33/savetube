@@ -7,6 +7,7 @@ export type JobState =
   | "failed"
   | "missed"
   | "cancelled"
+  | "interrupted"
 export type MissReason = "dvr_off" | "ended_before_detection" | "recorder_failed"
 
 export interface Me {
@@ -113,6 +114,9 @@ export interface Video {
   size_bytes: number | null
   state: string
   completed_at: string | null
+  // The integrity checks the stored download passed: size, probe, packets.
+  verified_at: string | null
+  verified_checks: string[] | null
 }
 
 export interface VideoDetail extends Video {

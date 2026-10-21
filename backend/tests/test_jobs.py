@@ -34,6 +34,28 @@ async def test_the_pump_writes_the_latest_progress_at_most_once_per_interval():
 
 
 @pytest.mark.anyio
+async def test_the_pump_passes_every_event_in_order_and_ends_when_the_child_does():
+    receive, send = multiprocessing.get_context("spawn").Pipe(duplex=False)
+    written = []
+
+    async def report(message):
+        written.append(message)
+
+    chosen = {"event": "format", "format_id": "137+140"}
+    stream = {"event": "stream", "format_id": "137", "size": 10, "expected": 10}
+    send.send(chosen)
+    send.send({"pct": 1.0})
+    send.send({"pct": 2.0})
+    send.send(stream)
+    send.close()
+    # A long interval: the closed pipe must not wait for it.
+    await asyncio.wait_for(pump_progress(receive, report, every=30), 2)
+    # Events are never dropped for a newer progress update. Progress is.
+    assert written == [chosen, stream, {"pct": 2.0}]
+    receive.close()
+
+
+@pytest.mark.anyio
 async def test_a_failed_write_does_not_stop_the_pump():
     receive, send = multiprocessing.get_context("spawn").Pipe(duplex=False)
     calls = []

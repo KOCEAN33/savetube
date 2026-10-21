@@ -69,6 +69,11 @@ worker:
   # Hard ceiling on archive downloads per worker pod. The UI's download
   # settings (max_concurrent, 1-10) decide below it.
   concurrency: 10
+  # On SIGTERM the worker kills its downloads at once, keeps their parts, and
+  # puts their jobs back to waiting, which takes a few seconds. A worker still
+  # running at the deadline is killed, and the scheduler's stalled-job reclaim
+  # interrupts its jobs about a minute later.
+  terminationGracePeriodSeconds: 30
   resources: {}
 
 scheduler:

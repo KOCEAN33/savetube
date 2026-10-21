@@ -46,6 +46,8 @@ class JobState(enum.StrEnum):
     FAILED = "failed"
     MISSED = "missed"
     CANCELLED = "cancelled"
+    # The worker stopped during the run. A new run resumes it, and no attempt counts.
+    INTERRUPTED = "interrupted"
 
 
 class MissReason(enum.StrEnum):
@@ -193,6 +195,12 @@ class Video(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     state: Mapped[VideoState] = mapped_column(_enum(VideoState), default=VideoState.PENDING)
     info: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # The format ids an interrupted archive download chose, so its retry
+    # resumes the parts in `.incoming/<video id>/`. Null without parts.
+    resume_format: Mapped[str | None] = mapped_column(Text)
+    # The integrity checks the stored download passed (savetube.integrity).
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_checks: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

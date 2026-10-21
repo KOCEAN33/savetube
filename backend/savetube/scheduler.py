@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
-from savetube.jobs import Dispatched, dispatch, reclaim_stalled
+from savetube.jobs import Dispatched, clean_incoming, dispatch, reclaim_stalled
 from savetube.limits import TIMEZONE
 from savetube.live import Seen, check_logged, watched_channels
 from savetube.logs import emit, human_bytes
@@ -31,6 +31,8 @@ TICK_SECONDS = 60
 DISPATCH_SECONDS = 10
 SAMPLE_EVERY = timedelta(hours=1)
 SUMMARY_SECONDS = 600
+# Partial directories age in days, so an hourly look is enough.
+CLEANUP_SECONDS = 3600
 
 
 async def sample_storage(settings: Settings) -> None:
@@ -206,5 +208,12 @@ async def run(settings: Settings) -> None:
                 _every("archive dispatch", lambda: dispatch_archives(report), DISPATCH_SECONDS)
             )
             tg.create_task(_every("stalled job reclaim", lambda: reclaim(settings)))
+            tg.create_task(
+                _every(
+                    "incoming cleanup",
+                    lambda: clean_incoming(default_sessionmaker(), settings),
+                    CLEANUP_SECONDS,
+                )
+            )
             seen: Seen = {}
             tg.create_task(_every("live detection", lambda: detect_lives(seen)))

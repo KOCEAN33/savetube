@@ -96,7 +96,8 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
       api.jobs({
         kind: "archive",
         channel_id: channelId,
-        state: ["succeeded", "failed", "cancelled"],
+        // An interrupted run is a row of its own. Its job waits in the queue again.
+        state: ["succeeded", "failed", "cancelled", "interrupted"],
         limit: recentLimit,
       }),
     placeholderData: (previous) => previous,

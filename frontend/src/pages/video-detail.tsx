@@ -61,6 +61,11 @@ export function VideoDetailPage() {
                   <Field label="Duration">{formatDuration(v.duration)}</Field>
                   <Field label="Size on disk">{formatBytes(v.size_bytes)}</Field>
                   <Field label="Completed">{formatDateTime(v.completed_at)}</Field>
+                  <Field label="Verified">
+                    {v.verified_at
+                      ? `${formatDateTime(v.verified_at)} (${v.verified_checks?.join(", ") || "no check ran"})`
+                      : "-"}
+                  </Field>
                   <Field label="Views">{infoString(v.info, "view_count") ?? "-"}</Field>
                   <Field label="Resolution">{infoString(v.info, "resolution") ?? "-"}</Field>
                   <Field label="Format">{infoString(v.info, "format") ?? "-"}</Field>

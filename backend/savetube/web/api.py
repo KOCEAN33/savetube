@@ -159,6 +159,9 @@ class VideoOut(_Out):
     size_bytes: int | None
     state: str
     completed_at: datetime | None
+    # The integrity checks the stored download passed: size, probe, packets.
+    verified_at: datetime | None
+    verified_checks: list[str] | None
 
 
 class VideoDetail(VideoOut):
