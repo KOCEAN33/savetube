@@ -113,6 +113,12 @@ def build_params(
         "noprogress": True,
         "quiet": True,
         "no_warnings": False,
+        # The CLI defaults. As a library yt-dlp retries nothing without them, so
+        # one dropped connection ended the run instead of resuming in place.
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 3,
+        "file_access_retries": 3,
         **_SLEEP,
     }
     if live:
