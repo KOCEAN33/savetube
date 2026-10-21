@@ -14,7 +14,8 @@
 
 ## Home
 
-- A "Downloads" card at the top shows archive downloads across every channel. Production holds many channels, so one channel's page cannot show them all.
+- A "Sources waiting" card sits above the Downloads card while at least one source has no channel. A source gets its channel on its first successful poll, so the card lists sources before that poll and sources whose first poll failed, with the shortened `last_error` and a "Poll now" button. A disabled source shows "Disabled, not polled" and no button, because the scheduler skips it. The card refetches every 15 s and refreshes the sidebar channel list when a source leaves it.
+- A "Downloads" card shows archive downloads across every channel. Production holds many channels, so one channel's page cannot show them all.
 - The card's header counts the running and the queued jobs from `GET /api/jobs/counts`. Each running job shows its uploader channel, the video title linked to the video page, and the progress the channel page shows.
 - "Recently failed and interrupted" lists the latest 10 `failed` and `interrupted` archive runs, and "Show more" adds 10. Each shows the channel, the title, the finish time and the job's `reason`. Opening the reason shows the full `log_tail`.
 - The card refetches every 3 s while a download runs, and every 15 s otherwise.

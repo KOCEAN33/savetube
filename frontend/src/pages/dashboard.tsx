@@ -5,6 +5,7 @@ import { DataTable } from "@/components/data-table"
 import { DownloadsCard } from "@/components/downloads-card"
 import { ErrorBox } from "@/components/query-state"
 import { SectionCards } from "@/components/section-cards"
+import { SourcesWaitingCard } from "@/components/sources-waiting-card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
 
@@ -43,6 +44,10 @@ function Statistics() {
 export function DashboardPage() {
   return (
     <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
+      {/* Empty while no source waits, so the gap above Downloads goes too. */}
+      <div className="px-4 empty:hidden lg:px-6">
+        <SourcesWaitingCard />
+      </div>
       <div className="px-4 lg:px-6">
         <DownloadsCard />
       </div>
