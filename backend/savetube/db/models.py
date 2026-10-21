@@ -214,14 +214,16 @@ class Job(Base):
     attempts: Mapped[int] = mapped_column(default=0)
     miss_reason: Mapped[MissReason | None] = mapped_column(_enum(MissReason))
     log_tail: Mapped[str | None] = mapped_column(Text)
-    # The Kubernetes Job of a recording, or the procrastinate job of an archive.
+    # The Kubernetes Job of a recording.
     k8s_job_name: Mapped[str | None]
+    # The procrastinate job of a dispatched archive. Null while it waits for
+    # the dispatcher (savetube.jobs.dispatch).
     queue_job_id: Mapped[int | None] = mapped_column(BigInteger)
     # A recording's announced start, from the waiting room. Null for a stream
     # found already live, and for an archive.
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # When a deferred archive job is due again: the window's next start, or a
-    # retry for a free slot.
+    # The download window's next start, for an archive job waiting outside the
+    # window. Null inside it.
     deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

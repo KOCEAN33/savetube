@@ -29,7 +29,7 @@ from savetube.db.models import (
     VideoSource,
     VideoState,
 )
-from savetube.layout import classify
+from savetube.layout import VideoType, classify
 from savetube.pipeline import get_or_create_channel
 from savetube.sources import InvalidSourceUrl
 from savetube.sources import parse as parse_source_url
@@ -43,8 +43,6 @@ MAX_ARCHIVE_ATTEMPTS = 3
 _UNFINISHED_LIVE = frozenset({"is_live", "is_upcoming", "post_live"})
 
 Lister = Callable[[str, Path | None], dict[str, Any]]
-# Puts one `job` row on the queue and returns the queue's own job id.
-Enqueue = Callable[[int], Awaitable[int]]
 # Cancels a queue job that no worker has taken. False when one already has.
 Cancel = Callable[[int], Awaitable[bool]]
 
@@ -78,6 +76,9 @@ def _wanted(
     if entry.get("live_status") in _UNFINISHED_LIVE:
         return False
     if not words.matches(entry.get("title") or "", *lists):
+        return False
+    # Without cookies a members-only download fails every attempt.
+    if classify(entry) is VideoType.MEMBERS and not (channel is not None and channel.use_cookies):
         return False
     if (
         source.kind is SourceKind.PLAYLIST
@@ -310,7 +311,6 @@ async def poll_source(
     settings: Settings,
     *,
     lister: Lister,
-    enqueue: Enqueue,
     cancel: Cancel,
 ) -> None:
     async with sessionmaker() as session:
@@ -346,19 +346,8 @@ async def poll_source(
             await session.commit()
         return
 
+    # The scheduler's dispatcher puts the new jobs on the queue.
     log.info("source %s: %d new archive jobs", source_id, len(job_ids))
-    for job_id in job_ids:
-        async with sessionmaker() as session:
-            job = await session.get(Job, job_id)
-            try:
-                job.queue_job_id = await enqueue(job_id)
-            except Exception as e:
-                # The next poll queues the video again, within MAX_ARCHIVE_ATTEMPTS.
-                log.exception("enqueue of job %s failed", job_id)
-                job.state = JobState.FAILED
-                job.finished_at = datetime.now(UTC)
-                job.log_tail = f"enqueue failed: {type(e).__name__}: {e}"
-            await session.commit()
     for job_id in drop_ids:
         await _cancel_job(sessionmaker, job_id, cancel)
 
