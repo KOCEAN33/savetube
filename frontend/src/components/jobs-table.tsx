@@ -77,8 +77,10 @@ export function JobsTable({
         )}
         {jobs.map((j) => (
           <TableRow key={j.id}>
-            {/* w-full with max-w-0 gives this column the leftover width and truncates inside it. */}
-            <TableCell className="w-full max-w-0">
+            {/* w-full with max-w-0 gives this column the leftover width and truncates
+                inside it. min-w-48 keeps a title readable once the other columns fill
+                a narrow table, which then scrolls sideways. */}
+            <TableCell className="w-full max-w-0 min-w-48">
               {j.video_id ? (
                 <Link
                   className="block truncate hover:underline"
@@ -105,7 +107,8 @@ export function JobsTable({
                 )}
               </TableCell>
             )}
-            <TableCell>
+            {/* The reason wraps, so a long one does not take the title's width. */}
+            <TableCell className="min-w-40 whitespace-normal">
               <Badge variant={jobStateVariant(j.state)}>{j.state}</Badge>
               {j.state === "queued" && j.deferred_until && (
                 <span className="ml-2 text-xs text-muted-foreground">

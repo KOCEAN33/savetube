@@ -4,20 +4,22 @@
 
 - React with shadcn/ui, starting from the `dashboard-01` block: sidebar, section cards, an interactive area chart, and a data table. `npx shadcn add dashboard-01` installs it.
 - Vite builds a static bundle that FastAPI serves as static files. The block ships as Next.js page files, so its components move into a Vite app.
-- Sidebar: Dashboard, Channels, Live, Settings, Videos. Videos stays as built and gets its own review later.
+- The user chose the library layout: the sidebar lists the channels, each page searches its own lists, and no global search bar exists.
+- Sidebar: Home, Live, Videos, Settings, then "Channels (N)". N counts the tracked channels. A + button opens the add-channel modal, and a filter input matches a channel's name or handle. Each tracked channel shows its avatar, its name and its stored-video count, sorted by name, and links to its channel page. No channel list page exists, and `/channels` redirects to `/`.
+- The Videos page is the cross-channel library: search and filters across every channel, recent downloads, and channels known only as an uploader. A channel's own videos are browsed on its channel page, so nothing links from a channel into the Videos page.
 - Live lists record jobs: detected, upcoming and recorded streams. Archive download jobs show on their channel's page.
 - Settings holds the download limits, the general cookie profile, and the global title words. The profile select offers "None (cookie-free)" and each present profile from `GET /api/cookie-profiles`.
 - The site header holds the pause switch for every archive download (archive.md, Pausing downloads), on every page. While paused it shows a "Downloads paused" badge and a Resume button. "Pause downloads" opens a confirmation modal first, because a pause stops the running downloads. Resume applies at once. The switch refetches the flag every 15 s, so a change from another tab shows. Settings shows the same switch above the download limits.
 - Every create and edit form opens in a large modal in the middle of the screen, never a side sheet.
 
-## Dashboard
+## Home
 
 - A "Downloads" card at the top shows archive downloads across every channel. Production holds many channels, so one channel's page cannot show them all.
 - The card's header counts the running and the queued jobs from `GET /api/jobs/counts`. Each running job shows its uploader channel, the video title linked to the video page, and the progress the channel page shows.
 - "Recently failed and interrupted" lists the latest 10 `failed` and `interrupted` archive runs, and "Show more" adds 10. Each shows the channel, the title, the finish time and the job's `reason`. Opening the reason shows the full `log_tail`.
 - The card refetches every 3 s while a download runs, and every 15 s otherwise.
 - The statistics cards, the chart and the per-channel table follow the card.
-- The per-channel table lists tracked channels only and counts a channel's videos by the channel list's rule (Channel page). A video two tracked channels claim counts under both, so the shares can sum past 100%.
+- The per-channel table lists tracked channels only and counts a channel's videos by the channel page's rule (Channel page). A video two tracked channels claim counts under both, so the shares can sum past 100%.
 
 ## Adding a channel
 
@@ -32,19 +34,23 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 
 ## Channel page
 
-- The Channels page lists only channels with `tracked` true, which `GET /api/channels` sets when at least one source names the channel. A channel stored only as the uploader of another channel's playlist video stays in `channel`, and the video pages and the Videos page channel filter still reach it.
-- The channel list, the channel page header and the scan step of the add-channel modal show the channel's avatar. The browser loads it from YouTube's image host, and the first letter of the name stands in until it loads or while no avatar is stored.
+- The sidebar lists only channels with `tracked` true, which `GET /api/channels` sets when at least one source names the channel. A channel stored only as the uploader of another channel's playlist video stays in `channel`, and the video pages and the Videos page channel filter still reach it.
+- A header row spans the page: avatar, name, handle linked to the channel on YouTube, the stats inline (stored, size, sources, last poll), and badges for recording lives, paused, and failing sources. The site header shows the channel name.
+- Below it, segmented tabs with counts: Videos, Shorts, Live, Members, Playlists, Downloads. `?tab=` holds the tab, and Videos is the default. Members shows only while the channel has a complete members-only video. The user has not decided where members-only videos belong, so this tab is the minimal placement.
+- Videos, Live and Members show rows: thumbnail, title linked to the video page, upload date, duration, size. Shorts show 9:16 tiles. Each tab has its own search box, and one newest/oldest sort serves every tab. A list loads 30 videos, and "Show more" adds 30.
+- Playlists lists each `playlist` source, picked or under "all playlists", as a row that folds out to its stored videos from `GET /api/videos?source_id=`. The search box there filters the playlist titles.
+- Downloads holds "What to archive", "Title words", "Download settings" with the membership list, and the job lists.
+- The sidebar, the channel page header and the scan step of the add-channel modal show the channel's avatar. The browser loads it from YouTube's image host, and the first letter of the name stands in until it loads or while no avatar is stored.
 - "Download settings" shows each cookie profile's membership result for the channel and its check time, read-only. A membership comes only from the automatic check.
-- "What to archive", "Title words" and "Download settings" fold under their title. Each starts folded, and the browser keeps each section's open state in `localStorage`, shared by every channel page.
+- In Downloads, "What to archive", "Title words" and "Download settings" fold under their title. Each starts folded, and the browser keeps each section's open state in `localStorage`, shared by every channel page.
 - The Playlists area of "What to archive" always shows the `other_channels` checkbox. While the channel has a playlist source, it reads every top-level `playlist` and `playlists` source. When their values differ, it shows as mixed with a count, and a change sets every one. A `playlists` parent copies the value to its children. A playlist source added from the channel page takes the current value, and a mixed value counts as on.
 - While the channel has no playlist source, the checkbox holds the value for the first one and starts checked. "Track all playlists" and "Pick playlists" create their sources with it. The value lives in the page, so a reload resets it to checked.
 - Under both checkboxes, a line states that a video downloads once, sits under its uploader's channel folder, and shows on this channel's page.
-- "Downloads" shows the running archive download first: its title and the current stream's percent, downloaded and total bytes, speed and ETA. The queued jobs follow, oldest first, which is the order the dispatcher takes them. The latest succeeded, failed, cancelled and interrupted jobs come last, and a failed or interrupted row shows its `reason`, with the full `log_tail` on hover. The queued and finished lists each show 10 jobs, and "Show more" adds 10.
+- "Downloads" shows the running archive download first: its title and the current stream's percent, downloaded and total bytes, speed and ETA. The queued jobs follow, oldest first, which is the order the dispatcher takes them. The latest succeeded, failed, cancelled and interrupted jobs come last, and a failed or interrupted row shows its `reason`, with the full `log_tail` on hover. The queued and finished lists each show 10 jobs, and "Show more" adds 10. A job table keeps the title at least 12rem wide and wraps the reason, so a narrow window scrolls the table sideways instead of hiding the title.
 - The downloads refetch every 3 s while a download runs, and every 15 s otherwise. The worker writes progress every 5 s, so a faster refetch shows nothing new.
 - A download shows no progress while yt-dlp fetches the metadata, subtitles and chat replay, because the progress counts the media only.
-- "Stored videos" lists the channel's complete videos in one group per type (videos, shorts, lives, members), newest upload first, 12 at a time. Each card shows the thumbnail, title, upload date, duration and size, and links to the video page.
 - A video counts as the channel's when the channel uploaded it or one of its sources lists it. A collaboration on the channel's tab is stored under the uploader its info names, so the uploader alone misses it.
-- The channel list, the channel page header and "Stored videos" count complete videos by that rule. "Browse videos" and "Open in Videos" open the Videos page with `listed_by`, which applies the same rule.
+- The sidebar count, the header's stored count and the video tabs count complete videos by that rule, through `listed_by`.
 - Thumbnails load from `i.ytimg.com`, because the web pod does not mount the archive.
 
 | Method and path | Body | Returns |
@@ -54,16 +60,16 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 | `POST /api/channels` | the scan's channel URL, `channel_id`, `handle`, `name` and `avatar_url`, chosen tabs, chosen playlists or all playlists, `other_channels` (default true, applied to playlist sources only), `watch_lives`, words, `date_after`, `format` | the channel with its sources |
 | `GET /api/jobs` | `kind`, `state` (repeat it for several states), `channel_id`, `limit` | jobs, newest first. `channel_id` matches the jobs of videos the channel uploaded or its sources list. Each job carries the video's `title`, its uploader's `channel_id` and `channel_name`, `log_tail`, and `reason`. A running download carries `progress` `{format, pct, done, total, speed, eta}`, and `pct` is null without a total |
 | `GET /api/jobs/counts` | `kind`, `channel_id` | `{state: count}` with every job state, 0 when no job holds it. `channel_id` matches as in `GET /api/jobs` |
-| `GET /api/videos` | `channel_id` (the uploader), `listed_by` (the uploader or a channel whose sources list the video), `type`, `state`, `q`, `limit`, `offset` | `{total, items}`, newest upload first |
+| `GET /api/videos` | `channel_id` (the uploader), `listed_by` (the uploader or a channel whose sources list the video), `source_id` (videos `video_source` links to the source, or for a `playlists` parent to any of its children), `type`, `state`, `q`, `order` (`newest` or `oldest` upload first, default `newest`, a missing date last), `limit` (at most 200), `offset` | `{total, items}` |
 
 ## Statistics
 
-The dashboard reads Postgres. No second metrics store backs it.
+Home's statistics read Postgres. No second metrics store backs it.
 
 | Widget | Source |
 | --- | --- |
 | Total stored size, video count, hours archived | `sum(size_bytes)`, `count(*)`, `sum(duration)` over `video` |
-| Size and count by channel and by type | the same, grouped by tracked channel under the channel list's rule, and by `type` |
+| Size and count by channel and by type | the same, grouped by tracked channel under the channel page's rule, and by `type` |
 | Bytes added per day or week | `video.completed_at` bucketed with `date_trunc` |
 | Live recordings: recorded, failed, missed | `job` where kind is record, grouped by state |
 | Queue: pending, running, failed | procrastinate's job table |

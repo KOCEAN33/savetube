@@ -1,108 +1,239 @@
 import { useState } from "react"
-import { keepPreviousData, useQueries } from "@tanstack/react-query"
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query"
+import { ChevronRightIcon } from "lucide-react"
 import { Link } from "react-router"
 
 import { ErrorBox } from "@/components/query-state"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { api, type Video, type VideoType } from "@/lib/api"
-import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
+import { api, type Source, type Video, type VideoOrder, type VideoType } from "@/lib/api"
+import { sourceLabel } from "@/lib/channel"
+import { formatBytes, formatCount, formatDateTime, formatDuration, formatUploadDate } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
-const GROUPS: { type: VideoType; label: string }[] = [
-  { type: "videos", label: "Videos" },
-  { type: "shorts", label: "Shorts" },
-  { type: "lives", label: "Lives" },
-  { type: "members", label: "Members only" },
-]
-const PAGE = 12
+const PAGE = 30
 
-function VideoCard({ video }: { video: Video }) {
+// Which stored videos a list shows: the channel's by the channel list rule, or one source's.
+export type VideoScope = { listedBy: string; type: VideoType } | { sourceId: number }
+
+const videoHref = (id: string) => `/videos/${encodeURIComponent(id)}`
+
+// YouTube's image host. The stored thumbnail sits on the archive volume, which web does not mount.
+const thumbUrl = (id: string, size: "mq" | "hq" | "oar") =>
+  `https://i.ytimg.com/vi/${encodeURIComponent(id)}/${size}default.jpg`
+
+function useStoredVideos(scope: VideoScope, q: string, order: VideoOrder) {
+  const filter =
+    "sourceId" in scope
+      ? { source_id: scope.sourceId }
+      : { listed_by: scope.listedBy, type: scope.type }
+  return useInfiniteQuery({
+    queryKey: ["videos", "pages", { ...filter, q, order }],
+    queryFn: ({ pageParam }) =>
+      api.videos({ ...filter, state: "complete", q, order, limit: PAGE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, p) => n + p.items.length, 0)
+      return loaded < last.total ? loaded : undefined
+    },
+    placeholderData: keepPreviousData,
+  })
+}
+
+function VideoRow({ video }: { video: Video }) {
+  const meta = [formatUploadDate(video.upload_date), formatDuration(video.duration), formatBytes(video.size_bytes)]
   return (
-    <Link
-      to={`/videos/${encodeURIComponent(video.id)}`}
-      className="group flex flex-col gap-1.5 rounded-md p-1 hover:bg-muted"
-    >
-      {/* YouTube's image host. The stored thumbnail sits on the archive volume, which web does not mount. */}
+    <li>
+      <Link
+        to={videoHref(video.id)}
+        className="grid grid-cols-[7rem_minmax(0,1fr)] items-center gap-3 px-3 py-2 text-sm hover:bg-muted/60 @2xl:grid-cols-[8rem_minmax(0,1fr)_6rem_4.5rem_5rem] @2xl:gap-4"
+      >
+        <img
+          src={thumbUrl(video.id, "mq")}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          className="aspect-video w-full rounded-md bg-muted object-cover"
+        />
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="line-clamp-2 font-medium" title={video.title}>
+            {video.title}
+          </span>
+          <span className="text-xs text-muted-foreground tabular-nums @2xl:hidden">
+            {meta.join(" · ")}
+          </span>
+        </div>
+        {meta.map((m, i) => (
+          <span
+            key={i}
+            className={cn(
+              "hidden text-muted-foreground tabular-nums @2xl:block",
+              i > 0 && "text-right",
+            )}
+          >
+            {m}
+          </span>
+        ))}
+      </Link>
+    </li>
+  )
+}
+
+function VideoRows({ videos, total }: { videos: Video[]; total: number }) {
+  return (
+    <div className="@container">
+      <div className="hidden grid-cols-[8rem_minmax(0,1fr)_6rem_4.5rem_5rem] gap-4 border-b px-3 py-2 text-xs font-medium text-muted-foreground @2xl:grid">
+        <span />
+        <span>Title ({formatCount(total)})</span>
+        <span>Uploaded</span>
+        <span className="text-right">Duration</span>
+        <span className="text-right">Size</span>
+      </div>
+      <ul className="flex flex-col divide-y">
+        {videos.map((v) => (
+          <VideoRow key={v.id} video={v} />
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function ShortTile({ video }: { video: Video }) {
+  return (
+    <Link to={videoHref(video.id)} className="group flex flex-col gap-1.5">
+      {/* The 9:16 frame. A Short without one falls back to the 4:3 frame, cropped. */}
       <img
-        src={`https://i.ytimg.com/vi/${encodeURIComponent(video.id)}/mqdefault.jpg`}
+        src={thumbUrl(video.id, "oar")}
         alt=""
         loading="lazy"
         referrerPolicy="no-referrer"
-        className="aspect-video w-full rounded bg-muted object-cover"
+        onError={(e) => {
+          const fallback = thumbUrl(video.id, "hq")
+          if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback
+        }}
+        className="aspect-9/16 w-full rounded-lg bg-muted object-cover"
       />
       <span className="line-clamp-2 text-sm font-medium group-hover:underline" title={video.title}>
         {video.title}
       </span>
       <span className="text-xs text-muted-foreground tabular-nums">
-        {formatUploadDate(video.upload_date)} · {formatDuration(video.duration)} ·{" "}
-        {formatBytes(video.size_bytes)}
+        {formatUploadDate(video.upload_date)} · {formatBytes(video.size_bytes)}
       </span>
     </Link>
   )
 }
 
-// Stored videos the channel uploaded or its sources list, one group per type,
-// newest upload first. A collaboration is stored under the uploader its info
-// names, so this uses `listed_by`, not the uploader filter.
-export function ChannelVideos({ channelId }: { channelId: string }) {
-  const [limits, setLimits] = useState<Record<string, number>>({})
-  const results = useQueries({
-    queries: GROUPS.map(({ type }) => {
-      const limit = limits[type] ?? PAGE
-      return {
-        queryKey: ["videos", { listedBy: channelId, type, state: "complete", limit }],
-        queryFn: () => api.videos({ listed_by: channelId, type, state: "complete", limit }),
-        placeholderData: keepPreviousData,
-      }
-    }),
-  })
-
-  if (results.some((r) => r.isPending)) return <Skeleton className="h-40 w-full" />
-  const failed = results.find((r) => r.isError)
-  if (failed?.error) return <ErrorBox error={failed.error} />
-  const groups = GROUPS.map((g, i) => ({ ...g, page: results[i].data })).filter(
-    (g) => g.page && g.page.total > 0,
-  )
-  if (groups.length === 0)
-    return <p className="p-4 text-sm text-muted-foreground">No video is stored yet.</p>
-
+// Complete videos in the scope, a page at a time, filtered by `q`.
+export function StoredVideos({
+  scope,
+  q,
+  order,
+  tiles = false,
+}: {
+  scope: VideoScope
+  q: string
+  order: VideoOrder
+  // Shorts show as 9:16 tiles, everything else as rows.
+  tiles?: boolean
+}) {
+  const pages = useStoredVideos(scope, q, order)
+  if (pages.isPending) return <Skeleton className="h-48 w-full" />
+  if (pages.isError) return <ErrorBox error={pages.error} />
+  const videos = pages.data.pages.flatMap((p) => p.items)
+  const total = pages.data.pages[0].total
+  if (videos.length === 0)
+    return (
+      <p className="p-6 text-center text-sm text-muted-foreground">
+        {q ? `No stored video matches "${q}".` : "No video is stored here yet."}
+      </p>
+    )
   return (
-    <div className="flex flex-col divide-y">
-      {groups.map(({ type, label, page }) =>
-        page ? (
-          <div key={type} className="flex flex-col gap-3 p-4">
-            <div className="flex items-baseline justify-between gap-2">
-              <h3 className="text-sm font-medium">
-                {label} ({formatCount(page.total)})
-              </h3>
-              <Link
-                className="text-xs text-muted-foreground hover:underline"
-                to={`/videos?listed_by=${encodeURIComponent(channelId)}&type=${type}`}
-              >
-                Open in Videos
-              </Link>
-            </div>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
-              {page.items.map((v) => (
-                <VideoCard key={v.id} video={v} />
-              ))}
-            </div>
-            {page.items.length < page.total && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-fit"
-                onClick={() =>
-                  setLimits({ ...limits, [type]: Math.min((limits[type] ?? PAGE) + PAGE * 2, 200) })
-                }
-                disabled={page.items.length >= 200}
-              >
-                Show more
-              </Button>
-            )}
-          </div>
-        ) : null,
+    <div className="flex flex-col">
+      {tiles ? (
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-3 p-3">
+          {videos.map((v) => (
+            <ShortTile key={v.id} video={v} />
+          ))}
+        </div>
+      ) : (
+        <VideoRows videos={videos} total={total} />
+      )}
+      {pages.hasNextPage && (
+        <div className="flex items-center gap-3 border-t p-3">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={pages.isFetchingNextPage}
+            onClick={() => pages.fetchNextPage()}
+          >
+            Show more
+          </Button>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {formatCount(videos.length)} of {formatCount(total)}
+          </span>
+        </div>
       )}
     </div>
+  )
+}
+
+function PlaylistFold({ source, order }: { source: Source; order: VideoOrder }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <li>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-muted/60"
+      >
+        <ChevronRightIcon
+          className={cn("size-4 shrink-0 transition-transform", open && "rotate-90")}
+        />
+        <span className="min-w-0 truncate font-medium" title={sourceLabel(source)}>
+          {sourceLabel(source)}
+        </span>
+        {!source.enabled && <Badge variant="outline">disabled</Badge>}
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+          last poll {source.last_polled_at ? formatDateTime(source.last_polled_at) : "waiting"}
+        </span>
+      </button>
+      {open && (
+        <div className="border-t bg-muted/20">
+          <StoredVideos scope={{ sourceId: source.id }} q="" order={order} />
+        </div>
+      )}
+    </li>
+  )
+}
+
+// Each playlist source, picked or under "all playlists", folds out to its stored videos.
+// `q` matches the playlist title.
+export function PlaylistFolds({
+  playlists,
+  q,
+  order,
+}: {
+  playlists: Source[]
+  q: string
+  order: VideoOrder
+}) {
+  const term = q.toLowerCase()
+  const shown = term
+    ? playlists.filter((s) => sourceLabel(s).toLowerCase().includes(term))
+    : playlists
+  if (shown.length === 0)
+    return (
+      <p className="p-6 text-center text-sm text-muted-foreground">
+        {q ? `No playlist matches "${q}".` : "No playlist is archived. Add one under Downloads."}
+      </p>
+    )
+  return (
+    <ul className="flex flex-col divide-y">
+      {shown.map((s) => (
+        <PlaylistFold key={s.id} source={s} order={order} />
+      ))}
+    </ul>
   )
 }

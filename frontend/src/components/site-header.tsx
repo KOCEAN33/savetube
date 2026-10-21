@@ -1,12 +1,22 @@
+import { useQuery } from "@tanstack/react-query"
 import { useLocation } from "react-router"
 
 import { DownloadPauseToggle } from "@/components/download-pause"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { navTitle } from "@/lib/nav"
+import { api } from "@/lib/api"
+import { channelIdOf, navTitle } from "@/lib/nav"
+
+function usePageTitle(): string {
+  const { pathname } = useLocation()
+  const channelId = channelIdOf(pathname)
+  const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
+  if (channelId === null) return navTitle(pathname)
+  return channels.data?.find((c) => c.id === channelId)?.name ?? "Channel"
+}
 
 export function SiteHeader() {
-  const { pathname } = useLocation()
+  const title = usePageTitle()
 
   return (
     <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">
@@ -16,7 +26,7 @@ export function SiteHeader() {
           orientation="vertical"
           className="mx-2 data-[orientation=vertical]:h-4"
         />
-        <h1 className="text-base font-medium">{navTitle(pathname)}</h1>
+        <h1 className="truncate text-base font-medium">{title}</h1>
         <div className="ml-auto">
           <DownloadPauseToggle />
         </div>

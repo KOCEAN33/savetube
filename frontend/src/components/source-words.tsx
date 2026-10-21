@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react"
+import { useState, type KeyboardEvent, type ReactNode } from "react"
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { MinusIcon, PlusIcon, XIcon } from "lucide-react"
 
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useDebounced } from "@/hooks/use-debounced"
 import { api, type TitleWord, type TitleWords } from "@/lib/api"
 import { MAX_WORD_LENGTH, MAX_WORDS, addWord, type WordList } from "@/lib/words"
 
@@ -191,15 +192,6 @@ export function SuggestionChips({
       })}
     </ul>
   )
-}
-
-function useDebounced<T>(value: T, ms: number): T {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(value), ms)
-    return () => clearTimeout(t)
-  }, [value, ms])
-  return debounced
 }
 
 // The body carries the source's own unsaved lists. The server merges the stored

@@ -40,7 +40,7 @@ export function RouteError() {
       <p className="text-sm font-medium">This page failed to load.</p>
       <p className="font-mono text-xs text-muted-foreground">{message}</p>
       <Link to="/" className="text-sm text-muted-foreground hover:underline">
-        Back to the dashboard
+        Back to Home
       </Link>
     </div>
   )
