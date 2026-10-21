@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Annotated, Any, Literal
@@ -27,6 +28,7 @@ from savetube.db.models import (
     VideoSource,
     VideoState,
 )
+from savetube.jobs import BLOCKED_LOG, NETWORK_LOG, NO_MEMBER, SHUTDOWN_LOG, STALLED_LOG
 from savetube.layout import VideoType
 from savetube.limits import TIMEZONE
 from savetube.logs import emit
@@ -34,7 +36,14 @@ from savetube.pipeline import get_or_create_channel
 from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
 from savetube.web.auth import CurrentUser, User, current_user
-from savetube.ytdl import DEFAULT_FORMAT, avatar_url, list_entries
+from savetube.ytdl import (
+    DEFAULT_FORMAT,
+    avatar_url,
+    list_entries,
+    members_only,
+    network_error,
+    youtube_block,
+)
 
 log = logging.getLogger(__name__)
 
@@ -137,14 +146,51 @@ class SourceOut(_Out):
     last_error: str | None
 
 
+# yt-dlp's wrapping around the message itself: the exception name, its
+# "ERROR:" prefix, a "[download] Got error:" retry line, and an
+# "[extractor] <video id>:" tag.
+_YTDLP_NOISE = re.compile(
+    r"^(?:\w+Error:\s*)?(?:ERROR:\s*)?(?:\[download\]\s*Got error:\s*)?(?:\[\w+\]\s*[\w-]+:\s*)?"
+)
+_REASON_CHARS = 120
+
+
+def job_reason(log_tail: str | None) -> str | None:
+    """One plain line for a finished job's log_tail."""
+    if not log_tail:
+        return None
+    text = log_tail.lower()
+    if youtube_block(log_tail):
+        return BLOCKED_LOG
+    if log_tail.startswith(STALLED_LOG):
+        return "worker stopped"
+    if log_tail.startswith(SHUTDOWN_LOG):
+        return "worker shut down"
+    if NO_MEMBER in log_tail or members_only(log_tail):
+        return "members-only, no member cookie profile"
+    if "integrity check failed" in text:
+        check = text.split("integrity check failed:", 1)[-1].split()
+        return f"integrity check failed: {check[0]}" if check else "integrity check failed"
+    if log_tail.startswith(NETWORK_LOG) or network_error(log_tail):
+        return NETWORK_LOG
+    # yt-dlp puts a carriage return before its retry line, so lines do not split it.
+    flat = " ".join(log_tail.split())
+    line = _YTDLP_NOISE.sub("", flat) or flat
+    return line if len(line) <= _REASON_CHARS else line[: _REASON_CHARS - 3] + "..."
+
+
 class JobOut(_Out):
     id: int
     kind: JobKind
     state: JobState
     video_id: str | None
-    # The video's title and channel, null for a job without a video.
+    # The video's title and its uploader channel, null for a job without a video.
     title: str | None
     channel_id: str | None
+    channel_name: str | None
+    # The run's error or interruption text, and one plain line made from it.
+    log_tail: str | None
+    reason: str | None
     attempts: int
     miss_reason: str | None
     scheduled_at: datetime | None
@@ -886,8 +932,9 @@ async def jobs(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[JobOut]:
     q = (
-        select(Job, Video.title, Video.channel_id)
+        select(Job, Video.title, Video.channel_id, Channel.name)
         .outerjoin(Video, Video.id == Job.video_id)
+        .outerjoin(Channel, Channel.id == Video.channel_id)
         .order_by(Job.id.desc())
         .limit(limit)
     )
@@ -897,10 +944,16 @@ async def jobs(
         q = q.where(Job.state.in_(state))
     if channel_id:
         q = q.where(_of_channel(channel_id))
-    own = JobOut.model_fields.keys() - {"title", "channel_id"}
+    own = JobOut.model_fields.keys() - {"title", "channel_id", "channel_name", "reason"}
     return [
-        JobOut(**{f: getattr(j, f) for f in own}, title=title, channel_id=cid)
-        for j, title, cid in await session.execute(q)
+        JobOut(
+            **{f: getattr(j, f) for f in own},
+            title=title,
+            channel_id=cid,
+            channel_name=name,
+            reason=job_reason(j.log_tail),
+        )
+        for j, title, cid, name in await session.execute(q)
     ]
 
 
@@ -973,6 +1026,12 @@ class DownloadSettingsOut(DownloadSettingsIn):
     # Set by a YouTube block, read-only here (savetube.jobs).
     blocked_until: datetime | None = None
     block_count: int = 0
+    # Set through PUT /api/download-settings/paused only.
+    paused: bool = False
+
+
+class PausedIn(BaseModel):
+    paused: bool
 
 
 def _hhmm(t: time | None) -> str | None:
@@ -989,6 +1048,7 @@ def _settings_out(row: DownloadSettings) -> DownloadSettingsOut:
         timezone=TIMEZONE.key,
         blocked_until=row.blocked_until,
         block_count=row.block_count,
+        paused=row.paused,
     )
 
 
@@ -1028,6 +1088,28 @@ async def replace_download_settings(
         window=f"{body.window_start}-{body.window_end}" if body.window_start else "none",
         cookie_profile=body.cookie_profile or "none",
     )
+    return _settings_out(row)
+
+
+@router.put("/download-settings/paused")
+async def pause_downloads(session: Session, body: PausedIn) -> DownloadSettingsOut:
+    """Pause or resume archive downloads. The next dispatch, and every running
+    download within PAUSE_POLL_SECONDS, applies it. Recordings ignore it."""
+    row = await session.get(DownloadSettings, 1)
+    if row is None:
+        row = DownloadSettings(id=1)
+        session.add(row)
+    changed = row.paused != body.paused
+    row.paused = body.paused
+    running = await limits.running(session)
+    await session.commit()
+    if changed:
+        emit(
+            log,
+            logging.INFO,
+            "dispatch.paused" if body.paused else "dispatch.resumed",
+            running=running,
+        )
     return _settings_out(row)
 
 

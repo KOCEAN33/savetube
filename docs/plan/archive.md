@@ -67,6 +67,13 @@
 - `PATCH /api/sources/{id}` with `archiving: true` resumes downloads, and the source is polled on the next scheduler tick. On a `playlists` parent the flag is copied to every child, and a child created later takes the parent's value.
 - Sources that existed before migration 0003 keep downloading: the migration sets `archiving` on for them.
 - Live detection ignores `archiving`.
+- `download_settings.paused` pauses every archive download. The user sets it with the header's pause switch (frontend.md). Polls go on and still create archive jobs, which wait.
+- While paused, the dispatcher queues nothing and the worker hands a job back with `job.returned` reason "paused". `job.deferred_until` stays null, because a pause has no known end.
+- A pause also stops running archive downloads. Each running download reads the flag every 5 s (`PAUSE_POLL_SECONDS` in `savetube.jobs`), so a download stops within about 5 s. The stop is a SIGTERM cancel (Resuming and verifying downloads): the child is killed, the `.part` files and the pin stay, the job is interrupted with no attempt used and `log_tail` "paused by user", and `job.interrupted` logs at INFO. The queue job ends as succeeded.
+- A failed flag read logs `job.pause_check_failed` at WARNING, and the download goes on.
+- Resuming clears the flag. The next dispatch, within 10 s, queues waiting jobs, and an interrupted job resumes its parts.
+- `PUT /api/download-settings/paused` logs `dispatch.paused` or `dispatch.resumed` at INFO with the running archive downloads, only when the value changes. `PUT /api/download-settings` leaves the flag as it is, so saving the limits never resumes downloads.
+- A live recording ignores the pause and is never stopped by it.
 
 ## Download limits
 
@@ -80,7 +87,7 @@
 - `job.deferred_until` holds the next window start for a waiting job outside the window, and null inside it. The dispatcher sets it on every run.
 - A dispatched job whose procrastinate job is no longer `todo` or `doing`, such as one that failed before the worker marked the row, goes back to waiting on the next dispatch. Otherwise it would hold its slot for good.
 - The worker checks the window and the free slots again before it starts. If it may not start, it hands the job back to waiting and queues nothing. The check, the `running` mark, and the dispatch all take one Postgres advisory lock, so a slot is never taken twice.
-- The worker deletes a procrastinate job when it succeeds, so `procrastinate_jobs` holds only todo, running, failed and cancelled jobs. A `job` row keeps the history.
+- The worker deletes a procrastinate job when it succeeds, so `procrastinate_jobs` holds only todo, running, failed and cancelled jobs. The hourly database cleanup deletes the finished ones after 30 days (Resuming and verifying downloads). A `job` row keeps the history. A `job.queue_job_id` that names a deleted procrastinate job reads as "no longer `todo` or `doing`".
 - A `PUT /api/download-settings` changes no job. The next dispatch, within 10 s, applies the new limits.
 - Migration `0006` deletes every `succeeded` procrastinate job and every `todo` archive procrastinate job. It clears `queue_job_id` and `deferred_until` on every `queued` archive job whose procrastinate job is not `doing`, so the dispatcher takes it. A `doing` job and its `job` row stay. The downgrade cancels every waiting archive job, so the old poll queues its video again.
 - Process health and job ownership are separate. Kubernetes judges health: worker and scheduler serve `GET /healthz` on `SAVETUBE_HEALTH_PORT` (default 8081) from their own asyncio loop, so a stuck loop fails the probe, and the chart sets a livenessProbe on it. The metrics port cannot serve this, because `prometheus_client` answers from its own thread while the loop hangs. Docker compose runs the same check as a `healthcheck`. Job ownership stays in Postgres as procrastinate's heartbeat lease.
@@ -97,8 +104,9 @@
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
-| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile, timezone, blocked_until, block_count}`. The last two are read-only |
+| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile, timezone, blocked_until, block_count, paused}`. The last three are read-only here |
 | `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile}`. A `cookie_profile` the scheduler has not recorded as present is a 422 | the settings |
+| `PUT /api/download-settings/paused` | `{paused}` | the settings |
 | `GET /api/cookie-profiles` | | `[{name}]`, the profiles the scheduler last recorded, by name. Never their content |
 | `GET /api/jobs` | | each job also carries `deferred_until` |
 | `PATCH /api/sources/{id}` | also `archiving` | the source, with `archiving` |
@@ -106,9 +114,11 @@
 ## Resuming and verifying downloads
 
 - An archive download works in `.incoming/<video id>/`, so every job for one video uses the same directory. A recording keeps `.incoming/<job id>/` and starts from the first segment on every attempt.
-- An interrupted run is one the worker stopped: a worker shutdown, or a reclaim after the worker died. It counts as no attempt. Only `failed` jobs count toward `MAX_ARCHIVE_ATTEMPTS`.
+- An interrupted run is one the worker stopped: a worker shutdown, a reclaim after the worker died, a YouTube block, or a network error. It counts as no attempt. Only `failed` jobs count toward `MAX_ARCHIVE_ATTEMPTS`.
 - An interruption keeps the job's id, so the job keeps its place in the queue. The run that started becomes its own `job` row with state `interrupted`, its start and end time, and the reason in `log_tail`. The job goes back to `queued` with no procrastinate job and `attempts` back where it was, so the dispatcher queues it again within 10 s. A dispatched job that no worker started goes back to waiting with no `interrupted` row.
 - An interruption keeps `.incoming/<video id>/`. The video goes back to `pending`.
+- A network error interrupts an archive run: yt-dlp text such as "Read timed out", "bytes read, ... more expected", "Connection reset", "Connection refused", "Remote end closed", "IncompleteRead", or "Network is unreachable" (`NETWORK_MARKERS` in `savetube.ytdl`). The run keeps the directory and `video.resume_format`, writes `log_tail` "network error: <yt-dlp text>", and logs `job.interrupted` at WARNING. It does not pause downloads. A YouTube block match wins over a network match.
+- After 5 network interruptions of one video since its last `failed` or `succeeded` archive job (`MAX_NETWORK_INTERRUPTS`), the next network error fails the job. The count comes from the `interrupted` rows with that `log_tail` prefix, ordered by `finished_at`.
 - On SIGTERM the worker stops taking jobs and cancels its downloads at once (`shutdown_graceful_timeout=0`). A cancel kills the download child, whose `.part` files stay, marks the job interrupted, and logs `job.interrupted` at INFO. The child ignores SIGINT and SIGTERM, so only the parent ends a download.
 - The worker's `terminationGracePeriodSeconds` is 30. A shutdown takes a few seconds, one kill and one database write per download. A worker still running at the deadline is killed, and the reclaim interrupts its jobs once procrastinate sees its heartbeat stop.
 - `download.format` stores the chosen format ids, such as `137+140`, in `video.resume_format`. The child sends them to the parent through the progress pipe.
@@ -116,7 +126,8 @@
 - When yt-dlp answers "Requested format is not available" to the pinned format, the run logs `download.restart` at WARNING, deletes the directory and the pin, and downloads again with the channel's selector in the same attempt.
 - A pin without its directory is cleared, and the download starts with the channel's selector.
 - A succeeded download moves the directory into the tree and clears the pin. A failed one deletes the directory and clears the pin.
-- The scheduler deletes, every hour, a directory under `.incoming/` with no file written for 7 days whose name is neither the video of a queued or running archive job nor the id of a queued or running job. It logs `incoming.deleted`. Seven days is longer than any wait for a download window, and a waiting job's directory is never deleted. Cancelled jobs and a video whose source stops archiving leave such directories.
+- The scheduler deletes, every hour, a directory under `.incoming/` with no file written for 7 days whose name is neither the video of a queued or running archive job nor the id of a queued or running job. It clears the `resume_format` pin of the video a deleted directory belongs to, and logs `incoming.deleted`. Seven days is longer than any wait for a download window, and a waiting job's directory is never deleted. Cancelled jobs and a video whose source stops archiving leave such directories.
+- The scheduler also cleans the database every hour (`savetube.cleanup`). It clears `job.progress` on every job that is not `running`. It deletes a procrastinate job in a finished status (`succeeded`, `failed`, `cancelled`, `aborted`) whose last event is older than 30 days, and its events with it. It deletes the `interrupted` archive rows of a video whose latest succeeded archive job finished more than 30 days ago. Succeeded, failed and cancelled rows stay, and so do the `interrupted` rows of a video not yet archived. It logs `cleanup.done` with the counts `progress`, `queue_jobs` and `interrupted`, only when one is above 0.
 - Before the move into the tree, `savetube.integrity` checks the download:
   - size: each stream file before the merge has the size of its format's exact `filesize`. A format with only `filesize_approx` is not checked. The child reports each finished stream's size, because the merge deletes the stream files.
   - probe: `ffprobe` reads the final file. Its duration is within the larger of 2 s and 1% of the info dict's `duration`, when the info dict has one. It has a video stream when the format's `vcodec` is not `none`, and an audio stream when its `acodec` is not `none`.

@@ -137,6 +137,8 @@ class DownloadSettings(Base):
     # The pause after a YouTube block, and the blocks since the last success.
     blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     block_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    # The user's pause: no archive download starts, and running ones stop.
+    paused: Mapped[bool] = mapped_column(default=False, server_default=false())
     # The cookie profile of every poll, live probe and non-members download.
     # Null runs them cookie-free.
     cookie_profile: Mapped[str | None] = mapped_column(Text)

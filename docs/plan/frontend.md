@@ -7,7 +7,16 @@
 - Sidebar: Dashboard, Channels, Live, Settings, Videos. Videos stays as built and gets its own review later.
 - Live lists record jobs: detected, upcoming and recorded streams. Archive download jobs show on their channel's page.
 - Settings holds the download limits, the general cookie profile, and the global title words. The profile select offers "None (cookie-free)" and each present profile from `GET /api/cookie-profiles`.
+- The site header holds the pause switch for every archive download (archive.md, Pausing downloads), on every page. While paused it shows a "Downloads paused" badge and a Resume button. "Pause downloads" opens a confirmation modal first, because a pause stops the running downloads. Resume applies at once. Settings shows the same switch above the download limits.
 - Every create and edit form opens in a large modal in the middle of the screen, never a side sheet.
+
+## Dashboard
+
+- A "Downloads" card at the top shows archive downloads across every channel. Production holds many channels, so one channel's page cannot show them all.
+- The card's header counts the running and the queued jobs. Each running job shows its uploader channel, the video title linked to the video page, and the progress the channel page shows.
+- "Recently failed and interrupted" lists the latest 10 `failed` and `interrupted` archive runs, and "Show more" adds 10. Each shows the channel, the title, the finish time and the job's `reason`. Opening the reason shows the full `log_tail`.
+- The card refetches every 3 s while a download runs, and every 15 s otherwise.
+- The statistics cards, the chart and the per-channel table follow the card.
 
 ## Adding a channel
 
@@ -28,7 +37,7 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 - "What to archive", "Title words" and "Download settings" fold under their title. Each starts folded, and the browser keeps each section's open state in `localStorage`, shared by every channel page.
 - The Playlists area of "What to archive" shows the `other_channels` checkbox while the channel has a playlist source. It reads every top-level `playlist` and `playlists` source. When their values differ, it shows as mixed with a count, and a change sets every one. A `playlists` parent copies the value to its children. A playlist source added from the channel page takes the current value, and on when the channel has no playlist source yet.
 - Under both checkboxes, a line states that a video downloads once, sits under its uploader's channel folder, and shows on this channel's page.
-- "Downloads" shows the running archive download first: its title and the current stream's percent, downloaded and total bytes, speed and ETA. The queued jobs follow, oldest first, which is the order the dispatcher takes them. The latest succeeded, failed, cancelled and interrupted jobs come last. The queued and finished lists each show 10 jobs, and "Show more" adds 10.
+- "Downloads" shows the running archive download first: its title and the current stream's percent, downloaded and total bytes, speed and ETA. The queued jobs follow, oldest first, which is the order the dispatcher takes them. The latest succeeded, failed, cancelled and interrupted jobs come last, and a failed or interrupted row shows its `reason`, with the full `log_tail` on hover. The queued and finished lists each show 10 jobs, and "Show more" adds 10.
 - The downloads refetch every 3 s while a download runs, and every 15 s otherwise. The worker writes progress every 5 s, so a faster refetch shows nothing new.
 - A download shows no progress while yt-dlp fetches the metadata, subtitles and chat replay, because the progress counts the media only.
 - "Stored videos" lists the channel's complete videos in one group per type (videos, shorts, lives, members), newest upload first, 12 at a time. Each card shows the thumbnail, title, upload date, duration and size, and links to the video page.
@@ -41,7 +50,7 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 | `POST /api/channel-scan` | `{url}`, a channel URL | channel id, handle, name and `avatar_url`, the first-page entries `{video_id, title}` of each tab, and the playlists `{id, title, url}`. Listed live through yt-dlp, 502 on a yt-dlp error, 504 after 120 s |
 | `POST /api/title-preview` | `{channel_id?, titles, include_words, exclude_words}` | each title with `kept`, matched with the stored global lists and, when `channel_id` names a stored channel, its lists merged in |
 | `POST /api/channels` | the scan's channel URL, `channel_id`, `handle`, `name` and `avatar_url`, chosen tabs, chosen playlists or all playlists, `other_channels` (default true, applied to playlist sources only), `watch_lives`, words, `date_after`, `format` | the channel with its sources |
-| `GET /api/jobs` | `kind`, `state` (repeat it for several states), `channel_id`, `limit` | jobs, newest first. `channel_id` matches the jobs of videos the channel uploaded or its sources list. A running download carries `progress` `{format, pct, done, total, speed, eta}`, and `pct` is null without a total |
+| `GET /api/jobs` | `kind`, `state` (repeat it for several states), `channel_id`, `limit` | jobs, newest first. `channel_id` matches the jobs of videos the channel uploaded or its sources list. Each job carries the video's `title`, its uploader's `channel_id` and `channel_name`, `log_tail`, and `reason`. A running download carries `progress` `{format, pct, done, total, speed, eta}`, and `pct` is null without a total |
 | `GET /api/videos` | `channel_id` (the uploader), `listed_by` (the uploader or a channel whose sources list the video), `type`, `state`, `q`, `limit`, `offset` | `{total, items}`, newest upload first |
 
 ## Statistics
@@ -58,5 +67,6 @@ The dashboard reads Postgres. No second metrics store backs it.
 | Dataset free space | `statfs` on the mount, sampled into a table hourly |
 | Last sync per source | `source.last_polled_at`, `source.last_error` |
 
+- `reason` is one line the API makes from `log_tail`, with no column behind it. A YouTube block reads "blocked by YouTube", a `NETWORK_MARKERS` match (archive.md) "network error", and a missing member profile "members-only, no member cookie profile". An integrity failure names its check, and a worker stop reads "worker stopped" or "worker shut down". Any other text loses yt-dlp's prefixes and is cut to 120 characters.
 - `video.size_bytes` sums every file in the video's directory, so subtitles and thumbnails count.
 - A missed live is a detected stream whose recorder never captured from the first segment. It carries the reason: DVR off, ended before detection, or recorder failure.

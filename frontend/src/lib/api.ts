@@ -89,9 +89,13 @@ export interface Job {
   kind: JobKind
   state: JobState
   video_id: string | null
-  // The video's title and channel. Null for a job without a video.
+  // The video's title and its uploader channel. Null for a job without a video.
   title: string | null
   channel_id: string | null
+  channel_name: string | null
+  // The run's error or interruption text, and one plain line made from it.
+  log_tail: string | null
+  reason: string | null
   attempts: number
   miss_reason: MissReason | null
   scheduled_at: string | null
@@ -132,7 +136,8 @@ export interface Video {
 }
 
 export interface VideoDetail extends Video {
-  info: Record<string, unknown>
+  // yt-dlp's info, null until a download completes.
+  info: Record<string, unknown> | null
 }
 
 export interface VideoPage {
@@ -320,6 +325,8 @@ export interface DownloadSettingsIn {
 
 export interface DownloadSettings extends DownloadSettingsIn {
   timezone: string
+  // The user's pause of archive downloads. Set only through setDownloadsPaused.
+  paused: boolean
 }
 
 export const mutations = {
@@ -334,6 +341,8 @@ export const mutations = {
     request<Channel>("PATCH", `/api/channels/${encodeURIComponent(id)}`, body),
   replaceDownloadSettings: (body: DownloadSettingsIn) =>
     request<DownloadSettings>("PUT", "/api/download-settings", body),
+  setDownloadsPaused: (paused: boolean) =>
+    request<DownloadSettings>("PUT", "/api/download-settings/paused", { paused }),
   replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
 }
 
