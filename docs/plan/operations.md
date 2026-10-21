@@ -31,6 +31,7 @@
 - The scheduler logs `dispatch.waiting` when the reason work waits changes: no free slot, a YouTube block pause, or the window opens at a later time. It logs `queue.summary` every 10 minutes while a job waits or runs, with `blocked=` the pause end or `none`.
 - A YouTube block logs `dispatch.blocked` at WARNING when it starts a pause. The first archive success after the pause logs `dispatch.unblocked` at INFO.
 - The user's pause switch logs `dispatch.paused` or `dispatch.resumed` at INFO with `running`, the running archive downloads, only when the value changes. A running download whose pause check fails logs `job.pause_check_failed` at WARNING and goes on.
+- A run whose job row a reclaim took logs `job.disowned` at WARNING with `job`, `video` and `reason`, and writes nothing more (archive.md, Download limits).
 - The hourly database cleanup logs `cleanup.done` at INFO with the counts `progress`, `queue_jobs` and `interrupted`, only when one is above 0.
 - `poll.done` counts the listed entries, the queued jobs, and each skip reason: words, members-only without a member profile, another channel, date, live, private.
 - A membership check logs `membership.checked` at INFO with the channel, the profile, the video, and `member` yes or no. A check that ends in neither logs `membership.check_failed` at WARNING with the reason, and the previous result stays.

@@ -109,6 +109,31 @@ class Paused(Exception):
     """The user paused archive downloads while this one ran."""
 
 
+class Disowned(Exception):
+    """The job row is no longer this run's. A reclaim took it from a worker it
+    read as stalled, and a second run may work in the same directory."""
+
+
+async def _owner_lost(
+    session: AsyncSession, job_id: int, started_at: datetime, *, for_update: bool = False
+) -> str | None:
+    """Why the job row is no longer the run's that set `started_at`, or None
+    while it is. A reclaim sets the row back to queued, and the next run sets
+    a new `started_at`. `for_update` holds the row until the caller commits,
+    so no reclaim writes between the check and the caller's write."""
+    query = select(Job.state, Job.started_at).where(Job.id == job_id)
+    if for_update:
+        query = query.with_for_update()
+    row = (await session.execute(query)).one_or_none()
+    if row is None:
+        return "the job row is gone"
+    if row.state is not JobState.RUNNING:
+        return f"the job is {row.state.value}"
+    if row.started_at != started_at:
+        return "another run started the job"
+    return None
+
+
 def _log_format(info: dict[str, Any]) -> None:
     size = info.get("filesize") or info.get("filesize_approx")
     emit(
@@ -546,7 +571,8 @@ async def run(
         job.deferred_until = None
         job.state = JobState.RUNNING
         job.attempts += 1
-        job.started_at = datetime.now(UTC)
+        # Marks the row as this run's (_owner_lost).
+        run_started = job.started_at = datetime.now(UTC)
         await _set_video_state(session, video_id, VideoState.DOWNLOADING)
         if live:
             attempt, limit = job.attempts, None
@@ -584,6 +610,29 @@ async def run(
 
         streams: list[dict[str, Any]] = []
 
+        async def disowned(session: AsyncSession) -> bool:
+            """Whether the row is no longer this run's, which then writes
+            nothing and leaves the directory to the owner. Locks the row
+            until the session commits."""
+            if live:
+                return False
+            reason = await _owner_lost(session, job_id, run_started, for_update=True)
+            if reason is not None:
+                log_disowned(reason)
+            return reason is not None
+
+        def log_disowned(reason: str) -> None:
+            emit(
+                log,
+                logging.WARNING,
+                "job.disowned",
+                job=job_id,
+                video=video_id,
+                **described,
+                took=human_duration(time.monotonic() - started),
+                reason=reason,
+            )
+
         def interrupted(level: int, reason: str, present: str | None, **extra: Any) -> None:
             emit(
                 log,
@@ -604,10 +653,18 @@ async def run(
                 return
             async with sessionmaker() as session:
                 if message.get("event") == "format":
-                    await _pin(session, video_id, message["format_id"])
+                    # The pin belongs to the run that owns the directory.
+                    if live or await _owner_lost(session, job_id, run_started) is None:
+                        await _pin(session, video_id, message["format_id"])
                 else:
                     await session.execute(
-                        update(Job).where(Job.id == job_id).values(progress=message)
+                        update(Job)
+                        .where(
+                            Job.id == job_id,
+                            Job.state == JobState.RUNNING,
+                            Job.started_at == run_started,
+                        )
+                        .values(progress=message)
                     )
                 await session.commit()
 
@@ -647,6 +704,8 @@ async def run(
                 else:
                     info, checks = await _unless_paused(
                         sessionmaker,
+                        job_id,
+                        run_started,
                         _archive(
                             sessionmaker,
                             video_id,
@@ -662,6 +721,8 @@ async def run(
                     )
 
             async with sessionmaker() as session:
+                if await disowned(session):
+                    return
                 job = await session.get(Job, job_id)
                 video = await store(
                     session,
@@ -690,12 +751,18 @@ async def run(
                 took=human_duration(time.monotonic() - started),
                 path=video.dir_path,
             )
+        except Disowned as e:
+            log_disowned(str(e))
         except (asyncio.CancelledError, Paused) as e:
             # A recorder's retry starts from the first segment anyway.
             if live:
                 raise
             reason = PAUSED_LOG if isinstance(e, Paused) else SHUTDOWN_LOG
             async with sessionmaker() as session:
+                if await disowned(session):
+                    if isinstance(e, Paused):
+                        return
+                    raise
                 job = await session.get(Job, job_id)
                 await _interrupt(session, job, reason)
                 await session.commit()
@@ -710,7 +777,8 @@ async def run(
             raise
         except Exception as e:
             if not live and isinstance(e, DownloadFailed) and youtube_block(str(e)):
-                await _blocked(sessionmaker, job_id, e)
+                if not await _blocked(sessionmaker, job_id, e, disowned):
+                    return
                 interrupted(
                     logging.WARNING,
                     BLOCKED_LOG,
@@ -730,6 +798,8 @@ async def run(
             ):
                 prefix = NETWORK_LOG if progressed else NETWORK_STALL_LOG
                 async with sessionmaker() as session:
+                    if await disowned(session):
+                        return
                     job = await session.get(Job, job_id)
                     await _interrupt(session, job, f"{prefix}: {e}"[:LOG_TAIL_CHARS])
                     await session.commit()
@@ -741,10 +811,12 @@ async def run(
                 )
                 setattr(e, _RECORDED, True)
                 raise
-            # A retry after a real failure starts over, so the parts would
-            # otherwise stay on the dataset for good.
-            shutil.rmtree(workdir, ignore_errors=True)
             async with sessionmaker() as session:
+                if await disowned(session):
+                    return
+                # A retry after a real failure starts over, so the parts would
+                # otherwise stay on the dataset for good.
+                shutil.rmtree(workdir, ignore_errors=True)
                 job = await session.get(Job, job_id)
                 job.state = JobState.FAILED
                 job.finished_at = datetime.now(UTC)
@@ -771,10 +843,13 @@ async def run(
             raise
 
 
-async def _unless_paused[T](sessionmaker: async_sessionmaker, work: Awaitable[T]) -> T:
+async def _unless_paused[T](
+    sessionmaker: async_sessionmaker, job_id: int, started_at: datetime, work: Awaitable[T]
+) -> T:
     """Await `work`, and cancel it when the user pauses archive downloads,
-    raising Paused. A cancel kills the download child and keeps its parts,
-    as a shutdown does."""
+    raising Paused, or when the job row is no longer the run's that set
+    `started_at`, raising Disowned. A cancel kills the download child and
+    keeps its parts, as a shutdown does."""
     task = asyncio.ensure_future(work)
     try:
         while not task.done():
@@ -784,17 +859,18 @@ async def _unless_paused[T](sessionmaker: async_sessionmaker, work: Awaitable[T]
             try:
                 async with sessionmaker() as session:
                     paused = (await load(session)).paused
+                    lost = await _owner_lost(session, job_id, started_at)
             except Exception as e:
                 # A database hiccup must not end a download that runs for hours.
                 emit(log, logging.WARNING, "job.pause_check_failed", reason=f"{e}")
                 continue
-            if paused:
+            if paused or lost is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
                 # A download that ended before the cancel keeps its result.
                 if task.cancelled():
-                    raise Paused
+                    raise Paused if lost is None else Disowned(lost)
     except asyncio.CancelledError:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -803,12 +879,21 @@ async def _unless_paused[T](sessionmaker: async_sessionmaker, work: Awaitable[T]
     return task.result()
 
 
-async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFailed) -> None:
+async def _blocked(
+    sessionmaker: async_sessionmaker,
+    job_id: int,
+    e: DownloadFailed,
+    disowned: Callable[[AsyncSession], Awaitable[bool]],
+) -> bool:
     """Interrupt an archive job YouTube refused, so it counts no attempt and
     keeps its parts, and pause archive downloads. Jobs refused together pause
-    once: only the first one past an expired pause lengthens it."""
+    once: only the first one past an expired pause lengthens it. A run whose
+    row `disowned` finds is no longer its own writes nothing, and this returns
+    False."""
     async with sessionmaker() as session:
         await lock(session)
+        if await disowned(session):
+            return False
         limits = await session.get(DownloadSettings, 1)
         if limits is None:
             limits = DownloadSettings(id=1, max_concurrent=1, block_count=0)
@@ -834,6 +919,7 @@ async def _blocked(sessionmaker: async_sessionmaker, job_id: int, e: DownloadFai
             video=job.video_id,
             reason=logs.cut(str(e)),
         )
+    return True
 
 
 async def _network_stalls(sessionmaker: async_sessionmaker, video_id: str) -> int:
