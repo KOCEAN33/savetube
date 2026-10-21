@@ -270,6 +270,9 @@ async def test_poll_queues_unstored_videos_once(settings):
         # A new job waits for the dispatcher, with no queue job of its own.
         assert all(j.state is JobState.QUEUED and j.queue_job_id is None for j in jobs.values())
         assert (await session.get(Video, "new")).state is VideoState.PENDING
+        # A requeued failure waits as pending. One out of attempts stays failed.
+        assert (await session.get(Video, "retry")).state is VideoState.PENDING
+        assert (await session.get(Video, "gave_up")).state is VideoState.FAILED
         assert (await session.get(Video, "new")).channel_id == "UC1"
         assert await session.get(Video, "upcoming") is None
         assert (await session.get(Channel, "UC1")).dir_name == "Chan [UC1]"
@@ -1489,6 +1492,63 @@ async def test_poll_links_every_stored_video_and_cancels_queued_jobs_the_words_d
     # Another source lists `shared`, so this source's words do not cancel it.
     assert states[105] is JobState.QUEUED
     await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_queued_job_another_source_lists_is_cancelled_unless_an_archiving_source_wants_it(
+    settings,
+):
+    tab = f"https://www.youtube.com/channel/{VESP}"
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, archiving,"
+        " poll_interval_minutes, exclude_words) VALUES"
+        f" (1, '{tab}/streams', 'tab', '{VESP}', true, true, 360, '{{告知}}'),"
+        # Wants every title.
+        f" (2, '{tab}/videos', 'tab', '{VESP}', true, true, 360, '{{}}'),"
+        # Skips the title too.
+        f" (3, '{PL}A', 'playlist', '{VESP}', true, true, 360, '{{告知}}'),"
+        f" (4, '{PL}B', 'playlist', '{VESP}', true, false, 360, '{{}}'),"
+        f" (5, '{PL}C', 'playlist', '{VESP}', false, true, 360, '{{}}')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        f" ('wanted', '{VESP}', 'lives', 'w', 'pending'),"
+        f" ('also_skipped', '{VESP}', 'lives', 'a', 'pending'),"
+        f" ('not_archiving', '{VESP}', 'lives', 'n', 'pending'),"
+        f" ('disabled', '{VESP}', 'lives', 'd', 'pending')",
+        "INSERT INTO video_source (video_id, source_id) VALUES"
+        " ('wanted', 2), ('wanted', 3), ('also_skipped', 3), ('not_archiving', 4),"
+        " ('disabled', 5)",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (101, 'archive', 'queued', 'wanted', 0),"
+        " (102, 'archive', 'queued', 'also_skipped', 0),"
+        " (103, 'archive', 'queued', 'not_archiving', 0),"
+        " (104, 'archive', 'queued', 'disabled', 0)",
+        "SELECT setval('job_id_seq', 200)",
+    )
+    listing = {
+        "channel_id": VESP,
+        "channel": "VESPERBELL",
+        "entries": [
+            {"id": v, "title": f"告知 {v}", "live_status": "was_live"}
+            for v in ("wanted", "also_skipped", "not_archiving", "disabled")
+        ],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await _poll(sessionmaker, settings, 1, listing)
+    async with sessionmaker() as session:
+        states = dict(
+            (await session.execute(sa.select(Job.id, Job.state).where(Job.id > 100))).all()
+        )
+    await engine.dispose()
+    assert states == {
+        101: JobState.QUEUED,
+        102: JobState.CANCELLED,
+        103: JobState.CANCELLED,
+        104: JobState.CANCELLED,
+    }
 
 
 def _profiles(settings, *names):
@@ -3260,6 +3320,59 @@ async def test_a_worker_shutdown_interrupts_the_download_and_keeps_its_parts(set
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("reported", [True, False])
+async def test_an_interruption_clears_progress_to_sql_null(settings, reported):
+    from savetube.jobs import run
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    started = asyncio.Event()
+
+    async def downloading(params, report):
+        if reported:
+            await report({"percent": 50})
+        started.set()
+        await asyncio.Event().wait()
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    task = asyncio.create_task(
+        run(1, settings, live=False, runner=_Steps(downloading), sessionmaker=sessionmaker)
+    )
+    await asyncio.wait_for(started.wait(), 10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await engine.dispose()
+    # A JSON null is IS NOT NULL in SQL, so the hourly cleanup would count it.
+    rows = _sql_rows(settings, "SELECT id, progress FROM job WHERE progress IS NOT NULL")
+    assert rows == ([(201, {"percent": 50})] if reported else [])
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("chat", "langs"),
+    [
+        # yt-dlp writes a subtitle to the temp path and renames a finished chat
+        # from its `.part`, so a file under its final name is complete.
+        (".tmp/v1.live_chat.json", ["all", "-live_chat"]),
+        ("v1.live_chat.json", ["all", "-live_chat"]),
+        (".tmp/v1.live_chat.json.part", ["all"]),
+        (None, ["all"]),
+    ],
+)
+async def test_a_resumed_run_skips_a_finished_chat_replay(settings, chat, langs):
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    workdir = settings.incoming_root / "v1"
+    if chat is not None:
+        (workdir / chat).parent.mkdir(parents=True, exist_ok=True)
+        (workdir / chat).write_text("{}")
+    runner = _Steps(_finished())
+    await _run_steps(settings, runner)
+    [params] = runner.calls
+    assert params["subtitleslangs"] == langs
+
+
+@pytest.mark.anyio
 async def test_a_retry_resumes_the_parts_with_the_pinned_format_and_counts_no_attempt(
     settings, caplog
 ):
@@ -3610,6 +3723,9 @@ async def test_a_youtube_block_interrupts_the_archive_job_and_pauses_downloads(s
     assert _events(caplog, "job.failed") == []
     [line] = _events(caplog, "job.interrupted")
     assert line.levelno == logging.WARNING and _fields(line)["reason"] == "blocked by YouTube"
+    fields = _fields(line)
+    assert list(fields) == ["job", "video", "channel", "title", "took", "present", "reason"]
+    assert fields["present"] == "2KiB"
     [blocked] = _events(caplog, "dispatch.blocked")
     assert blocked.levelno == logging.WARNING
     fields = _fields(blocked)
@@ -3717,6 +3833,11 @@ async def test_a_network_error_interrupts_the_archive_job_and_keeps_the_parts(
     assert _events(caplog, "job.failed") == [] and _events(caplog, "dispatch.blocked") == []
     [line] = _events(caplog, "job.interrupted")
     assert line.levelno == logging.WARNING and _fields(line)["reason"] == "network error"
+    fields = _fields(line)
+    assert list(fields) == [
+        *("job", "video", "channel", "title", "took", "present", "added", "reason")
+    ]
+    assert (fields["present"], fields["added"]) == ("2KiB", "2KiB")
 
 
 @pytest.mark.anyio
@@ -3937,6 +4058,37 @@ def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
     # The downgrade leaves the data as it is.
     assert states[2] == "interrupted"
     assert not columns & {"blocked_until", "block_count"}
+
+
+def test_migration_0012_sets_failed_videos_with_a_queued_archive_job_pending(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0011")
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('waits', 'UC1', 'videos', 't', 'failed'), ('gave_up', 'UC1', 'videos', 't', 'failed'),"
+        " ('recorded', 'UC1', 'lives', 't', 'failed'), ('done', 'UC1', 'videos', 't', 'complete')",
+        "INSERT INTO job (kind, state, video_id, attempts) VALUES"
+        " ('archive', 'failed', 'waits', 1), ('archive', 'queued', 'waits', 0),"
+        " ('archive', 'failed', 'gave_up', 1),"
+        " ('record', 'queued', 'recorded', 0),"
+        " ('archive', 'queued', 'done', 0)",
+    )
+    command.upgrade(cfg, "head")
+    states = dict(_sql_rows(settings, "SELECT id, state FROM video"))
+    assert states == {
+        "waits": "pending",
+        "gave_up": "failed",
+        "recorded": "failed",
+        "done": "complete",
+    }
+    command.downgrade(cfg, "0011")
+    assert dict(_sql_rows(settings, "SELECT id, state FROM video"))["waits"] == "pending"
 
 
 @pytest.mark.anyio

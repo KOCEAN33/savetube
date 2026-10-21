@@ -584,6 +584,20 @@ async def run(
 
         streams: list[dict[str, Any]] = []
 
+        def interrupted(level: int, reason: str, present: str | None, **extra: Any) -> None:
+            emit(
+                log,
+                level,
+                "job.interrupted",
+                job=job_id,
+                video=video_id,
+                **described,
+                took=human_duration(time.monotonic() - started),
+                present=present,
+                **extra,
+                reason=reason,
+            )
+
         async def report(message: dict[str, Any]) -> None:
             if message.get("event") == "stream":
                 streams.append(message)
@@ -620,6 +634,11 @@ async def run(
                     if not live:
                         # A `.part` file left by an interrupted run resumes.
                         p["continuedl"] = True
+                        # yt-dlp rewrites every subtitle it finds, and the chat
+                        # replay cannot resume. A finished one has its final name.
+                        chat = f"{video_id}.live_chat.json"
+                        if (workdir / chat).is_file() or (workdir / ".tmp" / chat).is_file():
+                            p["subtitleslangs"] = [*p["subtitleslangs"], "-live_chat"]
                     return p
 
                 checks = None
@@ -680,16 +699,10 @@ async def run(
                 job = await session.get(Job, job_id)
                 await _interrupt(session, job, reason)
                 await session.commit()
-            emit(
-                log,
+            interrupted(
                 logging.INFO,
-                "job.interrupted",
-                job=job_id,
-                video=video_id,
-                **described,
-                took=human_duration(time.monotonic() - started),
-                present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
-                reason=reason,
+                reason,
+                human_bytes(dir_size(workdir)) if workdir.exists() else None,
             )
             # A pause ends the queue job. The dispatcher queues the job again.
             if isinstance(e, Paused):
@@ -698,16 +711,10 @@ async def run(
         except Exception as e:
             if not live and isinstance(e, DownloadFailed) and youtube_block(str(e)):
                 await _blocked(sessionmaker, job_id, e)
-                emit(
-                    log,
+                interrupted(
                     logging.WARNING,
-                    "job.interrupted",
-                    job=job_id,
-                    video=video_id,
-                    **described,
-                    took=human_duration(time.monotonic() - started),
-                    present=human_bytes(dir_size(workdir)) if workdir.exists() else None,
-                    reason=BLOCKED_LOG,
+                    BLOCKED_LOG,
+                    human_bytes(dir_size(workdir)) if workdir.exists() else None,
                 )
                 setattr(e, _RECORDED, True)
                 raise
@@ -726,17 +733,11 @@ async def run(
                     job = await session.get(Job, job_id)
                     await _interrupt(session, job, f"{prefix}: {e}"[:LOG_TAIL_CHARS])
                     await session.commit()
-                emit(
-                    log,
+                interrupted(
                     logging.WARNING,
-                    "job.interrupted",
-                    job=job_id,
-                    video=video_id,
-                    **described,
-                    took=human_duration(time.monotonic() - started),
-                    present=human_bytes(present),
+                    prefix,
+                    human_bytes(present),
                     added=human_bytes(max(present - started_bytes, 0)),
-                    reason=prefix,
                 )
                 setattr(e, _RECORDED, True)
                 raise
