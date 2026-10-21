@@ -5,7 +5,7 @@
 - A source is one channel tab (`videos`, `shorts`, `streams`), one channel's playlists (`playlists`), or one playlist, stored as a canonical URL. Adding a bare channel URL creates one source per chosen tab.
 - The scheduler lists a due source with yt-dlp's flat extraction: ids and titles, no request per video. Listing a channel with a few thousand videos takes minutes, because every page request sleeps 0.75 s.
 - A tab's entries carry no `channel_id`, so the poll takes it from the listing. Playlist entries carry their own, and a private or deleted entry without one is skipped.
-- Every listed video that has a `video` row gets a `video_source` link, whether or not it passes the filters. A video that passes and is not yet stored gets a `pending` `video` row and an archive job, unless a job for it is queued or running, or three archive jobs for it have failed.
+- Every listed video that has a `video` row gets a `video_source` link, whether or not it passes the filters. A video that passes and is not yet stored gets a `pending` `video` row and an archive job, unless a job for it is queued or running, or three archive jobs for it have failed. A video queued again after a failure goes back to `pending`.
 - A poll puts no job on the procrastinate queue. A new archive job waits as `queued` until the scheduler's dispatcher queues it (Download limits).
 - A poll lists with the general cookie profile, or cookie-free when none is set (access.md, Cookies and account).
 - A members-only entry, flat `availability` `subscriber_only`, passes only when a present cookie profile is a confirmed member of the entry's channel. Otherwise every download attempt would fail. A skipped entry keeps its `listing_entry` row and its `video_source` link. The cancel rule for skipped titles (Title words) cancels its queued archive job. The first poll after a membership check confirms a member queues it.
@@ -37,6 +37,7 @@
 - The archive poll and live detection both apply the effective lists. A detected live queues a `record` job only when its title passes the effective lists of at least one watching source: an enabled tab source of a channel with watch lives on. When such a source exists on the `streams` tab, only `streams` sources count.
 - Live detection caches each probe's result per process and applies the words on every tick, so a word change takes effect without a restart.
 - A poll cancels a queued archive job, and its procrastinate job, for a listed video that no longer passes. A running job continues.
+- The job stays when another source that lists the video still passes it: an enabled source, with its parent enabled, with `archiving` on, judged by its own filters on this listing's entry.
 - A list holds at most 200 words of up to 100 characters each.
 - The global lists live in the single-row table `global_words`. The channel lists are columns on `channel`.
 - The poll replaces the source's `listing_entry` rows with the full listing before any filtering, so suggestions and the preview see titles the words skip.
@@ -126,6 +127,7 @@
 - The worker's `terminationGracePeriodSeconds` is 30. A shutdown takes a few seconds, one kill and one database write per download. A worker still running at the deadline is killed, and the reclaim interrupts its jobs once procrastinate sees its heartbeat stop.
 - `download.format` stores the chosen format ids, such as `137+140`, in `video.resume_format`. The child sends them to the parent through the progress pipe.
 - A retry with a pinned format and an existing directory passes the pinned format ids to yt-dlp instead of the channel's selector, with `continuedl` on, so yt-dlp continues each `.part` file. It logs `download.resume` with the bytes in the directory and in `.part` files.
+- A retry skips the chat replay when `<video id>.live_chat.json` is in the directory or its `.tmp/`, by adding `-live_chat` to `subtitleslangs`. yt-dlp rewrites every subtitle it finds, and a chat replay cannot resume. A finished chat has its final name, because yt-dlp renames it from its `.part` at the end.
 - When yt-dlp answers "Requested format is not available" to the pinned format, the run logs `download.restart` at WARNING, deletes the directory and the pin, and downloads again with the channel's selector in the same attempt.
 - A pin without its directory is cleared, and the download starts with the channel's selector.
 - A succeeded download moves the directory into the tree and clears the pin. A failed one deletes the directory and clears the pin.

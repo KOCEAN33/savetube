@@ -267,13 +267,17 @@ async def sync(
         elif failures.get(vid, 0) >= MAX_ARCHIVE_ATTEMPTS:
             result.gave_up += 1
         else:
+            # A retry after a failure waits like a new video.
+            videos[vid].state = VideoState.PENDING
             jobs.append(Job(kind=JobKind.ARCHIVE, video_id=vid))
     session.add_all(jobs)
     await session.flush()
     result.job_ids = [j.id for j in jobs]
     result.drops = [
         (job_id, vid, skipped[vid])
-        for job_id, vid in await _droppable(session, source.id, set(skipped))
+        for job_id, vid in await _droppable(
+            session, source.id, {vid: listed[vid] for vid in skipped}, members
+        )
     ]
     return result
 
@@ -293,21 +297,62 @@ async def _link(session: AsyncSession, source_id: int, video_ids: list[str]) -> 
 
 
 async def _droppable(
-    session: AsyncSession, source_id: int, skipped: set[str]
+    session: AsyncSession,
+    source_id: int,
+    skipped: dict[str, dict[str, Any]],
+    members: set[str],
 ) -> list[tuple[int, str]]:
-    """Queued archive jobs of videos this source's filters now skip. A video that
-    another source lists is left alone: that source may still want it, and
-    cancelling would race its next poll."""
-    elsewhere = select(VideoSource.video_id).where(VideoSource.source_id != source_id)
-    rows = await session.execute(
-        select(Job.id, Job.video_id).where(
-            Job.video_id.in_(skipped),
-            Job.video_id.not_in(elsewhere),
-            Job.kind == JobKind.ARCHIVE,
-            Job.state == JobState.QUEUED,
+    """Queued archive jobs of videos this source's filters now skip, unless
+    another enabled, archiving source that lists the video still passes it.
+    `skipped` holds this listing's entries by video id."""
+    rows = (
+        await session.execute(
+            select(Job.id, Job.video_id, Video.channel_id)
+            .join(Video, Video.id == Job.video_id)
+            .where(
+                Job.video_id.in_(skipped),
+                Job.kind == JobKind.ARCHIVE,
+                Job.state == JobState.QUEUED,
+            )
+        )
+    ).all()
+    if not rows:
+        return []
+    parent = aliased(Source)
+    others = await session.execute(
+        select(VideoSource.video_id, Source)
+        .join(Source, Source.id == VideoSource.source_id)
+        .outerjoin(parent, parent.id == Source.parent_id)
+        .where(
+            VideoSource.video_id.in_([r.video_id for r in rows]),
+            Source.id != source_id,
+            Source.enabled,
+            Source.archiving,
+            Source.parent_id.is_(None) | parent.enabled,
         )
     )
-    return [(r.id, r.video_id) for r in rows]
+    # A private playlist entry lists no channel. Its video row holds the uploader's.
+    owners = {r.video_id: r.channel_id for r in rows}
+    wanted: set[str] = set()
+    for vid, other in others:
+        if vid in wanted:
+            continue
+        entry = {**skipped[vid], "channel_id": skipped[vid]["channel_id"] or owners[vid]}
+        if await _wants(session, other, entry, members):
+            wanted.add(vid)
+    return [(r.id, r.video_id) for r in rows if r.video_id not in wanted]
+
+
+async def _wants(
+    session: AsyncSession, source: Source, entry: dict[str, Any], members: set[str]
+) -> bool:
+    """Whether `source`'s own poll would pass `entry`."""
+    parent = await session.get(Source, source.parent_id) if source.parent_id else None
+    own = [(parent.include_words, parent.exclude_words)] if parent is not None else []
+    own.append((source.include_words, source.exclude_words))
+    lists = await words.effective(session, entry["channel_id"], *own)
+    channel = await session.get(Channel, source.channel_id) if source.channel_id else None
+    return _skip(entry, source, channel, lists, members) is None
 
 
 async def _replace_listing(

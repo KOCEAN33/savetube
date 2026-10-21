@@ -271,8 +271,9 @@ class Job(Base):
     # window. Null inside it.
     deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The running download's current stream: savetube.logs.progress, written by
-    # the worker at most every few seconds.
-    progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # the worker at most every few seconds. None writes SQL NULL, not JSON
+    # null, so `progress IS NULL` holds for a cleared row.
+    progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
