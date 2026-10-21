@@ -18,11 +18,11 @@ from sqlalchemy.orm import aliased
 from savetube import words
 from savetube.config import Settings
 from savetube.db.models import (
+    Channel,
     Job,
     JobKind,
     JobState,
     ListingEntry,
-    Rule,
     Source,
     SourceKind,
     Video,
@@ -72,8 +72,7 @@ async def due_sources(session: AsyncSession, now: datetime) -> list[int]:
 def _wanted(
     entry: dict[str, Any],
     source: Source,
-    rule: Rule,
-    from_shorts_tab: bool,
+    channel: Channel | None,
     lists: words.Lists,
 ) -> bool:
     if entry.get("live_status") in _UNFINISHED_LIVE:
@@ -86,18 +85,16 @@ def _wanted(
         and entry["channel_id"] != source.channel_id
     ):
         return False
-    if classify(entry, from_shorts_tab=from_shorts_tab).value not in rule.types:
-        return False
     # The flat timestamp comes from "3 weeks ago", so the cutoff is as coarse
     # as YouTube's relative date. An entry without one passes.
     ts = entry.get("timestamp")
-    if rule.date_after and ts is not None:
-        return datetime.fromtimestamp(ts, UTC).date() >= rule.date_after
+    if channel is not None and channel.date_after and ts is not None:
+        return datetime.fromtimestamp(ts, UTC).date() >= channel.date_after
     return True
 
 
 async def sync(
-    session: AsyncSession, source: Source, rule: Rule, listing: dict[str, Any]
+    session: AsyncSession, source: Source, listing: dict[str, Any]
 ) -> tuple[list[int], list[int]]:
     """Record the listing. Return the ids of new archive jobs, and of queued archive
     jobs whose video no longer passes. The caller commits, then queues and cancels."""
@@ -145,11 +142,14 @@ async def sync(
         cid: await words.effective(session, cid, *own)
         for cid in {e["channel_id"] for e in listed.values()}
     }
+    # The source's channel holds the date cutoff, also for another channel's
+    # video in its playlist.
+    channel = await session.get(Channel, source.channel_id) if source.channel_id else None
     # A private or deleted video in a playlist lists with no channel.
     entries = {
         vid: e
         for vid, e in listed.items()
-        if e["channel_id"] and _wanted(e, source, rule, shorts, lists[e["channel_id"]])
+        if e["channel_id"] and _wanted(e, source, channel, lists[e["channel_id"]])
     }
 
     new_channels = {e["channel_id"]: e for vid, e in entries.items() if vid not in videos}
@@ -291,7 +291,6 @@ async def _add_playlists(session: AsyncSession, parent: Source, listing: dict[st
             title=titles[url],
             kind=SourceKind.PLAYLIST,
             channel_id=parent.channel_id,
-            rule_id=parent.rule_id,
             poll_interval_minutes=parent.poll_interval_minutes,
             other_channels=parent.other_channels,
             archiving=parent.archiving,
@@ -318,8 +317,8 @@ async def poll_source(
         source = await session.get(Source, source_id)
         if source is None:  # deleted since due_sources
             return
-        rule = await session.get(Rule, source.rule_id)
-        url, use_cookies = source.url, rule.use_cookies
+        channel = await session.get(Channel, source.channel_id) if source.channel_id else None
+        url, use_cookies = source.url, channel is not None and channel.use_cookies
 
     now = datetime.now(UTC)
     try:
@@ -327,15 +326,16 @@ async def poll_source(
             cookiefile = None
             if use_cookies:
                 if settings.cookies_file is None:
-                    raise RuntimeError("the rule uses cookies and SAVETUBE_COOKIES_FILE is unset")
+                    raise RuntimeError(
+                        "the channel uses cookies and SAVETUBE_COOKIES_FILE is unset"
+                    )
                 cookiefile = copy_cookies(settings.cookies_file, Path(private))
             listing = await asyncio.to_thread(lister, url, cookiefile)
         async with sessionmaker() as session:
             source = await session.get(Source, source_id)
-            rule = await session.get(Rule, source.rule_id)
             source.last_polled_at = now
             source.last_error = None
-            job_ids, drop_ids = await sync(session, source, rule, listing)
+            job_ids, drop_ids = await sync(session, source, listing)
             await session.commit()
     except Exception as e:
         log.exception("poll of source %s failed", source_id)

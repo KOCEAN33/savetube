@@ -76,11 +76,14 @@ def build_params(
     return params
 
 
-def list_entries(url: str, cookiefile: Path | None = None) -> dict[str, Any]:
+def list_entries(
+    url: str, cookiefile: Path | None = None, limit: int | None = None
+) -> dict[str, Any]:
     """A channel tab or playlist with flat entries: ids, titles, no per-video request.
 
     `approximate_date` turns "3 weeks ago" into an entry `timestamp`, which the
-    rule's date cutoff reads.
+    channel's date cutoff reads. `limit` stops after that many entries, so only
+    the pages holding them are requested.
     """
     params: dict[str, Any] = {
         "extract_flat": "in_playlist",
@@ -90,6 +93,8 @@ def list_entries(url: str, cookiefile: Path | None = None) -> dict[str, Any]:
     }
     if cookiefile is not None:
         params["cookiefile"] = str(cookiefile)
+    if limit is not None:
+        params["playlistend"] = limit
     with yt_dlp.YoutubeDL(params) as ydl:
         return ydl.sanitize_info(ydl.extract_info(url, download=False))
 

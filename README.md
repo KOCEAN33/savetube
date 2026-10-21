@@ -2,7 +2,7 @@
 
 Self-hosted YouTube archiver. It backs up chosen channels and playlists, records lives from their first second, and shows the archive and its statistics in one web UI. Built on yt-dlp.
 
-A scaffold: login, the read API, the schema, the storage pipeline, the image and the Helm chart exist. Live detection and source polling do not. The design is in `docs/plan.md`.
+A scaffold: login, the read API, the schema, the storage pipeline, the image and the Helm chart exist. Live detection and source polling do not. The design is in `docs/plan/`.
 
 ## Layout
 

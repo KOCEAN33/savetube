@@ -1,6 +1,6 @@
 """The single-replica loop: source polls, live detection, recorder Jobs, storage samples.
 
-Recorder Jobs are not built yet (docs/plan.md, Build order step 3).
+Recorder Jobs are not built yet (docs/plan/README.md, Build order step 3).
 """
 
 import asyncio

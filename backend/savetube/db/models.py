@@ -89,6 +89,11 @@ class Channel(Base):
     dir_name: Mapped[str] = mapped_column(unique=True)
     include_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
     exclude_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
+    # The listing's approximate timestamp is compared, so the cutoff is coarse.
+    date_after: Mapped[date | None]
+    format: Mapped[str] = mapped_column(default="bv*+ba/b", server_default="bv*+ba/b")
+    use_cookies: Mapped[bool] = mapped_column(default=False, server_default=false())
+    watch_lives: Mapped[bool] = mapped_column(default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -127,18 +132,6 @@ class DownloadSettings(Base):
     window_end: Mapped[time | None]
 
 
-class Rule(Base):
-    __tablename__ = "rule"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(unique=True)
-    types: Mapped[list[str]] = mapped_column(ARRAY(String(16)))
-    date_after: Mapped[date | None]
-    format: Mapped[str] = mapped_column(default="bv*+ba/b")
-    use_cookies: Mapped[bool] = mapped_column(default=False)
-    watch_lives: Mapped[bool] = mapped_column(default=False)
-
-
 class Source(Base):
     __tablename__ = "source"
 
@@ -151,7 +144,6 @@ class Source(Base):
     channel_id: Mapped[str | None] = mapped_column(ForeignKey("channel.id"))
     enabled: Mapped[bool] = mapped_column(default=True)
     poll_interval_minutes: Mapped[int] = mapped_column(default=360)
-    rule_id: Mapped[int] = mapped_column(ForeignKey("rule.id"))
     # Merged with the global, channel and parent lists (savetube.words.effective).
     include_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")
     exclude_words: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list, server_default="{}")

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
-import { api, type TitleWords } from "@/lib/api"
+import { api, type TitleWord, type TitleWords } from "@/lib/api"
 import { MAX_WORD_LENGTH, MAX_WORDS, addWord, type WordList } from "@/lib/words"
 
 export function WordListEditor({
@@ -120,51 +120,7 @@ export function WordSuggestions({
     if (words.isPending) body = <Skeleton className="h-16 w-full" />
     else if (words.isError) body = <ErrorBox error={words.error} />
     else if (words.data.length > 0)
-      body = (
-        <ul className="flex flex-wrap gap-1">
-          {words.data.map(({ word, count }) => {
-            const list = present.get(word.toLowerCase())
-            if (list)
-              return (
-                <li
-                  key={word}
-                  className="flex h-6 items-center gap-1 rounded-md border border-dashed px-2 text-xs text-muted-foreground"
-                >
-                  <span>{word}</span>
-                  <span>{list === "include_words" ? "included" : "excluded"}</span>
-                </li>
-              )
-            return (
-              <li key={word} className="flex items-center gap-0.5 rounded-md border pl-2 text-xs">
-                <span>{word}</span>
-                <span className="text-muted-foreground">{count}</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Include ${word}`}
-                  title="Include"
-                  disabled={disabled}
-                  onClick={() => onAdd(word, "include_words")}
-                >
-                  <PlusIcon />
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={`Exclude ${word}`}
-                  title="Exclude"
-                  disabled={disabled}
-                  onClick={() => onAdd(word, "exclude_words")}
-                >
-                  <MinusIcon />
-                </Button>
-              </li>
-            )
-          })}
-        </ul>
-      )
+      body = <SuggestionChips words={words.data} onAdd={onAdd} disabled={disabled} present={present} />
   }
 
   return (
@@ -175,6 +131,65 @@ export function WordSuggestions({
       </div>
       {body}
     </div>
+  )
+}
+
+export function SuggestionChips({
+  words,
+  onAdd,
+  disabled,
+  present,
+}: {
+  words: TitleWord[]
+  onAdd: (word: string, list: WordList) => void
+  disabled: boolean
+  // Every word already in an effective list, keyed by its lowercase form.
+  present: Map<string, WordList>
+}) {
+  return (
+    <ul className="flex flex-wrap gap-1">
+      {words.map(({ word, count }) => {
+        const list = present.get(word.toLowerCase())
+        if (list)
+          return (
+            <li
+              key={word}
+              className="flex h-6 items-center gap-1 rounded-md border border-dashed px-2 text-xs text-muted-foreground"
+            >
+              <span>{word}</span>
+              <span>{list === "include_words" ? "included" : "excluded"}</span>
+            </li>
+          )
+        return (
+          <li key={word} className="flex items-center gap-0.5 rounded-md border pl-2 text-xs">
+            <span>{word}</span>
+            <span className="text-muted-foreground">{count}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={`Include ${word}`}
+              title="Include"
+              disabled={disabled}
+              onClick={() => onAdd(word, "include_words")}
+            >
+              <PlusIcon />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={`Exclude ${word}`}
+              title="Exclude"
+              disabled={disabled}
+              onClick={() => onAdd(word, "exclude_words")}
+            >
+              <MinusIcon />
+            </Button>
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
@@ -236,6 +251,78 @@ export function TitlePreview({ sourceId, words }: { sourceId: number; words: Tit
         Preview{preview.isFetching && !preview.isPending ? " (updating)" : ""}
       </span>
       {content}
+    </div>
+  )
+}
+
+// Titles that are not stored, such as a channel scan's. The server merges the
+// stored global lists, and the channel's when `channelId` names a stored one.
+export function TitlesPreview({
+  titles,
+  words,
+  channelId,
+}: {
+  titles: string[]
+  words: TitleWords
+  channelId?: string
+}) {
+  const body = useDebounced(words, 300)
+  const preview = useQuery({
+    queryKey: ["titles-preview", channelId, titles, body],
+    queryFn: () => api.titlesPreview({ ...body, titles, channel_id: channelId }),
+    placeholderData: keepPreviousData,
+    enabled: titles.length > 0,
+  })
+
+  if (titles.length === 0)
+    return <p className="text-xs text-muted-foreground">No titles to preview.</p>
+  if (preview.isPending) return <Skeleton className="h-48 w-full" />
+  if (preview.isError) return <ErrorBox error={preview.error} />
+  const kept = preview.data.filter((t) => t.kept)
+  const skipped = preview.data.filter((t) => !t.kept)
+  return (
+    <div className="grid min-h-0 gap-3 md:grid-cols-2">
+      <TitleColumn label={`Kept (${kept.length})`} titles={kept} />
+      <TitleColumn
+        label={`Filtered out (${skipped.length})`}
+        titles={skipped}
+        muted
+        updating={preview.isFetching}
+      />
+    </div>
+  )
+}
+
+function TitleColumn({
+  label,
+  titles,
+  muted = false,
+  updating = false,
+}: {
+  label: string
+  titles: { title: string }[]
+  muted?: boolean
+  updating?: boolean
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <span className="text-sm font-medium">
+        {label}
+        {updating && <span className="ml-1 text-xs text-muted-foreground">(updating)</span>}
+      </span>
+      <ul
+        className={
+          muted
+            ? "h-72 overflow-y-auto rounded-md border text-xs text-muted-foreground"
+            : "h-72 overflow-y-auto rounded-md border text-xs"
+        }
+      >
+        {titles.map((t, i) => (
+          <li key={i} className="truncate border-b px-2 py-1 last:border-b-0" title={t.title}>
+            {t.title}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
