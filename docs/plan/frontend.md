@@ -52,7 +52,7 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 - A download shows no progress while yt-dlp fetches the metadata, subtitles and chat replay, because the progress counts the media only.
 - A video counts as the channel's when the channel uploaded it or one of its sources lists it. A collaboration on the channel's tab is stored under the uploader its info names, so the uploader alone misses it.
 - The sidebar count, the header's stored count and the video tabs count complete videos by that rule, through `listed_by`.
-- Thumbnails load from `i.ytimg.com`, because the web pod does not mount the archive.
+- Thumbnails load from `i.ytimg.com`, because no endpoint serves the stored thumbnail.
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
@@ -62,6 +62,13 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 | `GET /api/jobs` | `kind`, `state` (repeat it for several states), `channel_id`, `limit` | jobs, newest first. `channel_id` matches the jobs of videos the channel uploaded or its sources list. Each job carries the video's `title`, its uploader's `channel_id` and `channel_name`, `log_tail`, and `reason`. A running download carries `progress` `{format, pct, done, total, speed, eta}`, and `pct` is null without a total |
 | `GET /api/jobs/counts` | `kind`, `channel_id` | `{state: count}` with every job state, 0 when no job holds it. `channel_id` matches as in `GET /api/jobs` |
 | `GET /api/videos` | `channel_id` (the uploader), `listed_by` (the uploader or a channel whose sources list the video), `source_id` (videos `video_source` links to the source, or for a `playlists` parent to any of its children), `type`, `state`, `q`, `order` (`newest` or `oldest` upload first, default `newest`, a missing date last), `limit` (at most 200), `offset` | `{total, items}` |
+| `GET /api/videos/{id}/media` | | the stored `<id>.<info.ext>`, as `video/x-matroska` for mkv, with HEAD and HTTP Range (206, 416). The path comes from the row's `dir_path` under the archive root only. 404 unless the video is `complete` and the file exists |
+| `GET /api/videos/{id}/audio` | | the stored `<id>.opus` audio copy as `audio/ogg`, by the same rules |
+
+## Video page
+
+- A complete video's page plays the stored mkv in a `<video>` player with the YouTube thumbnail as poster, from `GET /api/videos/{id}/media`. An "Audio only" player below it plays the Opus copy, and "No audio copy stored." replaces it when the file is missing.
+- Chrome plays the mkv as stored: H.264, VP9 and AV1 video with Opus audio, seeking included. Safari is not supported, and no transcode or remux exists. A browser whose `canPlayType("video/x-matroska")` is empty gets a note instead of the player.
 
 ## Statistics
 
