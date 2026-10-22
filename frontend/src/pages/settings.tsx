@@ -23,6 +23,7 @@ import {
   type DownloadSettingsIn,
   type TitleWords,
 } from "@/lib/api"
+import { queryKeys } from "@/lib/query-keys"
 import { COMMON_SUBTITLE_LANGS, getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
 import { EXCLUDE_HINT, INCLUDE_HINT } from "@/lib/words"
 
@@ -99,7 +100,7 @@ function DownloadSettingsForm({
   const [invalid, setInvalid] = useState<string | null>(null)
   const save = useMutation({
     mutationFn: mutations.replaceDownloadSettings,
-    onSuccess: (updated) => queryClient.setQueryData(["download-settings"], updated),
+    onSuccess: (updated) => queryClient.setQueryData(queryKeys.downloadSettings(), updated),
   })
 
   function submit(e: FormEvent) {
@@ -250,8 +251,8 @@ function GlobalWordsForm({ initial }: { initial: TitleWords }) {
   const save = useMutation({
     mutationFn: mutations.replaceGlobalWords,
     onSuccess: (updated) => {
-      queryClient.setQueryData(["words"], updated)
-      queryClient.invalidateQueries({ queryKey: ["title-preview"] })
+      queryClient.setQueryData(queryKeys.words(), updated)
+      queryClient.invalidateQueries({ queryKey: queryKeys.titlePreviews() })
     },
   })
 
@@ -341,9 +342,9 @@ function SubtitleLangForm() {
 }
 
 export function SettingsPage() {
-  const settings = useQuery({ queryKey: ["download-settings"], queryFn: api.downloadSettings })
-  const profiles = useQuery({ queryKey: ["cookie-profiles"], queryFn: api.cookieProfiles })
-  const words = useQuery({ queryKey: ["words"], queryFn: api.globalWords })
+  const settings = useQuery({ queryKey: queryKeys.downloadSettings(), queryFn: api.downloadSettings })
+  const profiles = useQuery({ queryKey: queryKeys.cookieProfiles(), queryFn: api.cookieProfiles })
+  const words = useQuery({ queryKey: queryKeys.words(), queryFn: api.globalWords })
   return (
     <Page>
       <PageSection title="Global title words">

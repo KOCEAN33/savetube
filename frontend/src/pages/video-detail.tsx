@@ -13,6 +13,7 @@ import {
   formatDuration,
   formatUploadDate,
 } from "@/lib/format"
+import { queryKeys } from "@/lib/query-keys"
 
 function infoString(info: VideoDetail["info"], key: string): string | null {
   const value = info?.[key]
@@ -32,7 +33,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 export function VideoDetailPage() {
   const { id = "" } = useParams()
-  const video = useQuery({ queryKey: ["video", id], queryFn: () => api.video(id) })
+  const video = useQuery({ queryKey: queryKeys.video(id), queryFn: () => api.video(id) })
 
   return (
     <Page>

@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/select"
 import { api, type JobState } from "@/lib/api"
 import { JOB_STATES } from "@/lib/channel"
+import { IDLE_REFETCH_MS } from "@/lib/constants"
+import { queryKeys } from "@/lib/query-keys"
 
 const LIMIT = 200
 const ALL = "all"
@@ -20,11 +22,11 @@ const ALL = "all"
 export function LivePage() {
   const [params, setParams] = useSearchParams()
   const state = (params.get("state") as JobState | null) ?? undefined
-  const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
+  const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
   const jobs = useQuery({
-    queryKey: ["jobs", "record", state],
+    queryKey: queryKeys.recordJobs(state),
     queryFn: () => api.jobs({ kind: "record", state: state ? [state] : undefined, limit: LIMIT }),
-    refetchInterval: 15_000,
+    refetchInterval: IDLE_REFETCH_MS,
   })
   const channelName = new Map(channels.data?.map((c) => [c.id, c.name]))
   const watched = channels.data?.filter((c) => c.watch_lives) ?? []

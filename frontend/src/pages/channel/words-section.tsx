@@ -16,6 +16,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { api, mutations, type Channel, type Source, type TitleWords } from "@/lib/api"
 import { sourceLabel } from "@/lib/channel"
+import { queryKeys } from "@/lib/query-keys"
 import { EXCLUDE_HINT, INCLUDE_HINT, addWord, type WordList } from "@/lib/words"
 import { useInvalidate } from "@/pages/channel/use-invalidate"
 
@@ -72,7 +73,7 @@ function SourcePreview({ source }: { source: Source }) {
 
 export function WordsSection({ channel, sources }: { channel: Channel; sources: Source[] }) {
   const queryClient = useQueryClient()
-  const globalWords = useQuery({ queryKey: ["words"], queryFn: api.globalWords })
+  const globalWords = useQuery({ queryKey: queryKeys.words(), queryFn: api.globalWords })
   const [target, setTarget] = useState<WordTarget>("channel")
   const previewable = sources.filter((s) => s.kind !== "playlists")
   const [previewId, setPreviewId] = useState<number | null>(previewable[0]?.id ?? null)
@@ -81,17 +82,17 @@ export function WordsSection({ channel, sources }: { channel: Channel; sources: 
   const saveChannel = useMutation({
     mutationFn: (body: TitleWords) => mutations.updateChannel(channel.id, body),
     onSuccess: (updated) => {
-      queryClient.setQueryData<Channel[]>(["channels"], (cur) =>
+      queryClient.setQueryData<Channel[]>(queryKeys.channels(), (cur) =>
         cur?.map((c) => (c.id === updated.id ? updated : c)),
       )
-      queryClient.invalidateQueries({ queryKey: ["title-preview"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.titlePreviews() })
     },
   })
   const saveGlobal = useMutation({
     mutationFn: mutations.replaceGlobalWords,
     onSuccess: (updated) => {
-      queryClient.setQueryData(["words"], updated)
-      queryClient.invalidateQueries({ queryKey: ["title-preview"] })
+      queryClient.setQueryData(queryKeys.words(), updated)
+      queryClient.invalidateQueries({ queryKey: queryKeys.titlePreviews() })
     },
   })
   const channelWords: TitleWords = saveChannel.isPending

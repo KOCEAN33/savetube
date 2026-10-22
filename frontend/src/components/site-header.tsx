@@ -6,11 +6,12 @@ import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 import { api } from "@/lib/api"
 import { channelIdOf, navTitle } from "@/lib/nav"
+import { queryKeys } from "@/lib/query-keys"
 
 function usePageTitle(): string {
   const { pathname } = useLocation()
   const channelId = channelIdOf(pathname)
-  const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
+  const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
   if (channelId === null) return navTitle(pathname)
   return channels.data?.find((c) => c.id === channelId)?.name ?? "Channel"
 }

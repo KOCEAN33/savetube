@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/table"
 import { api, type VideoType } from "@/lib/api"
 import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
+import { queryKeys } from "@/lib/query-keys"
 
 const PAGE_SIZE = 50
 const ALL = "all"
@@ -38,9 +39,9 @@ export function VideosPage() {
   const listedBy = params.get("listed_by") ?? undefined
   const offset = Number(params.get("offset") ?? 0)
 
-  const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
+  const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
   const videos = useQuery({
-    queryKey: ["videos", { q, type, channelId, channelNameParam, listedBy, offset }],
+    queryKey: queryKeys.videos({ q, type, channelId, channelNameParam, listedBy, offset }),
     queryFn: () =>
       api.videos({
         q,

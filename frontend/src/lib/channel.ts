@@ -34,14 +34,6 @@ export function jobStateVariant(state: JobState) {
   return "outline" as const
 }
 
-// The worker writes progress every 5 s, so a faster refetch shows nothing new.
-export const RUNNING_REFETCH_MS = 3_000
-export const IDLE_REFETCH_MS = 15_000
-// Each job list shows a page and grows by a page per "Show more".
-export const JOB_PAGE = 10
-// GET /api/jobs caps limit at 500.
-export const MAX_JOB_LIMIT = 500
-
 // The channel URL without a tab, from one of its tab or playlists sources.
 export function channelBase(channelId: string, sources: Source[]): string {
   const own = sources.find((s) => s.channel_id === channelId && s.kind !== "playlist")

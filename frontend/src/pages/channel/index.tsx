@@ -11,7 +11,9 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { useDebounced } from "@/hooks/use-debounced"
 import { api, type Channel, type Source, type VideoOrder, type VideoType } from "@/lib/api"
+import { IDLE_REFETCH_MS } from "@/lib/constants"
 import { formatCount } from "@/lib/format"
+import { queryKeys } from "@/lib/query-keys"
 import { ChannelHeader } from "@/pages/channel/channel-header"
 import { DownloadsTab } from "@/pages/channel/downloads-tab"
 
@@ -38,7 +40,7 @@ function useTypeTotals(channelId: string): Partial<Record<VideoType, number>> {
   const types = Object.values(TAB_TYPE)
   const results = useQueries({
     queries: types.map((type) => ({
-      queryKey: ["videos", { listedBy: channelId, type, state: "complete", limit: 1 }],
+      queryKey: queryKeys.typeTotal({ listedBy: channelId, type, state: "complete", limit: 1 }),
       queryFn: () => api.videos({ listed_by: channelId, type, state: "complete", limit: 1 }),
     })),
   })
@@ -144,8 +146,12 @@ function ChannelView({ channel, sources }: { channel: Channel; sources: Source[]
 
 export function ChannelPage() {
   const { id = "" } = useParams()
-  const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
-  const sources = useQuery({ queryKey: ["sources"], queryFn: api.sources, refetchInterval: 15_000 })
+  const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
+  const sources = useQuery({
+    queryKey: queryKeys.sources(),
+    queryFn: api.sources,
+    refetchInterval: IDLE_REFETCH_MS,
+  })
   const channel = channels.data?.find((c) => c.id === id)
   const own = sources.data?.filter((s) => s.channel_id === id) ?? []
 

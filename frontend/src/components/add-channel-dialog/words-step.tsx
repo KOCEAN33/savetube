@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { SuggestionChips, TitlesPreview, WordListEditor } from "@/components/source-words"
 import { api, type ChannelScan, type TitleWords, type VideoTab } from "@/lib/api"
 import { VIDEO_TABS } from "@/lib/channel"
+import { queryKeys } from "@/lib/query-keys"
 import { EXCLUDE_HINT, INCLUDE_HINT, addWord, type WordList } from "@/lib/words"
 
 export function WordsStep({
@@ -16,7 +17,7 @@ export function WordsStep({
   words: TitleWords
   onChange: (words: TitleWords) => void
 }) {
-  const globalWords = useQuery({ queryKey: ["words"], queryFn: api.globalWords })
+  const globalWords = useQuery({ queryKey: queryKeys.words(), queryFn: api.globalWords })
   // The chosen tabs' titles, or every scanned title when only playlists are chosen.
   const shown = tabs.length > 0 ? tabs : VIDEO_TABS.map((t) => t.tab)
   const titles = [

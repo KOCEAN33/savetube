@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog"
 import { mutations, type ChannelIn, type ChannelScan, type TitleWords } from "@/lib/api"
 import { DEFAULT_FORMAT, VIDEO_TABS } from "@/lib/channel"
+import { queryKeys } from "@/lib/query-keys"
 
 const STEPS = ["Channel", "What to archive", "Title words", "Download settings"]
 
@@ -89,8 +90,8 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
   const save = useMutation({
     mutationFn: mutations.createChannel,
     onSuccess: (channel) => {
-      queryClient.invalidateQueries({ queryKey: ["channels"] })
-      queryClient.invalidateQueries({ queryKey: ["sources"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.channels() })
+      queryClient.invalidateQueries({ queryKey: queryKeys.sources() })
       onDone()
       navigate(`/channels/${encodeURIComponent(channel.id)}`)
     },

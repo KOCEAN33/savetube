@@ -6,12 +6,9 @@ import { JobsTable } from "@/components/jobs-table"
 import { QueryState } from "@/components/query-state"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
-import {
-  IDLE_REFETCH_MS,
-  JOB_PAGE,
-  MAX_JOB_LIMIT,
-  RUNNING_REFETCH_MS,
-} from "@/lib/channel"
+import { JOB_PAGE, MAX_JOB_LIMIT } from "@/lib/constants"
+import { queryKeys } from "@/lib/query-keys"
+import { refetchMs } from "@/lib/refetch"
 
 // The running download first, then the queued jobs in the order the
 // dispatcher takes them (oldest first), then the latest finished jobs.
@@ -19,7 +16,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
   const [queuedShown, setQueuedShown] = useState(JOB_PAGE)
   const [recentLimit, setRecentLimit] = useState(JOB_PAGE)
   const active = useQuery({
-    queryKey: ["jobs", "archive", channelId, "active"],
+    queryKey: queryKeys.channelActiveJobs(channelId),
     queryFn: () =>
       api.jobs({
         kind: "archive",
@@ -27,18 +24,17 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
         state: ["running", "queued"],
         limit: MAX_JOB_LIMIT,
       }),
-    refetchInterval: (q) =>
-      q.state.data?.some((j) => j.state === "running") ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
+    refetchInterval: (q) => refetchMs(q.state.data?.some((j) => j.state === "running")),
   })
   const busy = active.data?.some((j) => j.state === "running") ?? false
   // The active list stops at MAX_JOB_LIMIT, so the queued counts come from the server.
   const counts = useQuery({
-    queryKey: ["jobs", "archive", channelId, "counts"],
+    queryKey: queryKeys.archiveJobCounts(channelId),
     queryFn: () => api.jobCounts({ kind: "archive", channel_id: channelId }),
-    refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
+    refetchInterval: refetchMs(busy),
   })
   const recent = useQuery({
-    queryKey: ["jobs", "archive", channelId, "recent", recentLimit],
+    queryKey: queryKeys.channelRecentJobs(channelId, recentLimit),
     queryFn: () =>
       api.jobs({
         kind: "archive",
@@ -48,7 +44,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
         limit: recentLimit,
       }),
     placeholderData: (previous) => previous,
-    refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
+    refetchInterval: refetchMs(busy),
   })
 
   return (

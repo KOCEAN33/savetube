@@ -33,6 +33,7 @@ import {
   VIDEO_TABS,
 } from "@/lib/channel"
 import { formatDateTime } from "@/lib/format"
+import { queryKeys } from "@/lib/query-keys"
 import { useInvalidate } from "@/pages/channel/use-invalidate"
 
 function SourceActions({ source }: { source: Source }) {
@@ -135,7 +136,7 @@ function PlaylistPickerDialog({
   const invalidate = useInvalidate()
   const [picked, setPicked] = useState<string[]>([])
   const playlists = useQuery({
-    queryKey: ["channel-playlists", base],
+    queryKey: queryKeys.channelPlaylists(base),
     queryFn: () => api.channelPlaylists(base),
     enabled: open,
     // A failed listing already took seconds in yt-dlp. A retry triples the wait.

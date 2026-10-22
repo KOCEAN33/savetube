@@ -1,0 +1,102 @@
+import { get, request } from "@/lib/api/client"
+import type {
+  Channel,
+  ChannelIn,
+  ChannelPatch,
+  ChannelPlaylist,
+  ChannelScan,
+  CookieProfile,
+  DailyStat,
+  DownloadSettings,
+  DownloadSettingsIn,
+  Job,
+  JobKind,
+  JobState,
+  Me,
+  Source,
+  SourceIn,
+  SourcePatch,
+  Staging,
+  StatsSummary,
+  Subtitle,
+  TitleKept,
+  TitlePreview,
+  TitleWord,
+  TitleWords,
+  VideoDetail,
+  VideoOrder,
+  VideoPage,
+} from "@/lib/api/types"
+
+export const mutations = {
+  createSources: (body: SourceIn) => request<Source[]>("POST", "/api/sources", body),
+  updateSource: (id: number, body: SourcePatch) =>
+    request<Source>("PATCH", `/api/sources/${id}`, body),
+  pollSource: (id: number) => request<Source>("POST", `/api/sources/${id}/poll`),
+  deleteSource: (id: number) => request<void>("DELETE", `/api/sources/${id}`),
+  createChannel: (body: ChannelIn) =>
+    request<Channel & { sources: Source[] }>("POST", "/api/channels", body),
+  updateChannel: (id: string, body: ChannelPatch) =>
+    request<Channel>("PATCH", `/api/channels/${encodeURIComponent(id)}`, body),
+  replaceDownloadSettings: (body: DownloadSettingsIn) =>
+    request<DownloadSettings>("PUT", "/api/download-settings", body),
+  // The scheduler moves every staged video on its next check, within a minute.
+  moveStaged: () => request<Staging>("POST", "/api/staging/move"),
+  setDownloadsPaused: (paused: boolean) =>
+    request<DownloadSettings>("PUT", "/api/download-settings/paused", { paused }),
+  replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
+}
+
+export const api = {
+  me: () => get<Me>("/api/me"),
+  statsSummary: () => get<StatsSummary>("/api/stats/summary"),
+  statsDaily: (days: number) => get<DailyStat[]>("/api/stats/daily", { days }),
+  channels: () => get<Channel[]>("/api/channels"),
+  sources: () => get<Source[]>("/api/sources"),
+  globalWords: () => get<TitleWords>("/api/words"),
+  downloadSettings: () => get<DownloadSettings>("/api/download-settings"),
+  cookieProfiles: () => get<CookieProfile[]>("/api/cookie-profiles"),
+  // A POST that writes nothing: it lists live through yt-dlp, which can answer 502 or 504.
+  channelPlaylists: (url: string) =>
+    request<ChannelPlaylist[]>("POST", "/api/channel-playlists", { url }),
+  channelWords: (id: string) => get<TitleWord[]>(`/api/channels/${encodeURIComponent(id)}/words`),
+  // A POST that writes nothing: the word lists ride in the body.
+  titlePreview: (id: number, body: TitleWords) =>
+    request<TitlePreview>("POST", `/api/sources/${id}/title-preview`, body),
+  // A POST that writes nothing: it lists the channel live through yt-dlp, which can answer 502 or 504.
+  channelScan: (url: string) => request<ChannelScan>("POST", "/api/channel-scan", { url }),
+  // A POST that writes nothing: titles that are not stored, such as a scan's.
+  titlesPreview: (body: TitleWords & { titles: string[]; channel_id?: string }) =>
+    request<TitleKept[]>("POST", "/api/title-preview", body),
+  jobs: (query: { kind?: JobKind; state?: JobState[]; channel_id?: string; limit?: number }) =>
+    get<Job[]>("/api/jobs", query),
+  // Every state is present, zero when no job holds it.
+  jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
+    get<Record<JobState, number>>("/api/jobs/counts", query),
+  // The videos waiting on staging for the move into the tree.
+  staging: () => get<Staging>("/api/staging"),
+  videos: (query: {
+    // The uploader.
+    channel_id?: string
+    // Uploaders by name: a group's member channels share it under their own ids.
+    channel_name?: string
+    // The uploader, or a channel whose sources list the video.
+    listed_by?: string
+    // Videos the source lists. A `playlists` parent lists through its children.
+    source_id?: number
+    type?: string
+    state?: string
+    q?: string
+    // By upload date. Default newest.
+    order?: VideoOrder
+    limit?: number
+    offset?: number
+  }) => get<VideoPage>("/api/videos", query),
+  video: (id: string) => get<VideoDetail>(`/api/videos/${encodeURIComponent(id)}`),
+  // A complete video's stored mkv and its Opus audio copy, served with Range.
+  mediaUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/media`,
+  audioUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/audio`,
+  subtitles: (id: string) => get<Subtitle[]>(`/api/videos/${encodeURIComponent(id)}/subtitles`),
+  subtitleUrl: (id: string, lang: string) =>
+    `/api/videos/${encodeURIComponent(id)}/subtitles/${encodeURIComponent(lang)}`,
+}
