@@ -200,6 +200,7 @@ class JobOut(_Out):
     deferred_until: datetime | None
     # A running download's current stream, written every few seconds:
     # {format, pct, done, total, speed, eta}. pct is null without a total.
+    # After the last byte, {step}: merging, verifying, or audio.
     progress: dict[str, Any] | None
     created_at: datetime
     started_at: datetime | None
@@ -983,6 +984,24 @@ async def job_counts(
     counts = dict.fromkeys(JobState, 0)
     counts.update({state: n for state, n in await session.execute(q)})
     return counts
+
+
+class StagedOut(BaseModel):
+    count: int
+    bytes: int
+
+
+@router.get("/staging")
+async def staging(session: Session) -> StagedOut:
+    """The videos waiting on staging for the move into the tree."""
+    count, size = (
+        await session.execute(
+            select(func.count(), func.coalesce(func.sum(Video.size_bytes), 0)).where(
+                Video.state == VideoState.STAGED
+            )
+        )
+    ).one()
+    return StagedOut(count=count, bytes=size)
 
 
 @router.get("/videos")

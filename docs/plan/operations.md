@@ -32,6 +32,7 @@
 - A YouTube block logs `dispatch.blocked` at WARNING when it starts a pause. The first archive success after the pause logs `dispatch.unblocked` at INFO.
 - The user's pause switch logs `dispatch.paused` or `dispatch.resumed` at INFO with `running`, the running archive downloads, only when the value changes. A running download whose pause check fails logs `job.pause_check_failed` at WARNING and goes on.
 - A run whose job row a reclaim took logs `job.disowned` at WARNING with `job`, `video` and `reason`, and writes nothing more (archive.md, Download limits).
+- A staging move logs `staging.move` at INFO with `reason` (`batch`, `space` or `idle`), the count and the size, and `staging.moved` with the count moved and the time it took. A video that fails to move logs `staging.move_failed` at ERROR and waits for the next check.
 - The hourly database cleanup logs `cleanup.done` at INFO with the counts `progress`, `queue_jobs` and `interrupted`, only when one is above 0.
 - `poll.done` counts the listed entries, the queued jobs, and each skip reason: words, members-only without a member profile, another channel, date, live, private.
 - A membership check logs `membership.checked` at INFO with the channel, the profile, the video, and `member` yes or no. A check that ends in neither logs `membership.check_failed` at WARNING with the reason, and the previous result stays.

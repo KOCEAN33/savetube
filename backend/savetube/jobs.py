@@ -156,13 +156,6 @@ def _log_format(info: dict[str, Any]) -> None:
     )
 
 
-def _on_postprocessor(d: dict[str, Any]) -> None:
-    if d.get("status") != "started":
-        return
-    step = d.get("postprocessor")
-    emit(log, logging.INFO if step == "Merger" else logging.DEBUG, "download.merge", step=step)
-
-
 def logged_download(
     url: str, params: dict[str, Any], send: Callable[[dict[str, Any]], None] | None = None
 ) -> dict[str, Any]:
@@ -207,7 +200,16 @@ def logged_download(
             last_send = now
             send(logs.progress(d))
 
-    params = {**params, "progress_hooks": [on_progress], "postprocessor_hooks": [_on_postprocessor]}
+    def on_postprocessor(d: dict[str, Any]) -> None:
+        if d.get("status") != "started":
+            return
+        step = d.get("postprocessor")
+        merger = step == "Merger"
+        emit(log, logging.INFO if merger else logging.DEBUG, "download.merge", step=step)
+        if merger and send is not None:
+            send({"step": "merging"})
+
+    params = {**params, "progress_hooks": [on_progress], "postprocessor_hooks": [on_postprocessor]}
     return download(url, params, on_format=on_format)
 
 
@@ -356,7 +358,7 @@ async def _describe(session: AsyncSession, video_id: str) -> dict[str, Any]:
 def incoming_dir(settings: Settings, video_id: str) -> Path:
     """An archive download's working directory. It is per video, so a retry
     after an interruption finds the parts."""
-    return settings.incoming_root / video_id
+    return settings.download_root / video_id
 
 
 async def _interrupt(session: AsyncSession, job: Job, reason: str) -> None:
@@ -689,6 +691,15 @@ async def run(
                     )
                 await session.commit()
 
+        async def step(name: str) -> None:
+            """Name the stage after the last byte on the job row: `merging`
+            (from the child), `verifying`, or `audio`."""
+            try:
+                await report({"step": name})
+            except Exception as e:
+                # Display only. A failure here must not fail a stored download.
+                emit(log, logging.WARNING, "job.progress_failed", reason=f"{e}")
+
         # Any failure past RUNNING must reach the row, or the job stays running and
         # no poll queues the video again.
         try:
@@ -736,10 +747,12 @@ async def run(
                             fmt=fmt,
                             pinned=pinned,
                             report=report,
+                            step=step,
                             streams=streams,
                             tools=tools or integrity.Tools(),
                         ),
                     )
+                    await step("audio")
                     await audio.add(_media_path(info), tools or integrity.Tools())
 
             async with sessionmaker() as session:
@@ -752,6 +765,8 @@ async def run(
                     info=info,
                     incoming=workdir,
                     archive_root=settings.archive_root,
+                    # A recording goes straight into the tree.
+                    ready_root=None if live else settings.ready_root,
                     from_shorts_tab=shorts,
                 )
                 if checks is not None:
@@ -1062,6 +1077,7 @@ async def _archive(
     fmt: str,
     pinned: str | None,
     report: Report,
+    step: Callable[[str], Awaitable[None]],
     streams: list[dict[str, Any]],
     tools: integrity.Tools,
 ) -> tuple[dict[str, Any], list[str]]:
@@ -1158,6 +1174,7 @@ async def _archive(
             info = await fetch()
 
         media = _media_path(info) or workdir / "missing"
+        await step("verifying")
         try:
             checks = await asyncio.to_thread(
                 integrity.verify, media, info, list(streams), resumed=resumed, tools=tools
@@ -1186,8 +1203,10 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
     """Delete partial directories that no queued or running job wants and that
     nothing wrote to for ORPHAN_DAYS, so cancelled or abandoned parts do not
     fill the dataset."""
-    root = settings.incoming_root
-    if not root.is_dir():
+    roots = [
+        r for r in dict.fromkeys([settings.incoming_root, settings.download_root]) if r.is_dir()
+    ]
+    if not roots:
         return
     active = Job.state.in_([JobState.QUEUED, JobState.RUNNING])
     async with sessionmaker() as session:
@@ -1198,7 +1217,7 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
         wanted |= {str(i) for i in await session.scalars(select(Job.id).where(active))}
     cutoff = time.time() - ORPHAN_DAYS * 86400
     deleted = []
-    for d in root.iterdir():
+    for d in (d for root in roots for d in root.iterdir()):
         if not d.is_dir() or d.name in wanted:
             continue
         newest = max(p.stat().st_mtime for p in [d, *d.rglob("*")])

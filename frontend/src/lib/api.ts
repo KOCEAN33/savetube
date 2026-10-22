@@ -104,8 +104,13 @@ export interface Job {
   finished_at: string | null
   // A queued archive job waiting for the download window or a free slot.
   deferred_until: string | null
-  // A running download's current stream, updated every few seconds.
-  progress: JobProgress | null
+  // A running download's current stream, updated every few seconds, or the
+  // step after its last byte.
+  progress: JobProgress | JobStep | null
+}
+
+export interface JobStep {
+  step: "merging" | "verifying" | "audio"
 }
 
 export interface JobProgress {
@@ -386,6 +391,8 @@ export const api = {
   // Every state is present, zero when no job holds it.
   jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),
+  // The videos waiting on staging for the move into the tree.
+  staging: () => get<{ count: number; bytes: number }>("/api/staging"),
   videos: (query: {
     // The uploader.
     channel_id?: string

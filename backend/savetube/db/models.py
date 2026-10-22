@@ -32,6 +32,8 @@ class VideoState(enum.StrEnum):
     DOWNLOADING = "downloading"
     COMPLETE = "complete"
     FAILED = "failed"
+    # Downloaded and verified, waiting on staging for the move into the tree.
+    STAGED = "staged"
 
 
 class JobKind(enum.StrEnum):

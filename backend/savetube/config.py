@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     database_url: SecretStr = SecretStr("postgres://savetube@127.0.0.1:5432/savetube")
 
     archive_root: Path = Path("/archive")
+    # A volume on quiet disks for archive downloads. Finished ones wait there
+    # and move into the tree in batches (docs/plan/storage.md, Staging).
+    # Unset downloads into the archive's `.incoming/`.
+    staging_root: Path | None = None
     static_dir: Path | None = None
     # Cookie profiles, one Netscape cookie file `<name>.txt` each, mounted
     # read-only from a Secret. Every run copies its profile's file into a
@@ -71,7 +75,20 @@ class Settings(BaseSettings):
 
     @property
     def incoming_root(self) -> Path:
+        """Recordings, and staged videos on their way into the tree. On the
+        archive's filesystem, so the last step into the tree is a rename."""
         return self.archive_root / ".incoming"
+
+    @property
+    def download_root(self) -> Path:
+        """Where an archive download works, one directory per video."""
+        return self.staging_root / "incoming" if self.staging_root else self.incoming_root
+
+    @property
+    def ready_root(self) -> Path | None:
+        """Where a finished archive download waits for the move into the tree,
+        or None without staging."""
+        return self.staging_root / "ready" if self.staging_root else None
 
 
 @cache

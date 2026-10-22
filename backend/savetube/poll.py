@@ -260,7 +260,7 @@ async def sync(
     )
     jobs = []
     for vid in wanted:
-        if videos[vid].state is VideoState.COMPLETE:
+        if videos[vid].state in (VideoState.COMPLETE, VideoState.STAGED):
             result.stored += 1
         elif vid in active:
             result.in_flight += 1

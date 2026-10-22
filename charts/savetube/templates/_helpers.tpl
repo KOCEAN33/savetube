@@ -125,6 +125,52 @@ Both the claim and the mount are read-only, so the pod cannot write the tree. */
 {{- end }}
 {{- end -}}
 
+{{/* The staging volume of the worker and the scheduler (staging.existingClaim).
+Each include renders nothing without a claim. */}}
+{{- define "savetube.stagingEnv" -}}
+{{- if .Values.staging.existingClaim -}}
+- name: SAVETUBE_STAGING_ROOT
+  value: /staging
+{{- end }}
+{{- end -}}
+
+{{- define "savetube.stagingMount" -}}
+{{- if .Values.staging.existingClaim -}}
+- name: staging
+  mountPath: /staging
+{{- end }}
+{{- end -}}
+
+{{- define "savetube.stagingVolume" -}}
+{{- if .Values.staging.existingClaim -}}
+- name: staging
+  persistentVolumeClaim:
+    claimName: {{ .Values.staging.existingClaim }}
+{{- end }}
+{{- end -}}
+
+{{/* A new volume's root belongs to root. A pod-level fsGroup would also
+recursively chown the archive, a local PV, so one root container owns the
+staging root alone. */}}
+{{- define "savetube.stagingOwner" -}}
+{{- if .Values.staging.existingClaim -}}
+- name: staging-owner
+  image: {{ include "savetube.image" . }}
+  imagePullPolicy: {{ .Values.image.pullPolicy }}
+  command: ["chown", "{{ .Values.podSecurityContext.runAsUser }}:{{ .Values.podSecurityContext.runAsGroup }}", "/staging"]
+  securityContext:
+    runAsUser: 0
+    runAsNonRoot: false
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
+      add: [CHOWN]
+  volumeMounts:
+    {{- include "savetube.stagingMount" . | nindent 4 }}
+{{- end }}
+{{- end -}}
+
 {{- define "savetube.podCommon" -}}
 securityContext:
   {{- toYaml .Values.podSecurityContext | nindent 2 }}
