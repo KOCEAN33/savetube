@@ -461,9 +461,9 @@ async def test_the_streams_tab_decides_live_words_when_it_watches(settings):
 def test_api_channel_playlists_is_a_post_with_a_timeout(settings, monkeypatch):
     import time
 
-    from savetube.web import api
+    from savetube.web.api import scan
 
-    monkeypatch.setattr(api, "CHANNEL_PLAYLISTS_TIMEOUT", 0.2)
+    monkeypatch.setattr(scan, "CHANNEL_PLAYLISTS_TIMEOUT", 0.2)
 
     def slow(url, limit):
         time.sleep(1)

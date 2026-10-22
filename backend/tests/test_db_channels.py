@@ -111,9 +111,9 @@ def test_api_channel_scan_lists_the_first_page_of_each_tab_and_the_playlists(set
 def test_api_channel_scan_times_out(settings, monkeypatch):
     import time
 
-    from savetube.web import api
+    from savetube.web.api import scan
 
-    monkeypatch.setattr(api, "CHANNEL_PLAYLISTS_TIMEOUT", 0.2)
+    monkeypatch.setattr(scan, "CHANNEL_PLAYLISTS_TIMEOUT", 0.2)
 
     def slow(url, limit):
         time.sleep(1)

@@ -15,7 +15,6 @@ from savetube.db.models import Source, SourceKind
 from savetube.logs import emit
 from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
-from savetube.web import api
 from savetube.web.api.deps import Session, _channel_base, log
 from savetube.web.api.schemas import WordCount, WordsIn, _Out
 from savetube.ytdl import avatar_url, list_entries
@@ -45,8 +44,6 @@ class ChannelUrl(BaseModel):
 
 # A listing holds a yt-dlp extraction and YouTube requests for its whole run.
 _listings = asyncio.Semaphore(2)
-# The routes read it as `api.CHANNEL_PLAYLISTS_TIMEOUT`, so a patch on the
-# savetube.web.api package reaches them.
 CHANNEL_PLAYLISTS_TIMEOUT = 120
 # Entries per tab in a channel scan: one page of YouTube's tab listing.
 SCAN_PAGE = 30
@@ -81,7 +78,7 @@ async def channel_playlists(
     """The channel's playlists, listed live, each with its source if one exists."""
     url = f"{_channel_base(body.url)}/{Tab.PLAYLISTS}"
     try:
-        async with asyncio.timeout(api.CHANNEL_PLAYLISTS_TIMEOUT):
+        async with asyncio.timeout(CHANNEL_PLAYLISTS_TIMEOUT):
             listing = await _list(scanner, url, None)
     except TimeoutError:
         _scan_failed(url, 504, "timed out")
@@ -150,7 +147,7 @@ async def channel_scan(
     words can be set against real titles before anything is stored."""
     base = _channel_base(body.url)
     try:
-        async with asyncio.timeout(api.CHANNEL_PLAYLISTS_TIMEOUT):
+        async with asyncio.timeout(CHANNEL_PLAYLISTS_TIMEOUT):
             *tabs, playlists = await asyncio.gather(
                 *(_scan_one(scanner, f"{base}/{t}", SCAN_PAGE) for t in SCAN_TABS),
                 _scan_one(scanner, f"{base}/{Tab.PLAYLISTS}", None),
