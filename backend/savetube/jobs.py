@@ -52,6 +52,8 @@ from savetube.ytdl import (
     DEFAULT_FORMAT,
     build_params,
     download,
+    exclude_formats,
+    format_server_error,
     network_error,
     video_url,
     youtube_block,
@@ -96,6 +98,10 @@ NETWORK_STALL_LOG = "network error, no progress"
 # resets the count, so a download that moves on is retried until it ends.
 MAX_NETWORK_STALLS = 5
 PAUSED_LOG = "paused by user"
+# Formats one attempt excludes after googlevideo refused each before its first
+# byte. A video offers a few formats near each quality, and more refusals in a
+# row point at the host rather than one format.
+MAX_FORMAT_FALLBACKS = 3
 # A running archive download reads the user's pause this often.
 PAUSE_POLL_SECONDS = 5
 NO_MEMBER = "no cookie profile is a confirmed member of the channel"
@@ -982,6 +988,34 @@ def _present(workdir: Path) -> int | None:
     return found
 
 
+def _part_sizes(workdir: Path) -> dict[Path, int]:
+    """yt-dlp's unfinished files: `.part`, and an HLS download's fragments,
+    `<name>.part-Frag<n>` until each is appended to its `.part`."""
+    return {f: f.stat().st_size for f in workdir.rglob("*.part*") if f.is_file()}
+
+
+def _refused(
+    e: DownloadFailed,
+    chosen: str | None,
+    streams: list[dict[str, Any]],
+    parts: dict[Path, int],
+    workdir: Path,
+) -> str | None:
+    """The format id googlevideo refused with HTTP 500 before the run added a
+    byte to it, or None. An HLS stream whose fragments all failed ends on an
+    empty file, which yt-dlp deletes. yt-dlp downloads the streams of
+    `chosen`, such as `299+251`, in that order, so the failing one is the
+    first that sent no `stream` event. Only the failing stream's `.part`
+    files can have grown since `parts`, because a finished stream loses its
+    `.part` suffix."""
+    if chosen is None or not format_server_error(str(e)):
+        return None
+    if any(size > parts.get(f, 0) for f, size in _part_sizes(workdir).items()):
+        return None
+    done = {s.get("format_id") for s in streams}
+    return next((f for f in chosen.split("+") if f not in done), None)
+
+
 def _part_bytes(workdir: Path) -> int:
     """The bytes in yt-dlp's unfinished `.part` files, which a resume continues."""
     return sum(f.stat().st_size for f in workdir.rglob("*.part") if f.is_file())
@@ -1020,8 +1054,57 @@ async def _archive(
 
     A download that fails a check starts over from zero once, within the same
     attempt. A second failure raises DownloadFailed.
+
+    A format googlevideo refuses before its first byte is excluded from the
+    channel's selector, and the download runs again, up to
+    MAX_FORMAT_FALLBACKS times per attempt.
     """
     url = video_url(video_id)
+    excluded: list[str] = []
+
+    async def fetch(pin: str | None = None) -> dict[str, Any]:
+        """One download with `pin`, else the channel's selector, again with
+        the format googlevideo refused excluded (_refused)."""
+        selector = pin or exclude_formats(fmt, excluded)
+        chosen: str | None = None
+        # The format refused last, logged with the one the next run picks.
+        pending: str | None = None
+
+        def fallback(format_id: str | None) -> None:
+            nonlocal pending
+            if pending is not None:
+                emit(
+                    log,
+                    logging.WARNING,
+                    "download.fallback",
+                    excluded=pending,
+                    format=format_id,
+                    reason="HTTP Error 500",
+                )
+                pending = None
+
+        async def seen(message: dict[str, Any]) -> None:
+            nonlocal chosen
+            if message.get("event") == "format":
+                chosen = message["format_id"]
+                fallback(chosen)
+            await report(message)
+
+        while True:
+            streams.clear()
+            chosen = None
+            parts = _part_sizes(workdir)
+            try:
+                return await runner(url, params(selector), seen)
+            except DownloadFailed as e:
+                fallback(None)
+                failed = _refused(e, chosen, streams, parts, workdir)
+                if failed is None or len(excluded) >= MAX_FORMAT_FALLBACKS:
+                    raise
+                excluded.append(failed)
+                pending = failed
+                selector = exclude_formats(fmt, excluded)
+
     for fresh in (False, True):
         streams.clear()
         present = _present(workdir)
@@ -1039,7 +1122,7 @@ async def _archive(
                 part=human_bytes(_part_bytes(workdir)),
             )
             try:
-                info = await runner(url, params(pinned), report)
+                info = await fetch(pinned)
             except DownloadFailed as e:
                 if FORMAT_GONE not in str(e):
                     raise
@@ -1054,9 +1137,9 @@ async def _archive(
                 await _start_over(sessionmaker, video_id, workdir)
                 streams.clear()
                 resumed = False
-                info = await runner(url, params(fmt), report)
+                info = await fetch()
         else:
-            info = await runner(url, params(fmt), report)
+            info = await fetch()
 
         media = _media_path(info) or workdir / "missing"
         try:

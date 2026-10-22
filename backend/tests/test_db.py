@@ -3820,6 +3820,196 @@ def _network_step(message=READ_TIMEOUT, progress=True):
     return step
 
 
+SERVER_500 = (
+    "DownloadError: ERROR: \r[download] Got error: HTTP Error 500: Internal Server Error."
+    " Giving up after 10 retries"
+)
+
+
+EMPTY_FILE = "DownloadError: ERROR: The downloaded file is empty"
+
+
+def _server_error(chosen, *, finished=(), added=0, suffix=".part", message=SERVER_500):
+    """A run that picks `chosen`, finishes the streams in `finished`, writes
+    `added` bytes of the next one into `v1.f<id>.mp4<suffix>`, and ends on
+    `message`."""
+
+    async def step(params, report):
+        from savetube.jobs import DownloadFailed
+
+        if chosen is not None:
+            await report({"event": "format", "format_id": chosen})
+        for format_id in finished:
+            await report({"event": "stream", "format_id": format_id, "size": 5, "expected": 5})
+        if added:
+            failing = next(f for f in chosen.split("+") if f not in finished)
+            _part(params, f"v1.f{failing}.mp4{suffix}", added)
+        raise DownloadFailed(message)
+
+    return step
+
+
+def _picks_then_finishes(chosen, seen=None):
+    inner = _finished()
+
+    async def step(params, report):
+        if seen is not None:
+            seen.append(sorted(p.name for p in _home(params).rglob("*")))
+        await report({"event": "format", "format_id": chosen})
+        return await inner(params, report)
+
+    return step
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("chosen", "finished", "excluded", "next_chosen"),
+    [
+        ("299+251", (), "299", "298+251"),
+        # yt-dlp downloads the streams in the order of the format ids.
+        ("299+251", ("299",), "251", "299+140"),
+        ("251", (), "251", "140"),
+    ],
+)
+async def test_a_format_googlevideo_refuses_is_excluded_within_the_attempt(
+    settings, caplog, chosen, finished, excluded, next_chosen
+):
+    import logging
+
+    from savetube.ytdl import exclude_formats
+
+    _job_rows(settings, "UPDATE channel SET format = 'bv*[height<=1080]+ba/b[height<=1080]'")
+    runner = _Steps(_server_error(chosen, finished=finished), _picks_then_finishes(next_chosen))
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner)
+    fmt = "bv*[height<=1080]+ba/b[height<=1080]"
+    assert [p["format"] for p in runner.calls] == [fmt, exclude_formats(fmt, [excluded])]
+    # One job row and one attempt: no failure, no interruption.
+    assert list(jobs) == [1]
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.SUCCEEDED, 1)
+    assert video.resume_format is None
+    [fallback] = _events(caplog, "download.fallback")
+    assert fallback.levelno == logging.WARNING
+    assert (_fields(fallback)["excluded"], _fields(fallback)["format"]) == (excluded, next_chosen)
+    assert _events(caplog, "job.interrupted") == []
+
+
+@pytest.mark.anyio
+async def test_an_hls_copy_of_a_refused_format_is_excluded_too(settings, caplog):
+    import logging
+
+    from savetube.ytdl import exclude_formats
+
+    _job_rows(settings, "UPDATE channel SET format = 'bv*+ba/b'")
+    # 312 is the HLS copy of 299. Every fragment gets HTTP 500, and yt-dlp
+    # skips each one and ends on an empty file.
+    runner = _Steps(
+        _server_error("299+251"),
+        _server_error("312+251", message=EMPTY_FILE),
+        _picks_then_finishes("298+251"),
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner)
+    assert [p["format"] for p in runner.calls] == [
+        "bv*+ba/b",
+        exclude_formats("bv*+ba/b", ["299"]),
+        exclude_formats("bv*+ba/b", ["299", "312"]),
+    ]
+    assert list(jobs) == [1]
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.SUCCEEDED, 1)
+    assert [
+        (_fields(e)["excluded"], _fields(e)["format"]) for e in _events(caplog, "download.fallback")
+    ] == [("299", "312+251"), ("312", "298+251")]
+
+
+@pytest.mark.anyio
+async def test_the_format_fallback_stops_after_3_exclusions(settings, caplog):
+    import logging
+
+    from savetube.ytdl import exclude_formats
+
+    _job_rows(settings, "UPDATE channel SET format = 'bv*+ba/b'")
+    runner = _Steps(
+        _server_error("299+251"),
+        _server_error("298+251"),
+        _server_error("135+251"),
+        _server_error("134+251"),
+        _picks_then_finishes("133+251"),
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner)
+    assert [p["format"] for p in runner.calls] == [
+        "bv*+ba/b",
+        exclude_formats("bv*+ba/b", ["299"]),
+        exclude_formats("bv*+ba/b", ["299", "298"]),
+        exclude_formats("bv*+ba/b", ["299", "298", "135"]),
+    ]
+    assert list(jobs) == [1]
+    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, SERVER_500)
+    assert [_fields(e)["excluded"] for e in _events(caplog, "download.fallback")] == [
+        "299",
+        "298",
+        "135",
+    ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "first",
+    [
+        # The failing stream had grown, so googlevideo served it before.
+        _server_error("299+251", added=1024),
+        # An HLS fragment yt-dlp had not appended yet counts too.
+        _server_error("312+251", added=1024, suffix=".part-Frag3"),
+        # No format was chosen, so no format is known to fail.
+        _server_error(None),
+    ],
+)
+async def test_a_server_error_without_a_known_untouched_format_fails_as_before(
+    settings, caplog, first
+):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'bv*+ba/b'")
+    runner = _Steps(first, _picks_then_finishes("298+251"))
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner)
+    assert len(runner.calls) == 1
+    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, SERVER_500)
+    assert _events(caplog, "download.fallback") == []
+
+
+@pytest.mark.anyio
+async def test_a_resumed_download_falls_back_and_keeps_the_other_parts(settings, caplog):
+    import logging
+
+    from savetube.ytdl import exclude_formats
+
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'bv*+ba/b'",
+        "UPDATE video SET resume_format = '299+251' WHERE id = 'v1'",
+    )
+    _part({"paths": {"home": str(settings.incoming_root / "v1")}})
+    seen = []
+    tools = _FakeTools()
+    runner = _Steps(_server_error("299+251"), _picks_then_finishes("298+251", seen))
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, runner, tools)
+    assert [p["format"] for p in runner.calls] == [
+        "299+251",
+        exclude_formats("bv*+ba/b", ["299"]),
+    ]
+    assert all(p["continuedl"] for p in runner.calls)
+    # The audio part stays for yt-dlp to continue.
+    assert "v1.f251.webm.part" in seen[0]
+    assert jobs[1].state is JobState.SUCCEEDED
+    # The continued part gets the packet pass.
+    assert tools.packet_runs == 1
+    [fallback] = _events(caplog, "download.fallback")
+    assert (_fields(fallback)["excluded"], _fields(fallback)["format"]) == ("299", "298+251")
+
+
 def _network_rows(count, minutes_ago=10, progress=False):
     """`count` earlier network interruptions of v1's archive job, each with or
     without bytes added."""
