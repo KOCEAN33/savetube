@@ -14,7 +14,7 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Any
 
-from savetube.limits import TIMEZONE
+from savetube.tz import TIMEZONE
 
 _FIELDS = "savetube_fields"
 _context: contextvars.ContextVar[Mapping[str, Any]] = contextvars.ContextVar(

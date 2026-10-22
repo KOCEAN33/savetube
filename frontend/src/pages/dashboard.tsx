@@ -9,6 +9,7 @@ import { SourcesWaitingCard } from "@/components/sources-waiting-card"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api"
+import { queryKeys } from "@/lib/query-keys"
 
 // recharts is large, so the chart is its own chunk and the cards render first.
 const ChartAreaInteractive = lazy(() =>
@@ -32,8 +33,8 @@ function ChartAreaSkeleton() {
 }
 
 function Statistics() {
-  const summary = useQuery({ queryKey: ["stats", "summary"], queryFn: api.statsSummary })
-  const daily = useQuery({ queryKey: ["stats", "daily", 90], queryFn: () => api.statsDaily(90) })
+  const summary = useQuery({ queryKey: queryKeys.statsSummary(), queryFn: api.statsSummary })
+  const daily = useQuery({ queryKey: queryKeys.statsDaily(90), queryFn: () => api.statsDaily(90) })
 
   const error = summary.error ?? daily.error
   if (error) {

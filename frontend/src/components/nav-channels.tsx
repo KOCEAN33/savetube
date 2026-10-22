@@ -19,13 +19,14 @@ import {
 import { api } from "@/lib/api"
 import { formatCount } from "@/lib/format"
 import { channelHref, channelIdOf } from "@/lib/nav"
+import { queryKeys } from "@/lib/query-keys"
 
 // The tracked channels by name, each with its stored-video count. The filter
 // matches the name or the handle.
 export function NavChannels() {
   const { pathname } = useLocation()
   const current = channelIdOf(pathname)
-  const channels = useQuery({ queryKey: ["channels"], queryFn: api.channels })
+  const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
   const [filter, setFilter] = useState("")
   const [adding, setAdding] = useState(false)
   const tracked = (channels.data ?? [])

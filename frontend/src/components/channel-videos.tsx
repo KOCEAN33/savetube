@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { api, type Source, type Video, type VideoOrder, type VideoType } from "@/lib/api"
 import { sourceLabel, thumbUrl } from "@/lib/channel"
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatUploadDate } from "@/lib/format"
+import { queryKeys } from "@/lib/query-keys"
 import { cn } from "@/lib/utils"
 
 const PAGE = 30
@@ -25,7 +26,7 @@ function useStoredVideos(scope: VideoScope, q: string, order: VideoOrder) {
       ? { source_id: scope.sourceId }
       : { listed_by: scope.listedBy, type: scope.type }
   return useInfiniteQuery({
-    queryKey: ["videos", "pages", { ...filter, q, order }],
+    queryKey: queryKeys.videoPages({ ...filter, q, order }),
     queryFn: ({ pageParam }) =>
       api.videos({ ...filter, state: "complete", q, order, limit: PAGE, offset: pageParam }),
     initialPageParam: 0,

@@ -2,20 +2,17 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
 
-import { ChannelLink, RunningJob } from "@/components/channel-jobs"
+import { ChannelLink, RunningJob } from "@/components/job-row"
 import { ErrorBox, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { api, mutations, type Job } from "@/lib/api"
-import {
-  IDLE_REFETCH_MS,
-  JOB_PAGE,
-  MAX_JOB_LIMIT,
-  RUNNING_REFETCH_MS,
-  jobStateVariant,
-} from "@/lib/channel"
+import { jobStateVariant } from "@/lib/channel"
+import { IDLE_REFETCH_MS, JOB_PAGE, MAX_JOB_LIMIT } from "@/lib/constants"
 import { formatBytes, formatDateTime } from "@/lib/format"
+import { queryKeys } from "@/lib/query-keys"
+import { refetchMs } from "@/lib/refetch"
 
 function ProblemJob({ job }: { job: Job }) {
   return (
@@ -55,13 +52,13 @@ function ProblemJob({ job }: { job: Job }) {
 function StagingLine() {
   const queryClient = useQueryClient()
   const staged = useQuery({
-    queryKey: ["staging"],
+    queryKey: queryKeys.staging(),
     queryFn: api.staging,
     refetchInterval: IDLE_REFETCH_MS,
   })
   const move = useMutation({
     mutationFn: mutations.moveStaged,
-    onSuccess: (updated) => queryClient.setQueryData(["staging"], updated),
+    onSuccess: (updated) => queryClient.setQueryData(queryKeys.staging(), updated),
   })
   if (!staged.data || staged.data.count === 0) return null
   const { count, bytes, move_requested } = staged.data
@@ -89,22 +86,22 @@ function StagingLine() {
 export function DownloadsCard() {
   const [problemLimit, setProblemLimit] = useState(JOB_PAGE)
   const active = useQuery({
-    queryKey: ["jobs", "archive", "all", "running"],
+    queryKey: queryKeys.runningJobs(),
     queryFn: () => api.jobs({ kind: "archive", state: ["running"] }),
-    refetchInterval: (q) => (q.state.data?.length ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS),
+    refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),
   })
   const busy = (active.data?.length ?? 0) > 0
   const counts = useQuery({
-    queryKey: ["jobs", "archive", "all", "counts"],
+    queryKey: queryKeys.archiveJobCounts("all"),
     queryFn: () => api.jobCounts({ kind: "archive" }),
-    refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
+    refetchInterval: refetchMs(busy),
   })
   const problems = useQuery({
-    queryKey: ["jobs", "archive", "all", "problems", problemLimit],
+    queryKey: queryKeys.problemJobs(problemLimit),
     queryFn: () =>
       api.jobs({ kind: "archive", state: ["failed", "interrupted"], limit: problemLimit }),
     placeholderData: (previous) => previous,
-    refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
+    refetchInterval: refetchMs(busy),
   })
 
   const running = active.data ?? []

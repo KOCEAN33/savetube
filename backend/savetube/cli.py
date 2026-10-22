@@ -4,13 +4,16 @@ import logging
 
 from prometheus_client import start_http_server
 
-from savetube import logs
+from savetube import health, logs
 from savetube.config import get_settings
+from savetube.db import make_engine, make_sessionmaker
+from savetube.integrity import Tools
 
 log = logging.getLogger("savetube.cli")
 
 
 def _web(args: argparse.Namespace) -> None:
+    # Lazy: uvicorn serves only the web role.
     import uvicorn
 
     settings = get_settings()
@@ -32,7 +35,9 @@ def _web(args: argparse.Namespace) -> None:
 
 
 def _scheduler(args: argparse.Namespace) -> None:
-    from savetube import health, scheduler
+    # Lazy: scheduler imports savetube.queue, which reads Settings and builds the
+    # procrastinate App at import, and it loads procrastinate and yt-dlp.
+    from savetube import scheduler
 
     settings = get_settings()
     start_http_server(settings.metrics_port)
@@ -45,7 +50,7 @@ def _scheduler(args: argparse.Namespace) -> None:
 
 
 def _worker(args: argparse.Namespace) -> None:
-    from savetube import health
+    # Lazy: savetube.queue reads Settings and builds the procrastinate App at import.
     from savetube.queue import ARCHIVE_QUEUE, app
 
     settings = get_settings()
@@ -74,6 +79,7 @@ def _worker(args: argparse.Namespace) -> None:
 
 
 def _record(args: argparse.Namespace) -> None:
+    # Lazy: jobs loads yt-dlp, which migrate does not need.
     from savetube import jobs
 
     # A recorder is already one process in its own pod, so no child process.
@@ -87,15 +93,15 @@ def _record(args: argparse.Namespace) -> None:
 
 
 def _migrate(args: argparse.Namespace) -> None:
+    # Lazy: alembic and procrastinate serve only the migrate role.
     from savetube.db.migrate import migrate
 
     migrate(get_settings())
 
 
 def _extract_audio(args: argparse.Namespace) -> None:
+    # Lazy: audio loads yt-dlp, which migrate does not need.
     from savetube import audio
-    from savetube.db import make_engine, make_sessionmaker
-    from savetube.integrity import Tools
 
     settings = get_settings()
 

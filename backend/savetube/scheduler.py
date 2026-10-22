@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 
+from procrastinate.jobs import Status
 from sqlalchemy import func, select
 
 from savetube import cookies
@@ -21,12 +22,13 @@ from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
 from savetube.jobs import Dispatched, clean_incoming, dispatch, reclaim_stalled
-from savetube.limits import TIMEZONE
 from savetube.live import Seen, check_logged, watched_channels
 from savetube.logs import emit, human_bytes
 from savetube.poll import due_sources, poll_source
+from savetube.queue import ARCHIVE_QUEUE, app, enqueue
 from savetube.staging import move_staged
 from savetube.storage import disk_usage
+from savetube.tz import TIMEZONE
 from savetube.ytdl import (
     fetch_feed,
     list_entries,
@@ -61,8 +63,6 @@ async def sample_storage(settings: Settings) -> None:
 
 
 async def poll_sources(settings: Settings) -> None:
-    from savetube.queue import app
-
     async def cancel(queue_job_id: int) -> bool:
         return await app.job_manager.cancel_job_by_id_async(queue_job_id)
 
@@ -175,8 +175,6 @@ class DispatchLog:
 
 
 async def dispatch_archives(report: DispatchLog) -> None:
-    from savetube.queue import enqueue
-
     async with default_sessionmaker()() as session:
         report(await dispatch(session, datetime.now(UTC), enqueue))
 
@@ -189,10 +187,6 @@ STALLED_HEARTBEAT_SECONDS = 300
 
 
 async def reclaim(settings: Settings) -> None:
-    from procrastinate.jobs import Status
-
-    from savetube.queue import ARCHIVE_QUEUE, app
-
     async def stalled() -> list[tuple[int, int]]:
         found = await app.job_manager.get_stalled_jobs(
             queue=ARCHIVE_QUEUE,
@@ -260,8 +254,6 @@ async def _every(
 
 
 async def run(settings: Settings) -> None:
-    from savetube.queue import app
-
     emit(
         log,
         logging.INFO,

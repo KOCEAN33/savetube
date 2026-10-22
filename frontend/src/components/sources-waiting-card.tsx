@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { api, mutations, type Source } from "@/lib/api"
-import { IDLE_REFETCH_MS } from "@/lib/channel"
+import { IDLE_REFETCH_MS } from "@/lib/constants"
+import { queryKeys } from "@/lib/query-keys"
 
 // Matches the API's job reason length (backend/savetube/web/api.py _REASON_CHARS).
 const ERROR_CHARS = 120
@@ -19,7 +20,7 @@ function WaitingSource({ source }: { source: Source }) {
   const queryClient = useQueryClient()
   const poll = useMutation({
     mutationFn: () => mutations.pollSource(source.id),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ["sources"] }),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.sources() }),
   })
   const label = source.title ?? source.url
   const error = source.last_error
@@ -70,7 +71,7 @@ function WaitingSource({ source }: { source: Source }) {
 export function SourcesWaitingCard() {
   const queryClient = useQueryClient()
   const sources = useQuery({
-    queryKey: ["sources"],
+    queryKey: queryKeys.sources(),
     queryFn: api.sources,
     refetchInterval: IDLE_REFETCH_MS,
   })
@@ -84,7 +85,7 @@ export function SourcesWaitingCard() {
     if (!sources.data) return
     const current = new Set(ids ? ids.split(",").map(Number) : [])
     if (previous.current && [...previous.current].some((id) => !current.has(id))) {
-      queryClient.invalidateQueries({ queryKey: ["channels"] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.channels() })
     }
     previous.current = current
   }, [ids, sources.data, queryClient])

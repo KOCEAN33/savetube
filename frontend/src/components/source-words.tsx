@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useDebounced } from "@/hooks/use-debounced"
 import { api, type TitleWord, type TitleWords } from "@/lib/api"
+import { queryKeys } from "@/lib/query-keys"
 import { MAX_WORD_LENGTH, MAX_WORDS, addWord, type WordList } from "@/lib/words"
 
 export function WordListEditor({
@@ -108,7 +109,7 @@ export function WordSuggestions({
   present: Map<string, WordList>
 }) {
   const words = useQuery({
-    queryKey: ["channel-words", channelId],
+    queryKey: queryKeys.channelWords(channelId),
     queryFn: () => api.channelWords(channelId ?? ""),
     enabled: channelId !== null,
   })
@@ -199,7 +200,7 @@ export function SuggestionChips({
 export function TitlePreview({ sourceId, words }: { sourceId: number; words: TitleWords }) {
   const body = useDebounced(words, 400)
   const preview = useQuery({
-    queryKey: ["title-preview", sourceId, body],
+    queryKey: queryKeys.titlePreview(sourceId, body),
     queryFn: () => api.titlePreview(sourceId, body),
     placeholderData: keepPreviousData,
   })
@@ -260,7 +261,7 @@ export function TitlesPreview({
 }) {
   const body = useDebounced(words, 300)
   const preview = useQuery({
-    queryKey: ["titles-preview", channelId, titles, body],
+    queryKey: queryKeys.titlesPreview(channelId, titles, body),
     queryFn: () => api.titlesPreview({ ...body, titles, channel_id: channelId }),
     placeholderData: keepPreviousData,
     enabled: titles.length > 0,

@@ -17,6 +17,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { api, type Me } from "@/lib/api"
+import { queryKeys } from "@/lib/query-keys"
 
 function initials(me: Me | undefined): string {
   const source = me?.name || me?.email || me?.sub || "?"
@@ -48,7 +49,7 @@ function UserSummary({ me }: { me: Me | undefined }) {
 
 export function NavUser() {
   const { isMobile } = useSidebar()
-  const { data: me } = useQuery({ queryKey: ["me"], queryFn: api.me })
+  const { data: me } = useQuery({ queryKey: queryKeys.me(), queryFn: api.me })
 
   return (
     <SidebarMenu>

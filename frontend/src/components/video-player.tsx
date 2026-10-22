@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 
 import { api, type VideoDetail } from "@/lib/api"
 import { thumbUrl } from "@/lib/channel"
+import { queryKeys } from "@/lib/query-keys"
 import { getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
 
 // Chrome plays the stored mkv as is. Safari answers "" and gets a note, because
@@ -18,7 +19,7 @@ export function VideoPlayer({ video }: { video: VideoDetail }) {
   const [audioFailed, setAudioFailed] = useState(false)
   const poster = video.info?.thumbnail
   const subtitles = useQuery({
-    queryKey: ["video", video.id, "subtitles"],
+    queryKey: queryKeys.subtitles(video.id),
     queryFn: () => api.subtitles(video.id),
   })
   const [preferred] = useState(getSubtitleLang)

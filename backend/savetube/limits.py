@@ -3,14 +3,13 @@ daily window in Asia/Seoul, a daily cap, a pause after a YouTube block, and
 the user's pause (docs/plan/archive.md, Download limits)."""
 
 from datetime import datetime, time, timedelta
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube.db.models import DownloadSettings, Job, JobKind, JobState
+from savetube.tz import TIMEZONE
 
-TIMEZONE = ZoneInfo("Asia/Seoul")
 BLOCK_BACKOFF = timedelta(minutes=30)
 BLOCK_BACKOFF_MAX = timedelta(hours=12)
 
