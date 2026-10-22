@@ -36,6 +36,7 @@
 - The hourly database cleanup logs `cleanup.done` at INFO with the counts `progress`, `queue_jobs` and `interrupted`, only when one is above 0.
 - `poll.done` counts the listed entries, the queued jobs, and each skip reason: words, members-only without a member profile, another channel, date, live, private.
 - A membership check logs `membership.checked` at INFO with the channel, the profile, the video, and `member` yes or no. A check that ends in neither logs `membership.check_failed` at WARNING with the reason, and the previous result stays.
+- An account read logs `cookies.account` at INFO with the profile, the account name and the handle. A failed read logs `cookies.account_failed` at WARNING with the profile and the reason, with a traceback only for an unexpected error. A replaced file logs `cookies.changed` at INFO with the profile and `memberships`, the deleted membership results.
 - `job.start` logs `cookies` as the profile name, or `none`. No log line holds cookie content.
 
 ## Homelab deployment

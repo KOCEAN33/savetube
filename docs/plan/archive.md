@@ -119,7 +119,7 @@
 | `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, window_enabled, daily_limit, cookie_profile, timezone, blocked_until, block_count, paused, downloaded_today}`. The last four are read-only here. `downloaded_today` is the daily count |
 | `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end, window_enabled, daily_limit, cookie_profile}`. A `daily_limit` below 1, or `window_enabled` true with a missing time, is a 422. A `cookie_profile` the scheduler has not recorded as present is a 422 | the settings |
 | `PUT /api/download-settings/paused` | `{paused}` | the settings |
-| `GET /api/cookie-profiles` | | `[{name}]`, the profiles the scheduler last recorded, by name. Never their content |
+| `GET /api/cookie-profiles` | | `[{name, account_name, account_handle}]`, the profiles the scheduler last recorded, by name, with the account each file signs in, null until a read succeeds. Never their content |
 | `GET /api/jobs` | | each job also carries `deferred_until` |
 | `PATCH /api/sources/{id}` | also `archiving` | the source, with `archiving` |
 

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQuery } from "@tanstack/react-query"
 
 import { DateCutoffField, QualityField } from "@/components/channel-fields"
 import { ErrorBox } from "@/components/query-state"
@@ -7,13 +7,16 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
-import { mutations, type Channel, type ChannelSettings, type Membership } from "@/lib/api"
-import { PLAYLISTS_PASS_HINT } from "@/lib/channel"
+import { api, mutations, type Channel, type ChannelSettings, type Membership } from "@/lib/api"
+import { MEMBERS_ALL_HINT, MEMBERS_ALL_LABEL, PLAYLISTS_PASS_HINT } from "@/lib/channel"
 import { formatDateTime } from "@/lib/format"
+import { profileLabel } from "@/lib/profiles"
+import { queryKeys } from "@/lib/query-keys"
 import { useInvalidate } from "@/pages/channel/use-invalidate"
 
 // Read-only: polls check each cookie profile on their own.
 function MembershipList({ memberships }: { memberships: Membership[] }) {
+  const profiles = useQuery({ queryKey: queryKeys.cookieProfiles(), queryFn: api.cookieProfiles })
   return (
     <div className="flex flex-col gap-2">
       <Label>Members-only access</Label>
@@ -27,7 +30,7 @@ function MembershipList({ memberships }: { memberships: Membership[] }) {
         <ul className="flex flex-col gap-1 text-sm">
           {memberships.map((m) => (
             <li key={m.profile} className="flex items-center gap-2">
-              <span className="font-mono">{m.profile}</span>
+              <span>{profileLabel(m.profile, profiles.data)}</span>
               <Badge variant={m.is_member ? "default" : "secondary"}>
                 {m.is_member ? "member" : "not a member"}
               </Badge>
@@ -80,12 +83,9 @@ export function SettingsSection({ channel }: { channel: Channel }) {
             checked={form.members_all}
             onCheckedChange={(on) => setForm({ ...form, members_all: on === true })}
           />
-          Download every members-only video
+          {MEMBERS_ALL_LABEL}
         </Label>
-        <p className="text-xs text-muted-foreground">
-          Title words do not apply to members-only videos. They download only while a cookie
-          profile is a confirmed member of this channel.
-        </p>
+        <p className="text-xs text-muted-foreground">{MEMBERS_ALL_HINT}</p>
       </div>
       <div className="flex flex-col gap-2">
         <Label className="font-normal">

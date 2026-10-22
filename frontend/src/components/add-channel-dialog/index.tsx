@@ -85,6 +85,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
     watchLives: false,
   })
   const [words, setWords] = useState<TitleWords>({ include_words: [], exclude_words: [] })
+  const [membersAll, setMembersAll] = useState(false)
   const [playlistsPass, setPlaylistsPass] = useState(false)
   const [dateAfter, setDateAfter] = useState<string | null>(null)
   const [format, setFormat] = useState(DEFAULT_FORMAT)
@@ -130,6 +131,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
           : [],
       other_channels: choice.otherChannels,
       watch_lives: choice.watchLives,
+      members_all: membersAll,
       playlists_pass: playlistsChosen && playlistsPass,
       ...words,
       date_after: dateAfter,
@@ -166,6 +168,8 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
             tabs={choice.tabs}
             words={words}
             onChange={setWords}
+            membersAll={membersAll}
+            onMembersAllChange={setMembersAll}
             playlistsPass={playlistsChosen ? playlistsPass : null}
             onPlaylistsPassChange={setPlaylistsPass}
           />
@@ -198,6 +202,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
                 </span>
               )}
               <span>Live recording: {choice.watchLives ? "on" : "off"}</span>
+              <span>Every members-only video: {membersAll ? "download" : "title words apply"}</span>
               <span>
                 Words: include {words.include_words.join(", ") || "any"}, exclude{" "}
                 {words.exclude_words.join(", ") || "none"}

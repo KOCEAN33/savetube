@@ -184,6 +184,7 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
             True,
         )
         assert body["memberships"] == [] and body["playlists_pass"] is False
+        assert body["members_all"] is False
         assert [
             (s["url"], s["kind"], s["title"], s["channel_id"], s["archiving"], s["include_words"])
             for s in body["sources"]
@@ -233,6 +234,15 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
             return await watched_channels(session)
 
     assert asyncio.run(watched()) == [VESP]
+
+
+def test_api_creates_a_channel_with_members_all(settings):
+    with _api(settings) as client:
+        response = client.post("/api/channels", json=_channel_body(members_all=True))
+        assert response.status_code == 201
+        assert response.json()["members_all"] is True
+        [listed] = [c for c in client.get("/api/channels").json() if c["id"] == VESP]
+        assert listed["members_all"] is True
 
 
 def test_api_tracks_all_playlists_of_a_new_channel(settings):

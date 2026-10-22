@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import cookies, limits, logs
-from savetube.db.models import DownloadSettings, GlobalWords, Video, VideoState
+from savetube.db.models import CookieProfile, DownloadSettings, GlobalWords, Video, VideoState
 from savetube.logs import emit
 from savetube.tz import TIMEZONE
 from savetube.web.api.deps import Session, _normalize, log
@@ -217,10 +217,14 @@ async def pause_downloads(session: Session, body: PausedIn) -> DownloadSettingsO
 
 class CookieProfileOut(_Out):
     name: str
+    # The account the file signs in, null until a read succeeds.
+    account_name: str | None
+    account_handle: str | None
 
 
 @router.get("/cookie-profiles")
 async def cookie_profiles(session: Session) -> list[CookieProfileOut]:
     """The profiles the scheduler last found in SAVETUBE_COOKIES_DIR, by name.
     The web pod does not mount them."""
-    return [CookieProfileOut(name=n) for n in await cookies.recorded_profiles(session)]
+    rows = await session.scalars(select(CookieProfile).order_by(CookieProfile.name))
+    return [CookieProfileOut.model_validate(r) for r in rows]

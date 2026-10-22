@@ -36,6 +36,7 @@ from savetube.ytdl import (
     probe_live,
     probe_member,
     probe_video,
+    read_account,
 )
 
 log = logging.getLogger(__name__)
@@ -210,6 +211,10 @@ async def record_profiles(settings: Settings) -> None:
         await session.commit()
 
 
+async def read_accounts(settings: Settings) -> None:
+    await cookies.read_accounts(default_sessionmaker(), settings, reader=read_account)
+
+
 async def detect_lives(settings: Settings, seen: Seen) -> None:
     sessionmaker = default_sessionmaker()
     async with sessionmaker() as session:
@@ -267,6 +272,8 @@ async def run(settings: Settings) -> None:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(_every("storage sample", lambda: sample_storage(settings)))
             tg.create_task(_every("cookie profiles", lambda: record_profiles(settings)))
+            # Its own loop, so a slow read never delays recording the profiles.
+            tg.create_task(_every("cookie accounts", lambda: read_accounts(settings)))
             tg.create_task(_every("source poll", lambda: poll_sources(settings)))
             report = DispatchLog()
             tg.create_task(

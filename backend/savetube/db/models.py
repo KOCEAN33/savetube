@@ -170,6 +170,13 @@ class CookieProfile(Base):
 
     name: Mapped[str] = mapped_column(Text, primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # The YouTube account the file holds, read once per file content.
+    account_name: Mapped[str | None] = mapped_column(Text)
+    account_handle: Mapped[str | None] = mapped_column(Text)
+    # The sha256 hex of the file the account was read from. Null after a failed
+    # read, so the read retries once account_checked_at is old enough.
+    account_digest: Mapped[str | None] = mapped_column(Text)
+    account_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Membership(Base):

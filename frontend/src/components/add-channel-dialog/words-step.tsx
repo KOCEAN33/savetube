@@ -4,7 +4,12 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { SuggestionChips, TitlesPreview, WordListEditor } from "@/components/source-words"
 import { api, type ChannelScan, type TitleWords, type VideoTab } from "@/lib/api"
-import { PLAYLISTS_PASS_HINT, VIDEO_TABS } from "@/lib/channel"
+import {
+  MEMBERS_ALL_HINT,
+  MEMBERS_ALL_LABEL,
+  PLAYLISTS_PASS_HINT,
+  VIDEO_TABS,
+} from "@/lib/channel"
 import { queryKeys } from "@/lib/query-keys"
 import { EXCLUDE_HINT, INCLUDE_HINT, addWord, type WordList } from "@/lib/words"
 
@@ -13,6 +18,8 @@ export function WordsStep({
   tabs,
   words,
   onChange,
+  membersAll,
+  onMembersAllChange,
   playlistsPass,
   onPlaylistsPassChange,
 }: {
@@ -20,6 +27,8 @@ export function WordsStep({
   tabs: VideoTab[]
   words: TitleWords
   onChange: (words: TitleWords) => void
+  membersAll: boolean
+  onMembersAllChange: (on: boolean) => void
   // Null while no playlist is chosen: the checkbox stays hidden.
   playlistsPass: boolean | null
   onPlaylistsPassChange: (on: boolean) => void
@@ -59,6 +68,16 @@ export function WordsStep({
           words={words.exclude_words}
           onChange={(exclude_words) => onChange({ ...words, exclude_words })}
         />
+        <div className="flex flex-col gap-2">
+          <Label className="font-normal">
+            <Checkbox
+              checked={membersAll}
+              onCheckedChange={(on) => onMembersAllChange(on === true)}
+            />
+            {MEMBERS_ALL_LABEL}
+          </Label>
+          <p className="text-xs text-muted-foreground">{MEMBERS_ALL_HINT}</p>
+        </div>
         {playlistsPass !== null && (
           <div className="flex flex-col gap-2">
             <Label className="font-normal">
