@@ -2,7 +2,7 @@
 
 ## Goal
 
-Confirm `v0.10.0` in production: the HTTP 500 format fallback on a real video, playback and subtitles in the user's browser. Then the open design choice for batch work (Next steps 3).
+Show the merge and verify steps on the Downloads card (Next steps 1). Confirm `v0.10.0` in production: the HTTP 500 format fallback on a real video, playback and subtitles in the user's browser.
 
 ## Current progress
 
@@ -48,10 +48,10 @@ Confirm `v0.10.0` in production: the HTTP 500 format fallback on a real video, p
 
 ## Next steps
 
-1. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
-2. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
-3. The user decides how batch work runs. Today `savetube extract-audio` runs through `kubectl exec` with `print` output: invisible in Loki and tied to the caller's connection. Options given: a worker queue task that the worker also uses after each download, so a failed extraction retries (recommended); a Kubernetes Job; or only logfmt output. A failed audio extraction after a download is not retried today.
-4. The Downloads card shows nothing during merge and verify, so a download looks stopped for about 2 minutes on a large video. It needs a step label.
+1. Downloads card step label, which the user asked for. The card shows nothing after the last byte, so a download looks stopped through merge, verify and the audio copy: about 2 minutes on a 7 GiB video (`MSS6tecJ5iw`: merge 10:10:10, verified 10:11:43, `audio.extracted` 10:12:14 KST). Today `job.progress` holds only the progress hook message (`backend/savetube/jobs.py:688`). The merge hook only logs `download.merge` (`jobs.py:163`), and `download.verified` logs at `jobs.py:1180`. Write a step such as merging, verifying, or audio copy into `job.progress` at each stage, and show it on the dashboard Downloads card in place of the frozen percent. Check how the card and `backend/savetube/web/api.py` read `progress`, and keep the `progress` clear at the end (`jobs.py:384`). `docs/plan/frontend.md` describes the card.
+2. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
+3. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
+4. Batch work is on hold: the user expects no more batch jobs. `savetube extract-audio` runs through `kubectl exec` with `print` output, invisible in Loki and tied to the caller's connection. A failed audio extraction after a download is not retried, and only a rerun of `extract-audio` fills it.
 5. Follow-ups:
    - The channel page hides "Show more" once all 500 listed queued jobs show, even when more wait.
    - `GET /api/sources` sends `last_error` raw. The Home card only cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
@@ -68,7 +68,7 @@ Confirm `v0.10.0` in production: the HTTP 500 format fallback on a real video, p
 
 ## Suggested skills
 
-`tdd` for new seams, `gh-cli` for workflow runs, `grilling` before Next steps 3.
+`tdd` for new seams, `gh-cli` for workflow runs.
 
 ## Pointers
 
