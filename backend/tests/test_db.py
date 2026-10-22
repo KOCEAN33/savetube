@@ -4,6 +4,7 @@ savetube_test_<unix seconds>_<hex>, so concurrent runs against one server do not
 Setup also drops databases of that pattern older than 24 hours, which killed runs leave behind."""
 
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -5255,3 +5256,71 @@ def test_media_needs_a_login(settings):
     with TestClient(app) as client:
         r = client.get("/api/videos/m1/media")
     assert r.status_code == 401
+
+
+VTT_JA = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nこんにちは\n"
+
+
+def _subtitle_rows(settings, *, state="complete", dir_path="Ch [UC1]/videos/a [m1]"):
+    directory = _media_rows(settings, state=state, dir_path=dir_path)
+    info = json.dumps({"ext": "mkv", "subtitles": {"ja": [{"ext": "vtt", "name": "Japanese"}]}})
+    _sql(settings, f"UPDATE video SET info = '{info}' WHERE id = 'm1'")
+    (directory / "m1.ja.vtt").write_text(VTT_JA, encoding="utf-8")
+    (directory / "m1.zh-Hans.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    (directory / "m1.live_chat.json").write_text("{}", encoding="utf-8")
+    return directory
+
+
+def test_subtitles_lists_stored_vtt_languages_with_labels(settings):
+    directory = _subtitle_rows(settings)
+    (directory / "other.en.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    with _api(settings) as client:
+        r = client.get("/api/videos/m1/subtitles")
+    assert r.status_code == 200
+    assert r.json() == [
+        {"lang": "ja", "label": "Japanese"},
+        {"lang": "zh-Hans", "label": "zh-Hans"},
+    ]
+
+
+def test_subtitles_serves_the_vtt_file(settings):
+    _subtitle_rows(settings)
+    with _api(settings) as client:
+        r = client.get("/api/videos/m1/subtitles/ja")
+    assert r.status_code == 200
+    assert r.content.decode("utf-8") == VTT_JA
+    assert r.headers["content-type"] == "text/vtt; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "lang", ["en", "live_chat", "JA", "..%2F..%2Fm1.ja", "ja.vtt", "%2E%2E", "ja%00"]
+)
+def test_subtitles_is_404_for_an_unlisted_language(settings, lang):
+    _subtitle_rows(settings)
+    with _api(settings) as client:
+        assert client.get(f"/api/videos/m1/subtitles/{lang}").status_code == 404
+
+
+@pytest.mark.parametrize("state", ["pending", "failed"])
+def test_subtitles_is_404_until_the_video_is_complete(settings, state):
+    _subtitle_rows(settings, state=state)
+    with _api(settings) as client:
+        assert client.get("/api/videos/m1/subtitles").status_code == 404
+        assert client.get("/api/videos/m1/subtitles/ja").status_code == 404
+
+
+def test_subtitles_never_leave_the_archive_root(settings):
+    outside = settings.archive_root.parent / "outside"
+    outside.mkdir(parents=True)
+    (outside / "m1.en.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    _subtitle_rows(settings, dir_path="../outside")
+    with _api(settings) as client:
+        assert client.get("/api/videos/m1/subtitles").status_code == 404
+        assert client.get("/api/videos/m1/subtitles/en").status_code == 404
+
+
+def test_subtitles_need_a_login(settings):
+    _subtitle_rows(settings)
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/videos/m1/subtitles").status_code == 401
+        assert client.get("/api/videos/m1/subtitles/ja").status_code == 401

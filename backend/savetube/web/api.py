@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import logging
 import re
 from collections.abc import Callable
@@ -222,6 +223,11 @@ class VideoOut(_Out):
 
 class VideoDetail(VideoOut):
     info: dict[str, Any] | None
+
+
+class SubtitleOut(BaseModel):
+    lang: str
+    label: str
 
 
 class VideoPage(_Out):
@@ -1033,21 +1039,75 @@ async def video(session: Session, video_id: str) -> VideoDetail:
     return VideoDetail.model_validate(v)
 
 
-async def _stored_file(request: Request, session: AsyncSession, video_id: str, ext: str) -> Path:
-    """`<archive root>/<dir_path>/<video id>.<ext>` of a complete video, built
-    from its row only and never outside the archive root. `ext` "" means the
-    media's own extension from `info.ext`."""
+async def _video_dir(request: Request, session: AsyncSession, video_id: str) -> tuple[Video, Path]:
+    """The resolved `<archive root>/<dir_path>` of a complete video, built from
+    its row only and never outside the archive root."""
     v = await session.get(Video, video_id)
     if v is None or v.state is not VideoState.COMPLETE or not v.dir_path:
         raise HTTPException(status_code=404)
+    root = request.app.state.archive_root.resolve()
+    directory = (root / v.dir_path).resolve()
+    if not directory.is_relative_to(root) or not directory.is_dir():
+        raise HTTPException(status_code=404)
+    return v, directory
+
+
+async def _stored_file(request: Request, session: AsyncSession, video_id: str, ext: str) -> Path:
+    """`<video dir>/<video id>.<ext>`. `ext` "" means the media's own extension
+    from `info.ext`."""
+    v, directory = await _video_dir(request, session, video_id)
     ext = ext or (v.info or {}).get("ext")
     if not isinstance(ext, str) or not ext:
         raise HTTPException(status_code=404)
-    root = request.app.state.archive_root.resolve()
-    path = (root / v.dir_path / f"{v.id}.{ext}").resolve()
-    if not path.is_relative_to(root) or not path.is_file():
+    path = (directory / f"{v.id}.{ext}").resolve()
+    if not path.is_relative_to(request.app.state.archive_root.resolve()) or not path.is_file():
         raise HTTPException(status_code=404)
     return path
+
+
+async def _subtitle_files(
+    request: Request, session: AsyncSession, video_id: str
+) -> tuple[Video, dict[str, Path]]:
+    """Language code to file for each `<video id>.<lang>.vtt` yt-dlp left in the
+    video's directory. The language comes from the listing, never from a request."""
+    v, directory = await _video_dir(request, session, video_id)
+    files = {}
+    for path in directory.glob(f"{glob.escape(v.id)}.*.vtt"):
+        lang = path.name[len(v.id) + 1 : -len(".vtt")]
+        resolved = path.resolve()
+        if (
+            lang
+            and lang != "live_chat"
+            and resolved.is_relative_to(directory)
+            and resolved.is_file()
+        ):
+            files[lang] = resolved
+    return v, dict(sorted(files.items()))
+
+
+def _subtitle_label(info: dict[str, Any] | None, lang: str) -> str:
+    tracks = ((info or {}).get("subtitles") or {}).get(lang)
+    if isinstance(tracks, list):
+        for track in tracks:
+            if isinstance(track, dict) and isinstance(track.get("name"), str) and track["name"]:
+                return track["name"]
+    return lang
+
+
+@router.get("/videos/{video_id}/subtitles")
+async def video_subtitles(request: Request, session: Session, video_id: str) -> list[SubtitleOut]:
+    v, files = await _subtitle_files(request, session, video_id)
+    return [SubtitleOut(lang=lang, label=_subtitle_label(v.info, lang)) for lang in files]
+
+
+@router.get("/videos/{video_id}/subtitles/{lang}")
+async def video_subtitle(
+    request: Request, session: Session, video_id: str, lang: str
+) -> FileResponse:
+    _, files = await _subtitle_files(request, session, video_id)
+    if lang not in files:
+        raise HTTPException(status_code=404)
+    return FileResponse(files[lang], media_type="text/vtt; charset=utf-8")
 
 
 # Starlette's FileResponse answers Range (206, 416, multipart) and HEAD itself.

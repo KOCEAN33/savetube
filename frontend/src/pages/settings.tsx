@@ -23,11 +23,14 @@ import {
   type DownloadSettingsIn,
   type TitleWords,
 } from "@/lib/api"
+import { COMMON_SUBTITLE_LANGS, getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
 import { EXCLUDE_HINT, INCLUDE_HINT } from "@/lib/words"
 
 const BYTES_PER_MB = 1_000_000
 // A Select item needs a non-empty value, so "no profile" gets its own.
 const NO_PROFILE = "__none__"
+const SUBTITLES_OFF = "__off__"
+const SUBTITLES_OTHER = "__other__"
 
 interface FormState {
   max_concurrent: number
@@ -287,6 +290,56 @@ function GlobalWordsForm({ initial }: { initial: TitleWords }) {
   )
 }
 
+function SubtitleLangForm() {
+  const [lang, setLang] = useState(getSubtitleLang)
+  const [other, setOther] = useState(
+    () => lang !== null && !COMMON_SUBTITLE_LANGS.some(([code]) => code === lang),
+  )
+
+  function choose(next: string | null) {
+    setLang(next)
+    setSubtitleLang(next)
+  }
+
+  return (
+    <div className="flex max-w-md flex-col gap-2 p-4">
+      <Label htmlFor="subtitle-lang">Default subtitle language</Label>
+      <p className="text-xs text-muted-foreground">
+        A video opens with the subtitles in this language when it has them. The player&apos;s
+        captions menu changes this default too. Stored in this browser only.
+      </p>
+      <Select
+        value={other ? SUBTITLES_OTHER : (lang ?? SUBTITLES_OFF)}
+        onValueChange={(v) => {
+          setOther(v === SUBTITLES_OTHER)
+          if (v !== SUBTITLES_OTHER) choose(v === SUBTITLES_OFF ? null : v)
+        }}
+      >
+        <SelectTrigger id="subtitle-lang" className="w-64">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={SUBTITLES_OFF}>Off</SelectItem>
+          {COMMON_SUBTITLE_LANGS.map(([code, name]) => (
+            <SelectItem key={code} value={code}>
+              {name} ({code})
+            </SelectItem>
+          ))}
+          <SelectItem value={SUBTITLES_OTHER}>Other code</SelectItem>
+        </SelectContent>
+      </Select>
+      {other && (
+        <Input
+          aria-label="Subtitle language code"
+          placeholder="yt-dlp language code, such as es"
+          value={lang ?? ""}
+          onChange={(e) => choose(e.target.value.trim() || null)}
+        />
+      )}
+    </div>
+  )
+}
+
 export function SettingsPage() {
   const settings = useQuery({ queryKey: ["download-settings"], queryFn: api.downloadSettings })
   const profiles = useQuery({ queryKey: ["cookie-profiles"], queryFn: api.cookieProfiles })
@@ -295,6 +348,9 @@ export function SettingsPage() {
     <Page>
       <PageSection title="Global title words">
         <QueryState query={words}>{(data) => <GlobalWordsForm initial={data} />}</QueryState>
+      </PageSection>
+      <PageSection title="Playback">
+        <SubtitleLangForm />
       </PageSection>
       <PageSection title="Download limits">
         <QueryState query={settings}>

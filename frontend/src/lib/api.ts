@@ -140,6 +140,12 @@ export interface VideoDetail extends Video {
   info: Record<string, unknown> | null
 }
 
+// A stored `<video id>.<lang>.vtt`. The label is yt-dlp's track name, else the code.
+export interface Subtitle {
+  lang: string
+  label: string
+}
+
 export type VideoOrder = "newest" | "oldest"
 
 export interface VideoPage {
@@ -399,4 +405,7 @@ export const api = {
   // A complete video's stored mkv and its Opus audio copy, served with Range.
   mediaUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/media`,
   audioUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/audio`,
+  subtitles: (id: string) => get<Subtitle[]>(`/api/videos/${encodeURIComponent(id)}/subtitles`),
+  subtitleUrl: (id: string, lang: string) =>
+    `/api/videos/${encodeURIComponent(id)}/subtitles/${encodeURIComponent(lang)}`,
 }
