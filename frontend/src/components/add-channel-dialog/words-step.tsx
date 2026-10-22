@@ -5,6 +5,8 @@ import { Label } from "@/components/ui/label"
 import { SuggestionChips, TitlesPreview, WordListEditor } from "@/components/source-words"
 import { api, type ChannelScan, type TitleWords, type VideoTab } from "@/lib/api"
 import {
+  KEEP_ALL_HINT,
+  KEEP_ALL_LABEL,
   MEMBERS_ALL_HINT,
   MEMBERS_ALL_LABEL,
   PLAYLISTS_PASS_HINT,
@@ -22,6 +24,8 @@ export function WordsStep({
   onMembersAllChange,
   playlistsPass,
   onPlaylistsPassChange,
+  keepAll,
+  onKeepAllChange,
 }: {
   scan: ChannelScan
   tabs: VideoTab[]
@@ -32,6 +36,8 @@ export function WordsStep({
   // Null while no playlist is chosen: the checkbox stays hidden.
   playlistsPass: boolean | null
   onPlaylistsPassChange: (on: boolean) => void
+  keepAll: boolean
+  onKeepAllChange: (on: boolean) => void
 }) {
   const globalWords = useQuery({ queryKey: queryKeys.words(), queryFn: api.globalWords })
   // The chosen tabs' titles, or every scanned title when only playlists are chosen.
@@ -91,6 +97,13 @@ export function WordsStep({
           </div>
         )}
         <div className="flex flex-col gap-2">
+          <Label className="font-normal">
+            <Checkbox checked={keepAll} onCheckedChange={(on) => onKeepAllChange(on === true)} />
+            {KEEP_ALL_LABEL}
+          </Label>
+          <p className="text-xs text-muted-foreground">{KEEP_ALL_HINT}</p>
+        </div>
+        <div className="flex flex-col gap-2">
           <span className="text-sm font-medium">Suggested words</span>
           {scan.suggestions.length === 0 ? (
             <p className="text-xs text-muted-foreground">
@@ -118,7 +131,7 @@ export function WordsStep({
           {shown.map((t) => VIDEO_TABS.find((v) => v.tab === t)?.label).join(", ")}. The preview
           updates as the words change.
         </p>
-        <TitlesPreview titles={titles} words={words} />
+        <TitlesPreview titles={titles} words={words} keepAll={keepAll} />
       </div>
     </div>
   )

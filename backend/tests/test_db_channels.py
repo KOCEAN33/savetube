@@ -184,7 +184,7 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
             True,
         )
         assert body["memberships"] == [] and body["playlists_pass"] is False
-        assert body["members_all"] is False
+        assert body["members_all"] is False and body["keep_all"] is False
         assert [
             (s["url"], s["kind"], s["title"], s["channel_id"], s["archiving"], s["include_words"])
             for s in body["sources"]

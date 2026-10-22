@@ -254,21 +254,32 @@ export function TitlesPreview({
   titles,
   words,
   channelId,
+  keepAll = false,
 }: {
   titles: string[]
   words: TitleWords
   channelId?: string
+  // The channel's `keep_all`: no word applies, so every title stays.
+  keepAll?: boolean
 }) {
   const body = useDebounced(words, 300)
   const preview = useQuery({
     queryKey: queryKeys.titlesPreview(channelId, titles, body),
     queryFn: () => api.titlesPreview({ ...body, titles, channel_id: channelId }),
     placeholderData: keepPreviousData,
-    enabled: titles.length > 0,
+    enabled: titles.length > 0 && !keepAll,
   })
 
   if (titles.length === 0)
     return <p className="text-xs text-muted-foreground">No titles to preview.</p>
+  if (keepAll) {
+    return (
+      <div className="grid min-h-0 gap-3 md:grid-cols-2">
+        <TitleColumn label={`Kept (${titles.length})`} titles={titles.map((title) => ({ title }))} />
+        <TitleColumn label="Filtered out (0)" titles={[]} muted />
+      </div>
+    )
+  }
   if (preview.isPending) return <Skeleton className="h-48 w-full" />
   if (preview.isError) return <ErrorBox error={preview.error} />
   const kept = preview.data.filter((t) => t.kept)

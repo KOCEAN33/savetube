@@ -473,6 +473,77 @@ async def test_playlists_pass_keeps_every_playlist_entry_the_exclude_words_allow
 
 
 @pytest.mark.anyio
+async def test_keep_all_skips_every_title_word_but_not_the_other_checks(settings):
+    from savetube.poll import sync
+
+    _sql(
+        settings,
+        "UPDATE global_words SET include_words = '{歌枠}', exclude_words = '{告知}'",
+        "INSERT INTO channel (id, name, dir_name, include_words, date_after) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', '{{3DLIVE}}', '2026-01-01')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
+        " include_words, exclude_words, other_channels) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360,"
+        "  '{歌枠}', '{雑談}', false),"
+        f" (2, 'https://www.youtube.com/playlist?list=PLx', 'playlist', '{VESP}', true, 360,"
+        "  '{歌枠}', '{雑談}', true)",
+        "SELECT setval('job_id_seq', 200)",
+    )
+    entries = [
+        {"id": "utawaku", "title": UTAWAKU, "live_status": "was_live"},
+        {"id": "chat", "title": "雑談", "live_status": "was_live"},
+        {"id": "notice", "title": "雑談 告知", "live_status": "was_live"},
+        {"id": "old", "title": "雑談", "live_status": "was_live", "timestamp": 1700000000},
+        {"id": "members", "title": "雑談", "availability": "subscriber_only"},
+        {"id": "soon", "title": "雑談", "live_status": "is_upcoming"},
+    ]
+    tab = {"channel_id": VESP, "channel": "VESPERBELL", "entries": entries}
+    # Another channel's video in the playlist meets the playlist channel's switch.
+    playlist = {
+        "entries": [{"id": "nasa", "title": "Artemis 告知", "channel_id": NASA, "channel": "NASA"}]
+        + [{**e, "channel_id": VESP} for e in entries[:2]]
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def run(keep_all, source_id, listing):
+        async with sessionmaker() as session:
+            await session.execute(
+                sa.update(Channel).where(Channel.id == VESP).values(keep_all=keep_all)
+            )
+            synced = await sync(session, await session.get(Source, source_id), listing, [])
+            queued = sorted(
+                await session.scalars(sa.select(Job.video_id).where(Job.id.in_(synced.job_ids)))
+            )
+            await session.rollback()
+        return dict(synced.skips), queued
+
+    assert await run(False, 1, tab) == ({"words": 4, "live": 1}, ["utawaku"])
+    assert await run(True, 1, tab) == (
+        {"live": 1, "members": 1, "date": 1},
+        ["chat", "notice", "utawaku"],
+    )
+    assert await run(True, 2, playlist) == ({}, ["chat", "nasa", "utawaku"])
+
+    async with sessionmaker() as session:
+        await sync(session, await session.get(Source, 1), tab, [])
+        await session.commit()
+    with _api(settings) as client:
+
+        def kept():
+            preview = client.post(
+                "/api/sources/1/title-preview", json={"include_words": [], "exclude_words": []}
+            ).json()
+            return {t["video_id"] for t in preview["titles"] if t["kept"]}
+
+        assert kept() == {"utawaku"}
+        r = client.patch(f"/api/channels/{VESP}", json={"keep_all": True})
+        assert r.status_code == 200 and r.json()["keep_all"] is True
+        assert kept() == {e["id"] for e in entries}
+    await engine.dispose()
+
+
+@pytest.mark.anyio
 async def test_poll_and_preview_merge_global_channel_and_source_words(settings):
     from savetube.poll import poll_source
 

@@ -76,11 +76,11 @@ async def watched_channels(session: AsyncSession) -> list[str]:
 async def _wanted(session: AsyncSession, channel_id: str, info: dict[str, Any]) -> bool:
     """Whether the stream's title passes the effective words of a source
     watching the channel. Watching `streams` tabs, when there are any, decide
-    alone. A members-only stream of a channel with `members_all` on passes
-    any watching source."""
+    alone. A members-only stream of a channel with `members_all` on, and any
+    stream of a channel with `keep_all` on, passes any watching source."""
     channel = await session.get(Channel, channel_id)
-    members_all = (
-        classify(info) is VideoType.MEMBERS and channel is not None and channel.members_all
+    passes = channel is not None and (
+        channel.keep_all or (classify(info) is VideoType.MEMBERS and channel.members_all)
     )
     title = info.get("title") or ""
     rows = (
@@ -93,7 +93,7 @@ async def _wanted(session: AsyncSession, channel_id: str, info: dict[str, Any]) 
     streams = [r for r in rows if r.url.endswith("/streams")]
     for r in streams or rows:
         lists = await words.effective(session, channel_id, (r.include_words, r.exclude_words))
-        if members_all or words.matches(title, *lists):
+        if passes or words.matches(title, *lists):
             return True
     return False
 

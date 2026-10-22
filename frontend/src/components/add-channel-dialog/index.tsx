@@ -87,6 +87,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
   const [words, setWords] = useState<TitleWords>({ include_words: [], exclude_words: [] })
   const [membersAll, setMembersAll] = useState(false)
   const [playlistsPass, setPlaylistsPass] = useState(false)
+  const [keepAll, setKeepAll] = useState(false)
   const [dateAfter, setDateAfter] = useState<string | null>(null)
   const [format, setFormat] = useState(DEFAULT_FORMAT)
   const save = useMutation({
@@ -133,6 +134,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
       watch_lives: choice.watchLives,
       members_all: membersAll,
       playlists_pass: playlistsChosen && playlistsPass,
+      keep_all: keepAll,
       ...words,
       date_after: dateAfter,
       format,
@@ -172,6 +174,8 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
             onMembersAllChange={setMembersAll}
             playlistsPass={playlistsChosen ? playlistsPass : null}
             onPlaylistsPassChange={setPlaylistsPass}
+            keepAll={keepAll}
+            onKeepAllChange={setKeepAll}
           />
         )}
         {step === 3 && scan && (

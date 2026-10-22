@@ -8,7 +8,13 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { api, mutations, type Channel, type ChannelSettings, type Membership } from "@/lib/api"
-import { MEMBERS_ALL_HINT, MEMBERS_ALL_LABEL, PLAYLISTS_PASS_HINT } from "@/lib/channel"
+import {
+  KEEP_ALL_HINT,
+  KEEP_ALL_LABEL,
+  MEMBERS_ALL_HINT,
+  MEMBERS_ALL_LABEL,
+  PLAYLISTS_PASS_HINT,
+} from "@/lib/channel"
 import { formatDateTime } from "@/lib/format"
 import { profileLabel } from "@/lib/profiles"
 import { queryKeys } from "@/lib/query-keys"
@@ -48,12 +54,13 @@ function MembershipList({ memberships }: { memberships: Membership[] }) {
 export function SettingsSection({ channel }: { channel: Channel }) {
   const invalidate = useInvalidate()
   const [form, setForm] = useState<
-    Omit<ChannelSettings, "watch_lives"> & Pick<Channel, "members_all" | "playlists_pass">
+    Omit<ChannelSettings, "watch_lives"> & Pick<Channel, "members_all" | "playlists_pass" | "keep_all">
   >({
     date_after: channel.date_after,
     format: channel.format,
     members_all: channel.members_all,
     playlists_pass: channel.playlists_pass,
+    keep_all: channel.keep_all,
   })
   const save = useMutation({
     mutationFn: () => mutations.updateChannel(channel.id, form),
@@ -96,6 +103,16 @@ export function SettingsSection({ channel }: { channel: Channel }) {
           Keep every video in the chosen playlists
         </Label>
         <p className="text-xs text-muted-foreground">{PLAYLISTS_PASS_HINT}</p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label className="font-normal">
+          <Checkbox
+            checked={form.keep_all}
+            onCheckedChange={(on) => setForm({ ...form, keep_all: on === true })}
+          />
+          {KEEP_ALL_LABEL}
+        </Label>
+        <p className="text-xs text-muted-foreground">{KEEP_ALL_HINT}</p>
       </div>
       <MembershipList memberships={channel.memberships} />
       {save.isError && <ErrorBox error={save.error} />}

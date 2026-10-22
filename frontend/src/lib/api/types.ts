@@ -50,6 +50,8 @@ export interface Channel {
   members_all: boolean
   // A playlist source of the channel keeps every entry the exclude words allow.
   playlists_pass: boolean
+  // Every source of the channel skips the title words. The other checks still apply.
+  keep_all: boolean
   // The profile picture YouTube serves. Null until a scan or a tab poll finds it.
   avatar_url: string | null
   // False for a channel known only as the uploader of a video a source lists.
@@ -262,10 +264,11 @@ export interface ChannelIn extends TitleWords, ChannelSettings {
   other_channels: boolean
   members_all: boolean
   playlists_pass: boolean
+  keep_all: boolean
 }
 
 export type ChannelPatch = Partial<
-  TitleWords & ChannelSettings & Pick<Channel, "members_all" | "playlists_pass">
+  TitleWords & ChannelSettings & Pick<Channel, "members_all" | "playlists_pass" | "keep_all">
 >
 
 export interface DownloadSettingsIn {

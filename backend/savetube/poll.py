@@ -88,13 +88,15 @@ def _skip(
     the channels a present cookie profile is a confirmed member of.
     `members_all` is the uploader channel's switch that exempts its
     members-only videos from the words. A playlist source of a channel with
-    `playlists_pass` on keeps only the exclude words."""
+    `playlists_pass` on keeps only the exclude words. Every source of a channel
+    with `keep_all` on skips the words."""
     if entry.get("live_status") in _UNFINISHED_LIVE:
         return "live"
     if source.kind is SourceKind.PLAYLIST and channel is not None and channel.playlists_pass:
         lists = ([], lists[1])
     is_members = classify(entry) is VideoType.MEMBERS
-    if not (is_members and members_all) and not words.matches(entry.get("title") or "", *lists):
+    exempt = (channel is not None and channel.keep_all) or (is_members and members_all)
+    if not exempt and not words.matches(entry.get("title") or "", *lists):
         return "words"
     # Without a member's cookies a members-only download fails every attempt.
     if is_members and entry["channel_id"] not in members:
