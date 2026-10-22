@@ -22,7 +22,7 @@ Confirm staging on the first download after the user resumes downloads. Confirm 
 - `savetube_proto` on pg-dev holds seeded demo data. Its complete videos have no `dir_path` or `info`, so playback tests must point a row at files and revert it after. `/tmp/savetube-library/serve.sh` serves a worktree build against it, login skipped. `/tmp/savetube-playback/serve.sh` and `/tmp/savetube-subs/serve.sh` add an archive root.
 - CULUA is the one production channel.
 - On develop, not released: Move now on the Downloads card staging line (`POST /api/staging/move`, migration `0015`). The web cannot move files, so it sets `download_settings.move_requested_at` and the scheduler moves within a minute.
-- KMNZ in the Videos channel filter shows three times. Each is its own YouTube channel id: `UCwuS0uY-Z2Gr_5OV2oFybFA` is the group channel @KMNZOFFICIAL (313k subscribers, 0 stored videos), `UCCPGAOlGQ-SEiThLjS-teQw` is @KMNZOFFICIAL_TINAS ("KMNZ TINA" on its page, lives only, no videos tab), `UCnwnKd78qy2Txjs1WlfwkxA` is @KMNZOFFICIAL_TINAM ("KMNZ_TINAM"). The video info names the TINAS channel "KMNZ". The playlist "Live Performance" (source 4) lists `NntlCg7LbTg` under the group channel, while its info names TINAS as uploader. The poll created the group channel row from the listing, and the download stored the video under TINAS, which left the group row empty. The user sees the handles as members under one KMNZ channel and has not decided how savetube groups them.
+- On develop, not released: the Videos channel filter lists each name once and filters by `channel_name`. The user chose grouping by the shared name: group member channels such as KMNZ's (@KMNZOFFICIAL, @KMNZOFFICIAL_TINAS, @KMNZOFFICIAL_TINAM) have their own ids but carry the group's name in their video info. The user expects RK Music's other units to follow the same pattern. A playlist listing can name the group channel for a member's video, which leaves an empty group channel row once the download stores the video under the member. Inside a name group it is harmless.
 
 ## What worked
 
@@ -52,13 +52,12 @@ Confirm staging on the first download after the user resumes downloads. Confirm 
 
 ## Next steps
 
-1. Decide with the user how KMNZ-style member channels show: separate channels with the handle beside a repeated name, or a group under the parent channel. Then delete or prevent the empty channel a listing leaves when the stored video moves to its real uploader.
-2. Refactor the backend and the frontend, which the user finds messy after many features. Plan it with the user first.
-3. Once the user resumes downloads: check that the worker writes `/staging/incoming/<video id>/`, a finished video lands in `/staging/ready/` as `staged`, and the scheduler logs `staging.move` and `staging.moved` with the video then `complete` in the tree. Also check the step label on the card through merge, verify and the audio copy.
-4. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
-5. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
-6. Batch work is on hold: the user expects no more batch jobs. `savetube extract-audio` runs through `kubectl exec` with `print` output, invisible in Loki and tied to the caller's connection. A failed audio extraction after a download is not retried, and only a rerun of `extract-audio` fills it.
-7. Follow-ups:
+1. Refactor the backend and the frontend, which the user finds messy after many features. Plan it with the user first.
+2. Once the user resumes downloads: check that the worker writes `/staging/incoming/<video id>/`, a finished video lands in `/staging/ready/` as `staged`, and the scheduler logs `staging.move` and `staging.moved` with the video then `complete` in the tree. Also check the step label on the card through merge, verify and the audio copy.
+3. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
+4. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
+5. Batch work is on hold: the user expects no more batch jobs. `savetube extract-audio` runs through `kubectl exec` with `print` output, invisible in Loki and tied to the caller's connection. A failed audio extraction after a download is not retried, and only a rerun of `extract-audio` fills it.
+6. Follow-ups:
    - The channel page hides "Show more" once all 500 listed queued jobs show, even when more wait.
    - `GET /api/sources` sends `last_error` raw. The Home card only cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
    - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
@@ -68,9 +67,9 @@ Confirm staging on the first download after the user resumes downloads. Confirm 
    - The fallback treats any HLS run that ends "The downloaded file is empty" with no bytes as a refused format, whatever the cause. The cap of 3 per attempt bounds it.
    - The settings page uses a checkbox for the window, because the project has no Switch component.
    - ffmpeg is about 180-210 MB of the image. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
-8. Safari playback is out of scope until the user asks. The plan then: a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
-9. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
-10. Later: i18n with Korean added beside English.
+7. Safari playback is out of scope until the user asks. The plan then: a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
+8. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
+9. Later: i18n with Korean added beside English.
 
 ## Suggested skills
 
