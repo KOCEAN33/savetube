@@ -109,6 +109,13 @@ export interface Job {
   progress: JobProgress | JobStep | null
 }
 
+export interface Staging {
+  count: number
+  bytes: number
+  // A Move now the scheduler has not taken yet.
+  move_requested: boolean
+}
+
 export interface JobStep {
   step: "merging" | "verifying" | "audio"
 }
@@ -360,6 +367,8 @@ export const mutations = {
     request<Channel>("PATCH", `/api/channels/${encodeURIComponent(id)}`, body),
   replaceDownloadSettings: (body: DownloadSettingsIn) =>
     request<DownloadSettings>("PUT", "/api/download-settings", body),
+  // The scheduler moves every staged video on its next check, within a minute.
+  moveStaged: () => request<Staging>("POST", "/api/staging/move"),
   setDownloadsPaused: (paused: boolean) =>
     request<DownloadSettings>("PUT", "/api/download-settings/paused", { paused }),
   replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
@@ -392,7 +401,7 @@ export const api = {
   jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),
   // The videos waiting on staging for the move into the tree.
-  staging: () => get<{ count: number; bytes: number }>("/api/staging"),
+  staging: () => get<Staging>("/api/staging"),
   videos: (query: {
     // The uploader.
     channel_id?: string

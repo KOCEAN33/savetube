@@ -147,6 +147,10 @@ class DownloadSettings(Base):
     block_count: Mapped[int] = mapped_column(default=0, server_default="0")
     # The user's pause: no archive download starts, and running ones stop.
     paused: Mapped[bool] = mapped_column(default=False, server_default=false())
+    # The user's Move now: the scheduler moves every staged video on its next
+    # check, then clears it. The web pod cannot move them, because it mounts
+    # neither staging nor a writable archive.
+    move_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The cookie profile of every poll, live probe and non-members download.
     # Null runs them cookie-free.
     cookie_profile: Mapped[str | None] = mapped_column(Text)

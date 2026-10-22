@@ -28,3 +28,8 @@ def test_an_idle_hour_without_downloads_moves_a_small_batch():
 
 def test_nothing_staged_never_moves():
     assert move_reason(0, 0, 0, None, NOW) is None
+
+
+def test_a_move_request_moves_whatever_waits_at_once():
+    assert move_reason(GIB, 30 * GIB, 1, NOW, NOW, requested=True) == "manual"
+    assert move_reason(0, 30 * GIB, 0, None, NOW, requested=True) is None

@@ -989,6 +989,8 @@ async def job_counts(
 class StagedOut(BaseModel):
     count: int
     bytes: int
+    # A Move now the scheduler has not taken yet.
+    move_requested: bool
 
 
 @router.get("/staging")
@@ -1001,7 +1003,22 @@ async def staging(session: Session) -> StagedOut:
             )
         )
     ).one()
-    return StagedOut(count=count, bytes=size)
+    requested = (await limits.load(session)).move_requested_at is not None
+    return StagedOut(count=count, bytes=size, move_requested=requested)
+
+
+@router.post("/staging/move")
+async def move_staging(session: Session) -> StagedOut:
+    """Move every staged video now. The scheduler does it on its next check,
+    within a minute (savetube.staging)."""
+    row = await session.get(DownloadSettings, 1)
+    if row is None:
+        row = DownloadSettings(id=1)
+        session.add(row)
+    row.move_requested_at = datetime.now(UTC)
+    await session.commit()
+    emit(log, logging.INFO, "staging.move_requested")
+    return await staging(session)
 
 
 @router.get("/videos")

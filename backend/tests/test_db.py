@@ -5530,4 +5530,32 @@ def test_api_counts_the_videos_waiting_on_staging(settings):
         " ('c1', 'UC1', 'videos', 't', 'complete', 100)",
     )
     with _api(settings) as client:
-        assert client.get("/api/staging").json() == {"count": 2, "bytes": 15}
+        assert client.get("/api/staging").json() == {
+            "count": 2,
+            "bytes": 15,
+            "move_requested": False,
+        }
+        assert client.post("/api/staging/move").json()["move_requested"] is True
+        assert client.get("/api/staging").json()["move_requested"] is True
+
+
+@pytest.mark.anyio
+async def test_a_move_request_moves_a_small_batch_during_a_download(settings, caplog):
+    import logging
+
+    staged = _staged_rows(
+        settings,
+        waited="5 minutes",
+        extra=(
+            "INSERT INTO job (kind, state, video_id, attempts)"
+            " VALUES ('archive', 'running', 's1', 1)",
+            "UPDATE download_settings SET move_requested_at = now()",
+        ),
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        video = await _move(staged)
+
+    assert video.state is VideoState.COMPLETE
+    [start] = _events(caplog, "staging.move")
+    assert _fields(start)["reason"] == "manual"
+    assert _sql_rows(settings, "SELECT move_requested_at FROM download_settings") == [(None,)]
