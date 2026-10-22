@@ -4,6 +4,7 @@ import asyncio
 import logging
 import shutil
 from collections.abc import Awaitable, Callable
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -107,88 +108,21 @@ async def _archive(
     channel's selector, and the download runs again, up to
     MAX_FORMAT_FALLBACKS times per attempt.
     """
-    url = video_url(video_id)
-    excluded: list[str] = []
-
-    async def fetch(pin: str | None = None) -> dict[str, Any]:
-        """One download with `pin`, else the channel's selector, again with
-        the format googlevideo refused excluded (_refused)."""
-        selector = pin or exclude_formats(fmt, excluded)
-        chosen: str | None = None
-        # The format refused last, logged with the one the next run picks.
-        pending: str | None = None
-
-        def fallback(format_id: str | None) -> None:
-            nonlocal pending
-            if pending is not None:
-                emit(
-                    log,
-                    logging.WARNING,
-                    "download.fallback",
-                    excluded=pending,
-                    format=format_id,
-                    reason="HTTP Error 500",
-                )
-                pending = None
-
-        async def seen(message: dict[str, Any]) -> None:
-            nonlocal chosen
-            if message.get("event") == "format":
-                chosen = message["format_id"]
-                fallback(chosen)
-            await report(message)
-
-        while True:
-            streams.clear()
-            chosen = None
-            parts = _part_sizes(workdir)
-            try:
-                return await runner(url, params(selector), seen)
-            except DownloadFailed as e:
-                fallback(None)
-                failed = _refused(e, chosen, streams, parts, workdir)
-                if failed is None or len(excluded) >= MAX_FORMAT_FALLBACKS:
-                    raise
-                excluded.append(failed)
-                pending = failed
-                selector = exclude_formats(fmt, excluded)
-
+    fetch = partial(
+        _fetch,
+        url=video_url(video_id),
+        excluded=[],
+        runner=runner,
+        params=params,
+        fmt=fmt,
+        report=report,
+        streams=streams,
+        workdir=workdir,
+    )
     for fresh in (False, True):
-        streams.clear()
-        present = _present(workdir)
-        resumed = pinned is not None and present is not None
-        if pinned is not None and not resumed:
-            await _start_over(sessionmaker, video_id, workdir)
-            pinned = None
-        if resumed:
-            emit(
-                log,
-                logging.INFO,
-                "download.resume",
-                format=pinned,
-                present=human_bytes(present),
-                part=human_bytes(_part_bytes(workdir)),
-            )
-            try:
-                info = await fetch(pinned)
-            except DownloadFailed as e:
-                if FORMAT_GONE not in str(e):
-                    raise
-                emit(
-                    log,
-                    logging.WARNING,
-                    "download.restart",
-                    format=pinned,
-                    present=human_bytes(dir_size(workdir)),
-                    reason="the pinned format is no longer offered",
-                )
-                await _start_over(sessionmaker, video_id, workdir)
-                streams.clear()
-                resumed = False
-                info = await fetch()
-        else:
-            info = await fetch()
-
+        info, resumed = await _resume_or_fetch(
+            sessionmaker, video_id, workdir, pinned, fetch, streams
+        )
         media = _media_path(info) or workdir / "missing"
         await step("verifying")
         try:
@@ -213,3 +147,106 @@ async def _archive(
         emit(log, logging.INFO, "download.verified", checks=",".join(checks) or "none")
         return info, checks
     raise AssertionError("unreachable")
+
+
+async def _fetch(
+    pin: str | None = None,
+    *,
+    url: str,
+    excluded: list[str],
+    runner: Runner,
+    params: Callable[[str], dict[str, Any]],
+    fmt: str,
+    report: Report,
+    streams: list[dict[str, Any]],
+    workdir: Path,
+) -> dict[str, Any]:
+    """One download with `pin`, else the channel's selector, again with
+    the format googlevideo refused excluded (_refused). `excluded` holds
+    the refused formats across the calls of one attempt."""
+    selector = pin or exclude_formats(fmt, excluded)
+    chosen: str | None = None
+    # The format refused last, logged with the one the next run picks.
+    pending: str | None = None
+
+    def fallback(format_id: str | None) -> None:
+        nonlocal pending
+        if pending is not None:
+            emit(
+                log,
+                logging.WARNING,
+                "download.fallback",
+                excluded=pending,
+                format=format_id,
+                reason="HTTP Error 500",
+            )
+            pending = None
+
+    async def seen(message: dict[str, Any]) -> None:
+        nonlocal chosen
+        if message.get("event") == "format":
+            chosen = message["format_id"]
+            fallback(chosen)
+        await report(message)
+
+    while True:
+        streams.clear()
+        chosen = None
+        parts = _part_sizes(workdir)
+        try:
+            return await runner(url, params(selector), seen)
+        except DownloadFailed as e:
+            fallback(None)
+            failed = _refused(e, chosen, streams, parts, workdir)
+            if failed is None or len(excluded) >= MAX_FORMAT_FALLBACKS:
+                raise
+            excluded.append(failed)
+            pending = failed
+            selector = exclude_formats(fmt, excluded)
+
+
+async def _resume_or_fetch(
+    sessionmaker: async_sessionmaker,
+    video_id: str,
+    workdir: Path,
+    pinned: str | None,
+    fetch: Callable[..., Awaitable[dict[str, Any]]],
+    streams: list[dict[str, Any]],
+) -> tuple[dict[str, Any], bool]:
+    """One download into `workdir`, with the pinned format when its parts
+    are there. Returns the info dict and whether the download resumed."""
+    streams.clear()
+    present = _present(workdir)
+    resumed = pinned is not None and present is not None
+    if pinned is not None and not resumed:
+        await _start_over(sessionmaker, video_id, workdir)
+        pinned = None
+    if resumed:
+        emit(
+            log,
+            logging.INFO,
+            "download.resume",
+            format=pinned,
+            present=human_bytes(present),
+            part=human_bytes(_part_bytes(workdir)),
+        )
+        try:
+            info = await fetch(pinned)
+        except DownloadFailed as e:
+            if FORMAT_GONE not in str(e):
+                raise
+            emit(
+                log,
+                logging.WARNING,
+                "download.restart",
+                format=pinned,
+                present=human_bytes(dir_size(workdir)),
+                reason="the pinned format is no longer offered",
+            )
+            await _start_over(sessionmaker, video_id, workdir)
+            streams.clear()
+            resumed = False
+            info = await fetch()
+    else:
+        info = await fetch()
+    return info, resumed
