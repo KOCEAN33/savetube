@@ -2,14 +2,14 @@
 
 ## Goal
 
-Confirm `v0.10.0` in production: the HTTP 500 format fallback on a real video, playback and subtitles in the user's browser.
+Confirm staging on the first download after the user resumes downloads. Confirm in production: the HTTP 500 format fallback on a real video, playback and subtitles in the user's browser.
 
 ## Current progress
 
-- Running in `savetube-prod`: `v0.10.0`, migrations `0001`-`0013`, deployed 10:52 KST on 2026-10-22 through PR #38. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning). The release workflow run appears about 85 s after the merge.
-- On develop, not released: the Downloads card shows the step after the last byte (merging, checking the file, writing the audio copy) in place of the percent. `job.progress` then holds `{step}` (`docs/plan/storage.md`). The next release of develop into main ships it.
-- On develop, not released: staging (`docs/plan/storage.md`, Staging), migration `0014`. Archive downloads work on a 40Gi `nvme` PVC and move into the archive in batches: at 20 GiB staged, below 15 GiB free, or after 1 hour with no download running. The user chose the `nvme` PVC over the `scratch` pool, 40Gi, the size trigger with the idle hour, and staged videos hidden until moved. The homelab-workloads change (the `savetube-staging` PVC in `manifests/prod/volumes.yaml`, `staging.existingClaim` in `envs/prod.yaml`) is committed locally there and not pushed. Either side alone changes nothing: the old chart ignores the value, and the PVC waits for its first consumer.
-- Checked after the deploy: alembic `0013`, the web pod mounts the archive read-only (`touch` fails with "Read-only file system"), and `GET /api/videos/<id>/media` without a session answers 401.
+- Running in `savetube-prod`: `v0.11.0`, migrations `0001`-`0014`, deployed 12:06 KST on 2026-10-22 through PR #39. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning). The release workflow run appears about 85 s after the merge.
+- `v0.11.0` added the step label on the Downloads card after the last byte (merging, checking the file, writing the audio copy). `job.progress` then holds `{step}` (`docs/plan/storage.md`).
+- `v0.11.0` added staging (`docs/plan/storage.md`, Staging). Archive downloads work on the 40Gi `nvme` PVC `savetube-staging` and move into the archive in batches: at 20 GiB staged, below 15 GiB free, or after 1 hour with no download running. Staged videos stay hidden until moved. Checked after the deploy: the PVC is Bound, `/staging` belongs to 1000:1000, the worker has `SAVETUBE_STAGING_ROOT=/staging`, alembic is `0014`. No download has run on staging yet: archive downloads were paused (`download_settings.paused` true, 3 queued) at the deploy.
+- Checked after the `v0.10.0` deploy: the web pod mounts the archive read-only (`touch` fails with "Read-only file system"), and `GET /api/videos/<id>/media` without a session answers 401.
 - Download settings in production: window off with no times stored, `daily_limit` null, `max_concurrent` 1, general cookie profile `burner`. The user turns the window on in Settings ("Use the window").
 - `v0.9.0` and `v0.10.0` added:
   - HTTP 500 format fallback (`docs/plan/archive.md`, Resuming and verifying downloads). Trigger: video `7l-RzDkD7a0` answers 500 for format 299 (1080p60 DASH) from any network, and its HLS copy 312 ends "The downloaded file is empty". 298 (720p60) works. Its job is queued and has not run on the new code yet.
@@ -50,7 +50,7 @@ Confirm `v0.10.0` in production: the HTTP 500 format fallback on a real video, p
 
 ## Next steps
 
-1. Release with the user's yes: push homelab-workloads main, and merge develop into main. After the deploy, check that `savetube-staging` is Bound, the worker writes `/staging/incoming/<video id>/`, `staging.move` and `staging.moved` appear in the scheduler log, and alembic is at `0014`.
+1. Once the user resumes downloads: check that the worker writes `/staging/incoming/<video id>/`, a finished video lands in `/staging/ready/` as `staged`, and the scheduler logs `staging.move` and `staging.moved` with the video then `complete` in the tree. Also check the step label on the card through merge, verify and the audio copy.
 2. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
 3. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
 4. Batch work is on hold: the user expects no more batch jobs. `savetube extract-audio` runs through `kubectl exec` with `print` output, invisible in Loki and tied to the caller's connection. A failed audio extraction after a download is not retried, and only a rerun of `extract-audio` fills it.
