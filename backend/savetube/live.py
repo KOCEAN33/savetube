@@ -20,9 +20,9 @@ from yt_dlp.utils import DownloadError
 from savetube import cookies, logs, words
 from savetube.db.models import Channel, Job, JobKind, Source, SourceKind, Video, VideoState
 from savetube.layout import VideoType, classify
-from savetube.limits import TIMEZONE
 from savetube.logs import emit
 from savetube.pipeline import get_or_create_channel
+from savetube.tz import TIMEZONE
 from savetube.ytdl import members_only
 
 log = logging.getLogger(__name__)

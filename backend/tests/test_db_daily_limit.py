@@ -89,7 +89,7 @@ async def test_a_download_running_when_the_daily_limit_is_reached_runs_to_the_en
 
 @pytest.mark.anyio
 async def test_dispatch_fills_only_the_slots_the_daily_limit_leaves(settings):
-    from savetube.limits import TIMEZONE
+    from savetube.tz import TIMEZONE
 
     now = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
     _waiting_rows(
@@ -109,7 +109,7 @@ async def test_dispatch_fills_only_the_slots_the_daily_limit_leaves(settings):
 
 @pytest.mark.anyio
 async def test_the_daily_count_resets_at_midnight_in_seoul(settings):
-    from savetube.limits import TIMEZONE
+    from savetube.tz import TIMEZONE
 
     _waiting_rows(
         settings,
@@ -129,7 +129,7 @@ async def test_the_daily_count_resets_at_midnight_in_seoul(settings):
 
 @pytest.mark.anyio
 async def test_the_daily_limit_defers_to_the_later_of_midnight_and_the_window(settings):
-    from savetube.limits import TIMEZONE
+    from savetube.tz import TIMEZONE
 
     _waiting_rows(
         settings,
@@ -151,7 +151,7 @@ async def test_the_daily_limit_defers_to_the_later_of_midnight_and_the_window(se
 
 @pytest.mark.anyio
 async def test_a_disabled_window_keeps_its_times_and_is_ignored(settings):
-    from savetube.limits import TIMEZONE
+    from savetube.tz import TIMEZONE
 
     _waiting_rows(
         settings,

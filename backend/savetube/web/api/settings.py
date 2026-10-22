@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import cookies, limits, logs
 from savetube.db.models import DownloadSettings, GlobalWords, Video, VideoState
-from savetube.limits import TIMEZONE
 from savetube.logs import emit
+from savetube.tz import TIMEZONE
 from savetube.web.api.deps import Session, _normalize, log
 from savetube.web.api.schemas import WordsIn, _Out
 from savetube.web.auth import CurrentUser, User

@@ -127,7 +127,7 @@ async def test_dispatch_sends_nothing_while_blocked_then_one_probe(settings):
 
 @pytest.mark.anyio
 async def test_dispatch_while_blocked_waits_for_the_later_of_pause_and_window(settings):
-    from savetube.limits import TIMEZONE
+    from savetube.tz import TIMEZONE
 
     _waiting_rows(
         settings,
@@ -283,7 +283,7 @@ def test_migration_0012_sets_failed_videos_with_a_queued_archive_job_pending(set
 
 @pytest.mark.anyio
 async def test_dispatch_sends_nothing_while_paused_and_leaves_no_deferral(settings):
-    from savetube.limits import TIMEZONE
+    from savetube.tz import TIMEZONE
 
     _waiting_rows(
         settings,

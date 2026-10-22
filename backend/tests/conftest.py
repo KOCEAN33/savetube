@@ -247,7 +247,7 @@ def _job_rows(settings, *extra):
 
 def _closed_window_sql():
     """A window opening two hours from now, so now is outside it."""
-    from savetube.limits import TIMEZONE
+    from savetube.tz import TIMEZONE
 
     now = datetime.now(TIMEZONE)
     start = (now + timedelta(hours=2)).strftime("%H:%M")

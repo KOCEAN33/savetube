@@ -135,7 +135,7 @@ class DownloadSettings(Base):
     id: Mapped[int] = mapped_column(primary_key=True, default=1, autoincrement=False)
     max_concurrent: Mapped[int] = mapped_column(default=1, server_default="1")
     rate_limit_bytes: Mapped[int | None] = mapped_column(BigInteger)
-    # Local times in savetube.limits.TIMEZONE. Both set or both null.
+    # Local times in savetube.tz.TIMEZONE. Both set or both null.
     window_start: Mapped[time | None]
     window_end: Mapped[time | None]
     # Off keeps the times and ignores them.

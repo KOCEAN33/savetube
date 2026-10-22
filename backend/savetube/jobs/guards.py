@@ -15,8 +15,9 @@ from savetube.db.models import DownloadSettings, Job, JobKind, JobState
 from savetube.joblog import BLOCKED_LOG, NETWORK_LOG
 from savetube.jobs.rows import LOG_TAIL_CHARS, _interrupt, _owner_lost
 from savetube.jobs.runners import DownloadFailed
-from savetube.limits import TIMEZONE, backoff, blocked, load, lock
+from savetube.limits import backoff, blocked, load, lock
 from savetube.logs import emit, human_duration
+from savetube.tz import TIMEZONE
 
 # Every module of the package logs as `savetube.jobs`.
 log = logging.getLogger("savetube.jobs")

@@ -104,7 +104,7 @@ async def test_dispatch_with_max_concurrent_1_and_one_running_queues_nothing(set
 
 @pytest.mark.anyio
 async def test_dispatch_waits_for_the_window_and_shows_its_start(settings):
-    from savetube.limits import TIMEZONE
+    from savetube.tz import TIMEZONE
 
     _waiting_rows(
         settings,
