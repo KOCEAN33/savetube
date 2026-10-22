@@ -95,3 +95,75 @@ def test_finalize_moves_and_refuses_to_overwrite(tmp_path):
     with pytest.raises(FileExistsError):
         finalize(other, final)
     assert other.exists()
+
+
+# A 1080p60 video, its 720p60 and 480p siblings, two audio formats and one
+# muxed 360p format, sorted worst to best as yt-dlp's extractor leaves them.
+_FORMATS = [
+    {"format_id": "18", "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a", "height": 360},
+    {"format_id": "140", "ext": "m4a", "vcodec": "none", "acodec": "mp4a", "abr": 129},
+    {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus", "abr": 135},
+    {"format_id": "135", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 480},
+    {"format_id": "298", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 720},
+    {"format_id": "299", "ext": "mp4", "vcodec": "avc1", "acodec": "none", "height": 1080},
+]
+
+
+def _chosen(selector):
+    import yt_dlp
+
+    with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        pick = ydl.build_format_selector(selector)
+        formats = [{**f, "url": f"https://example.com/{f['format_id']}"} for f in _FORMATS]
+        ctx = {"formats": formats, "has_merged_format": True, "incomplete_formats": False}
+        return [f["format_id"] for f in pick(ctx)]
+
+
+@pytest.mark.parametrize(
+    ("selector", "excluded", "chosen"),
+    [
+        ("bv*+ba/b", [], ["299+251"]),
+        ("bv*+ba/b", ["299"], ["298+251"]),
+        ("bv*+ba/b", ["299", "298"], ["135+251"]),
+        ("bv*+ba/b", ["251"], ["299+140"]),
+        ("bv*[height<=1080]+ba/b[height<=1080]", ["299"], ["298+251"]),
+        ("ba/b", ["251"], ["140"]),
+        ("ba/b", ["251", "140"], ["18"]),
+        (" bv*+ba/b ", ["299"], ["298+251"]),
+    ],
+)
+def test_excluding_formats_drops_them_from_every_alternative(selector, excluded, chosen):
+    from savetube.ytdl import exclude_formats
+
+    assert _chosen(exclude_formats(selector, excluded)) == chosen
+
+
+def test_an_excluded_id_with_a_quote_still_parses():
+    from savetube.ytdl import exclude_formats
+
+    assert _chosen(exclude_formats("bv*+ba/b", ["it's"])) == ["299+251"]
+
+
+@pytest.mark.parametrize(
+    ("message", "server"),
+    [
+        (
+            "DownloadError: ERROR: \r[download] Got error: HTTP Error 500: Internal Server Error."
+            " Giving up after 10 retries",
+            True,
+        ),
+        ("ERROR: \r[download] Got error: HTTP Error 500: Internal Server Error", False),
+        (
+            "ERROR: [download] Got error: HTTP Error 503: Service Unavailable."
+            " Giving up after 10 retries",
+            False,
+        ),
+        ("ERROR: unable to download video data: HTTP Error 403: Forbidden", False),
+        # HLS: every fragment got HTTP 500 and yt-dlp skipped each one.
+        ("DownloadError: ERROR: The downloaded file is empty", True),
+    ],
+)
+def test_a_format_server_error_is_http_500_after_every_retry(message, server):
+    from savetube.ytdl import format_server_error
+
+    assert format_server_error(message) is server

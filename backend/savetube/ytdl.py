@@ -52,6 +52,11 @@ NETWORK_MARKERS = (
     ("network is unreachable",),
     ("failed to establish a new connection",),
 )
+# yt-dlp's text when googlevideo answers HTTP 500 to every retry of a stream,
+# in the same groups as BLOCK_MARKERS. Some formats of some videos fail this way
+# every time, from any network. An HLS download skips each fragment that keeps
+# failing and ends on an empty file.
+SERVER_ERROR_MARKERS = (("http error 500", "giving up after"), ("the downloaded file is empty",))
 # YouTube's text for a members-only video the account may not watch, in both
 # forms: "Join this channel to get access to members-only content like this
 # video, and other exclusive perks." and "This video is available to this
@@ -70,6 +75,24 @@ def network_error(message: str) -> bool:
     """Whether a failure is a dropped or timed-out connection."""
     text = message.lower()
     return any(all(part in text for part in group) for group in NETWORK_MARKERS)
+
+
+def format_server_error(message: str) -> bool:
+    """Whether googlevideo answered HTTP 500 to every retry of one stream."""
+    text = message.lower()
+    return any(all(part in text for part in group) for group in SERVER_ERROR_MARKERS)
+
+
+def exclude_formats(selector: str, format_ids: list[str]) -> str:
+    """`selector` with the formats in `format_ids` removed from its choices.
+
+    A filter after a group drops the formats before any alternative inside it
+    picks one. The id is quoted, because yt-dlp reads `format_id!=299` as a
+    number comparison that keeps every format."""
+    filters = "".join(
+        "[format_id!='{}']".format(i.replace("\\", "\\\\").replace("'", "\\'")) for i in format_ids
+    )
+    return f"({selector.strip()}){filters}" if filters else selector
 
 
 def members_only(message: str) -> bool:
