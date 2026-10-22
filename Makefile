@@ -4,7 +4,7 @@ ENV := set -a; [ -f .env ] && . ./.env; set +a;
 # working directory. lint runs in backend/, because ruff caches in the working directory.
 PY := uv run --project backend
 
-.PHONY: check lint web
+.PHONY: check lint web e2e-smoke
 
 # The DB-gated tests skip when SAVETUBE_TEST_DATABASE_URL is unset, so the gate
 # refuses to run without it.
@@ -18,3 +18,7 @@ lint:
 
 web:
 	$(PY) savetube web
+
+# Frontend smoke in Chrome against a fresh seeded database (e2e/run.sh).
+e2e-smoke:
+	@$(ENV) e2e/run.sh
