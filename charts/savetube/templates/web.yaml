@@ -33,6 +33,7 @@ spec:
               containerPort: 9090
           env:
             {{- include "savetube.dbEnv" . | nindent 12 }}
+            {{- include "savetube.archiveRootEnv" . | nindent 12 }}
             - name: SAVETUBE_PUBLIC_URL
               value: {{ required "publicUrl is required" .Values.publicUrl | quote }}
             - name: SAVETUBE_OIDC_ISSUER
@@ -62,11 +63,13 @@ spec:
           securityContext:
             {{- include "savetube.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
+            {{- include "savetube.archiveReadOnlyMount" . | nindent 12 }}
             - name: tmp
               mountPath: /tmp
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
       volumes:
+        {{- include "savetube.archiveReadOnlyVolume" . | nindent 8 }}
         - name: tmp
           emptyDir: {}
 ---

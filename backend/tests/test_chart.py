@@ -274,3 +274,15 @@ def test_every_savetube_container_takes_the_log_level():
             assert env.get("SAVETUBE_LOG_LEVEL") == "debug", f"{role}/{c['name']}"
     web = pod_spec(workloads(render())["web"])["containers"][0]
     assert {e["name"]: e.get("value") for e in web["env"]}["SAVETUBE_LOG_LEVEL"] == "info"
+
+
+# The web pod serves stored files for playback, and never writes the archive.
+def test_web_mounts_the_archive_read_only_at_its_archive_root():
+    spec = pod_spec(one(render(), "Deployment", "savetube-web"))
+    (web,) = spec["containers"]
+    env = {e["name"]: e.get("value") for e in web["env"]}
+    root = env["SAVETUBE_ARCHIVE_ROOT"]
+    mount = {m["mountPath"]: m for m in web["volumeMounts"]}[root]
+    assert mount["readOnly"] is True
+    claim = {v["name"]: v for v in spec["volumes"]}[mount["name"]]["persistentVolumeClaim"]
+    assert claim == {"claimName": "savetube-archive", "readOnly": True}

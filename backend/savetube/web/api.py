@@ -3,9 +3,11 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1029,6 +1031,37 @@ async def video(session: Session, video_id: str) -> VideoDetail:
     if v is None:
         raise HTTPException(status_code=404)
     return VideoDetail.model_validate(v)
+
+
+async def _stored_file(request: Request, session: AsyncSession, video_id: str, ext: str) -> Path:
+    """`<archive root>/<dir_path>/<video id>.<ext>` of a complete video, built
+    from its row only and never outside the archive root. `ext` "" means the
+    media's own extension from `info.ext`."""
+    v = await session.get(Video, video_id)
+    if v is None or v.state is not VideoState.COMPLETE or not v.dir_path:
+        raise HTTPException(status_code=404)
+    ext = ext or (v.info or {}).get("ext")
+    if not isinstance(ext, str) or not ext:
+        raise HTTPException(status_code=404)
+    root = request.app.state.archive_root.resolve()
+    path = (root / v.dir_path / f"{v.id}.{ext}").resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HTTPException(status_code=404)
+    return path
+
+
+# Starlette's FileResponse answers Range (206, 416, multipart) and HEAD itself.
+@router.api_route("/videos/{video_id}/media", methods=["GET", "HEAD"])
+async def video_media(request: Request, session: Session, video_id: str) -> FileResponse:
+    path = await _stored_file(request, session, video_id, "")
+    return FileResponse(path, media_type="video/x-matroska" if path.suffix == ".mkv" else None)
+
+
+@router.api_route("/videos/{video_id}/audio", methods=["GET", "HEAD"])
+async def video_audio(request: Request, session: Session, video_id: str) -> FileResponse:
+    return FileResponse(
+        await _stored_file(request, session, video_id, "opus"), media_type="audio/ogg"
+    )
 
 
 _HHMM = Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
