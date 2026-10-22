@@ -140,6 +140,12 @@ export interface VideoDetail extends Video {
   info: Record<string, unknown> | null
 }
 
+// A stored `<video id>.<lang>.vtt`. The label is yt-dlp's track name, else the code.
+export interface Subtitle {
+  lang: string
+  label: string
+}
+
 export type VideoOrder = "newest" | "oldest"
 
 export interface VideoPage {
@@ -321,6 +327,10 @@ export interface DownloadSettingsIn {
   rate_limit_bytes: number | null
   window_start: string | null
   window_end: string | null
+  // Off keeps the times and ignores them.
+  window_enabled: boolean
+  // Archive downloads per Asia/Seoul day. Null: no cap.
+  daily_limit: number | null
   // The profile of every poll, live probe and non-members download. Null: cookie-free.
   cookie_profile: string | null
 }
@@ -329,6 +339,8 @@ export interface DownloadSettings extends DownloadSettingsIn {
   timezone: string
   // The user's pause of archive downloads. Set only through setDownloadsPaused.
   paused: boolean
+  // Archive downloads succeeded today, plus running ones. Read-only.
+  downloaded_today: number
 }
 
 export const mutations = {
@@ -390,4 +402,10 @@ export const api = {
     offset?: number
   }) => get<VideoPage>("/api/videos", query),
   video: (id: string) => get<VideoDetail>(`/api/videos/${encodeURIComponent(id)}`),
+  // A complete video's stored mkv and its Opus audio copy, served with Range.
+  mediaUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/media`,
+  audioUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/audio`,
+  subtitles: (id: string) => get<Subtitle[]>(`/api/videos/${encodeURIComponent(id)}/subtitles`),
+  subtitleUrl: (id: string, lang: string) =>
+    `/api/videos/${encodeURIComponent(id)}/subtitles/${encodeURIComponent(lang)}`,
 }

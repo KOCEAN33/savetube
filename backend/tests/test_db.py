@@ -4,11 +4,13 @@ savetube_test_<unix seconds>_<hex>, so concurrent runs against one server do not
 Setup also drops databases of that pattern older than 24 hours, which killed runs leave behind."""
 
 import asyncio
+import json
 import os
 import re
 import secrets
 import time
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as dt_time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -1890,7 +1892,10 @@ def _closed_window_sql():
     now = datetime.now(TIMEZONE)
     start = (now + timedelta(hours=2)).strftime("%H:%M")
     end = (now + timedelta(hours=3)).strftime("%H:%M")
-    return f"UPDATE download_settings SET window_start = '{start}', window_end = '{end}'"
+    return (
+        f"UPDATE download_settings SET window_start = '{start}', window_end = '{end}',"
+        " window_enabled = true"
+    )
 
 
 class _Runner:
@@ -2068,7 +2073,7 @@ async def test_dispatch_waits_for_the_window_and_shows_its_start(settings):
     _waiting_rows(
         settings,
         "UPDATE download_settings SET max_concurrent = 5,"
-        " window_start = '23:00', window_end = '05:00'",
+        " window_start = '23:00', window_end = '05:00', window_enabled = true",
     )
     # 12:00 in Seoul, eleven hours before the window opens.
     noon = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
@@ -2091,8 +2096,11 @@ def test_api_download_settings_and_job_deferral(settings):
             "rate_limit_bytes": None,
             "window_start": None,
             "window_end": None,
+            "window_enabled": False,
+            "daily_limit": None,
             "cookie_profile": None,
             "timezone": "Asia/Seoul",
+            "downloaded_today": 0,
             "blocked_until": None,
             "block_count": 0,
             "paused": False,
@@ -2102,12 +2110,15 @@ def test_api_download_settings_and_job_deferral(settings):
             "rate_limit_bytes": 2000000,
             "window_start": "23:00",
             "window_end": "05:00",
+            "window_enabled": True,
+            "daily_limit": None,
             "cookie_profile": None,
         }
         put = client.put("/api/download-settings", json=body)
         assert put.status_code == 200
         unblocked = {"blocked_until": None, "block_count": 0, "paused": False}
-        assert put.json() == body | {"timezone": "Asia/Seoul"} | unblocked
+        today = {"timezone": "Asia/Seoul", "downloaded_today": 0}
+        assert put.json() == body | today | unblocked
         assert client.get("/api/download-settings").json() == put.json()
         for bad in (
             body | {"window_end": None},
@@ -2118,7 +2129,7 @@ def test_api_download_settings_and_job_deferral(settings):
             body | {"rate_limit_bytes": 0},
         ):
             assert client.put("/api/download-settings", json=bad).status_code == 422, bad
-        open_all_day = body | {"window_start": None, "window_end": None}
+        open_all_day = body | {"window_start": None, "window_end": None, "window_enabled": False}
         assert client.put("/api/download-settings", json=open_all_day).status_code == 200
 
         [job] = client.get("/api/jobs").json()
@@ -4172,7 +4183,8 @@ async def test_dispatch_while_blocked_waits_for_the_later_of_pause_and_window(se
     _waiting_rows(
         settings,
         "UPDATE download_settings SET max_concurrent = 5, block_count = 1,"
-        " window_start = '23:00', window_end = '05:00', blocked_until = '2026-10-22T00:30:00+09'",
+        " window_start = '23:00', window_end = '05:00', window_enabled = true,"
+        " blocked_until = '2026-10-22T00:30:00+09'",
     )
     noon = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
     enqueued, jobs = await _dispatch(settings, noon)
@@ -4328,7 +4340,7 @@ async def test_dispatch_sends_nothing_while_paused_and_leaves_no_deferral(settin
         settings,
         "UPDATE job SET state = 'succeeded' WHERE id = 10",
         "UPDATE download_settings SET max_concurrent = 5, paused = true,"
-        " window_start = '23:00', window_end = '05:00'",
+        " window_start = '23:00', window_end = '05:00', window_enabled = true",
     )
     # Outside the window too, but a pause has no known end.
     noon = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
@@ -4933,3 +4945,382 @@ async def test_the_audio_backfill_writes_missing_copies_once(settings):
     assert sorted(p.name for p in a1.iterdir()) == ["a1.info.json", "a1.mkv", "a1.opus"]
     [(size,)] = _sql_rows(settings, "SELECT size_bytes FROM video WHERE id = 'a1'")
     assert size == sum(p.stat().st_size for p in a1.iterdir())
+
+
+# The start of today in Seoul, as SQL.
+_KST_TODAY = "(date_trunc('day', now() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul')"
+
+
+@pytest.mark.anyio
+async def test_the_daily_limit_hands_back_a_4th_start_at_limit_3(settings, caplog):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 10, daily_limit = 3",
+        # Two successes today and one running download make three.
+        "INSERT INTO job (id, kind, state, video_id, attempts, finished_at) VALUES"
+        " (2, 'archive', 'succeeded', 'busy1', 1, now()),"
+        f" (3, 'archive', 'succeeded', 'busy1', 1, {_KST_TODAY}),"
+        " (4, 'archive', 'running', 'busy1', 1, NULL),"
+        # None of these count: yesterday, a recording, an interrupted run, a failure.
+        f" (5, 'archive', 'succeeded', 'busy1', 1, {_KST_TODAY} - interval '1 second'),"
+        " (6, 'record', 'succeeded', 'busy2', 1, now()),"
+        " (7, 'archive', 'interrupted', 'busy1', 1, now()),"
+        " (8, 'archive', 'failed', 'busy1', 1, now())",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        job, runner, queue_rows = await _run(settings)
+    assert runner.params is None
+    assert job.state is JobState.QUEUED and job.queue_job_id is None and job.attempts == 0
+    assert queue_rows == 0
+    [line] = _events(caplog, "job.returned")
+    assert _fields(line)["reason"] == "daily_limit"
+
+    _sql(settings, "UPDATE download_settings SET daily_limit = 4")
+    job, runner, _ = await _run(settings)
+    assert runner.params is not None and job.attempts == 1
+
+
+@pytest.mark.anyio
+async def test_a_download_running_when_the_daily_limit_is_reached_runs_to_the_end(
+    settings, monkeypatch
+):
+    from savetube import jobs as jobs_module
+
+    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.05)
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+
+    async def capped_mid_run(params, report):
+        _sql(
+            settings,
+            "UPDATE download_settings SET daily_limit = 1",
+            "INSERT INTO job (id, kind, state, video_id, attempts, finished_at) VALUES"
+            " (2, 'archive', 'succeeded', 'busy1', 1, now())",
+        )
+        await asyncio.sleep(0.3)
+        return await _finished()(params, report)
+
+    jobs, video = await asyncio.wait_for(_run_steps(settings, _Steps(capped_mid_run)), 10)
+    assert jobs[1].state is JobState.SUCCEEDED
+    assert video.state is VideoState.COMPLETE
+
+
+@pytest.mark.anyio
+async def test_dispatch_fills_only_the_slots_the_daily_limit_leaves(settings):
+    from savetube.limits import TIMEZONE
+
+    now = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 5, daily_limit = 3",
+        # Job 10 runs, so one success today leaves one start.
+        "INSERT INTO job (id, kind, state, video_id, attempts, finished_at) VALUES"
+        " (20, 'archive', 'succeeded', 'a', 1, '2026-10-21T08:00:00+09')",
+    )
+    enqueued, jobs = await _dispatch(settings, now)
+    assert enqueued == [12]
+    assert [jobs[i].deferred_until for i in (13, 14)] == [None, None]
+    # The dispatched job holds the last start of the day.
+    enqueued, _ = await _dispatch(settings, now)
+    assert enqueued == []
+
+
+@pytest.mark.anyio
+async def test_the_daily_count_resets_at_midnight_in_seoul(settings):
+    from savetube.limits import TIMEZONE
+
+    _waiting_rows(
+        settings,
+        "UPDATE job SET state = 'succeeded', finished_at = '2026-10-21T23:30:00+09' WHERE id = 10",
+        "UPDATE download_settings SET max_concurrent = 5, daily_limit = 1",
+    )
+    midnight = datetime(2026, 10, 22, 0, 0, tzinfo=TIMEZONE)
+    enqueued, jobs = await _dispatch(settings, midnight - timedelta(minutes=10))
+    assert enqueued == []
+    assert [jobs[i].deferred_until for i in (12, 13, 14)] == [midnight, midnight, midnight]
+    assert jobs[15].deferred_until is None
+
+    enqueued, jobs = await _dispatch(settings, midnight)
+    assert enqueued == [12]
+    assert [jobs[i].deferred_until for i in (13, 14)] == [None, None]
+
+
+@pytest.mark.anyio
+async def test_the_daily_limit_defers_to_the_later_of_midnight_and_the_window(settings):
+    from savetube.limits import TIMEZONE
+
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 5, daily_limit = 1,"
+        " window_start = '01:00', window_end = '05:00', window_enabled = true",
+    )
+    # Job 10 runs, so the cap holds. The window opens after midnight.
+    late = datetime(2026, 10, 21, 23, 30, tzinfo=TIMEZONE)
+    enqueued, jobs = await _dispatch(settings, late)
+    assert enqueued == []
+    assert jobs[12].deferred_until == datetime(2026, 10, 22, 1, 0, tzinfo=TIMEZONE)
+
+    # Inside a window that crosses midnight, the cap waits for midnight.
+    _sql(settings, "UPDATE download_settings SET window_start = '23:00'")
+    enqueued, jobs = await _dispatch(settings, late)
+    assert enqueued == []
+    assert jobs[12].deferred_until == datetime(2026, 10, 22, 0, 0, tzinfo=TIMEZONE)
+
+
+@pytest.mark.anyio
+async def test_a_disabled_window_keeps_its_times_and_is_ignored(settings):
+    from savetube.limits import TIMEZONE
+
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 5,"
+        " window_start = '23:00', window_end = '05:00', window_enabled = false",
+    )
+    noon = datetime(2026, 10, 21, 12, 0, tzinfo=TIMEZONE)
+    enqueued, jobs = await _dispatch(settings, noon)
+    assert enqueued == [12, 13, 14]
+    assert all(j.deferred_until is None for j in jobs.values())
+
+
+@pytest.mark.anyio
+async def test_a_worker_ignores_a_disabled_window(settings):
+    _job_rows(settings, _closed_window_sql(), "UPDATE download_settings SET window_enabled = false")
+    job, runner, _ = await _run(settings)
+    assert runner.params is not None and job.attempts == 1
+
+
+def test_api_daily_limit_window_switch_and_todays_count(settings):
+    _job_rows(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts, finished_at) VALUES"
+        " (2, 'archive', 'succeeded', 'busy1', 1, now()),"
+        " (3, 'archive', 'running', 'busy1', 1, NULL),"
+        f" (4, 'archive', 'succeeded', 'busy1', 1, {_KST_TODAY} - interval '1 second')",
+    )
+    body = {
+        "max_concurrent": 1,
+        "rate_limit_bytes": None,
+        "window_start": "23:00",
+        "window_end": "05:00",
+        "window_enabled": False,
+        "daily_limit": 3,
+        "cookie_profile": None,
+    }
+    with _api(settings) as client:
+        got = client.get("/api/download-settings").json()
+        assert (got["daily_limit"], got["window_enabled"], got["downloaded_today"]) == (
+            None,
+            False,
+            2,
+        )
+        put = client.put("/api/download-settings", json=body)
+        assert put.status_code == 200
+        got = client.get("/api/download-settings").json()
+        assert {k: got[k] for k in body} == body
+        assert got["downloaded_today"] == 2
+        on = body | {"window_enabled": True, "daily_limit": None}
+        assert client.put("/api/download-settings", json=on).status_code == 200
+        got = client.get("/api/download-settings").json()
+        assert (got["window_enabled"], got["daily_limit"]) == (True, None)
+        for bad in (
+            body | {"daily_limit": 0},
+            body | {"window_enabled": True, "window_start": None, "window_end": None},
+        ):
+            assert client.put("/api/download-settings", json=bad).status_code == 422, bad
+
+
+def test_migration_0013_enables_a_window_that_has_both_times(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0012")
+    _sql(settings, "UPDATE download_settings SET window_start = '23:00', window_end = '05:00'")
+    command.upgrade(cfg, "head")
+    assert _sql_rows(
+        settings, "SELECT window_enabled, window_start, daily_limit FROM download_settings"
+    ) == [(True, dt_time(23, 0), None)]
+
+    command.downgrade(cfg, "0012")
+    _sql(settings, "UPDATE download_settings SET window_start = NULL, window_end = NULL")
+    command.upgrade(cfg, "head")
+    assert _sql_rows(settings, "SELECT window_enabled FROM download_settings") == [(False,)]
+
+
+MEDIA = bytes(range(256)) * 4
+
+
+def _media_rows(settings, *, state="complete", dir_path="Ch [UC1]/videos/a [m1]"):
+    root = settings.archive_root
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'Ch', 'Ch [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state, dir_path, info) VALUES"
+        f" ('m1', 'UC1', 'videos', 'a', '{state}', '{dir_path}', '{{\"ext\": \"mkv\"}}')",
+    )
+    directory = root / "Ch [UC1]/videos/a [m1]"
+    directory.mkdir(parents=True)
+    (directory / "m1.mkv").write_bytes(MEDIA)
+    (directory / "m1.opus").write_bytes(MEDIA[:100])
+    return directory
+
+
+def test_media_serves_the_whole_file_with_matroska_type(settings):
+    _media_rows(settings)
+    with _api(settings) as client:
+        r = client.get("/api/videos/m1/media")
+    assert r.status_code == 200
+    assert r.content == MEDIA
+    assert r.headers["content-type"] == "video/x-matroska"
+    assert r.headers["accept-ranges"] == "bytes"
+    assert r.headers["content-length"] == "1024"
+
+
+def test_media_serves_a_byte_range(settings):
+    _media_rows(settings)
+    with _api(settings) as client:
+        r = client.get("/api/videos/m1/media", headers={"Range": "bytes=10-19"})
+    assert r.status_code == 206
+    assert r.content == MEDIA[10:20]
+    assert r.headers["content-range"] == "bytes 10-19/1024"
+    assert r.headers["content-type"] == "video/x-matroska"
+
+
+def test_media_serves_a_suffix_range(settings):
+    _media_rows(settings)
+    with _api(settings) as client:
+        r = client.get("/api/videos/m1/media", headers={"Range": "bytes=-24"})
+    assert r.status_code == 206
+    assert r.content == MEDIA[1000:]
+    assert r.headers["content-range"] == "bytes 1000-1023/1024"
+
+
+def test_media_refuses_a_range_past_the_end(settings):
+    _media_rows(settings)
+    with _api(settings) as client:
+        r = client.get("/api/videos/m1/media", headers={"Range": "bytes=5000-6000"})
+    assert r.status_code == 416
+    assert r.headers["content-range"] == "bytes */1024"
+
+
+def test_media_answers_head_without_a_body(settings):
+    _media_rows(settings)
+    with _api(settings) as client:
+        r = client.head("/api/videos/m1/media")
+    assert r.status_code == 200
+    assert r.content == b""
+    assert r.headers["content-length"] == "1024"
+    assert r.headers["content-type"] == "video/x-matroska"
+
+
+def test_audio_serves_the_opus_copy_as_ogg(settings):
+    _media_rows(settings)
+    with _api(settings) as client:
+        full = client.get("/api/videos/m1/audio")
+        part = client.get("/api/videos/m1/audio", headers={"Range": "bytes=0-9"})
+    assert full.status_code == 200 and full.content == MEDIA[:100]
+    assert full.headers["content-type"] == "audio/ogg"
+    assert part.status_code == 206 and part.content == MEDIA[:10]
+
+
+@pytest.mark.parametrize("state", ["pending", "failed"])
+def test_media_is_404_until_the_video_is_complete(settings, state):
+    _media_rows(settings, state=state)
+    with _api(settings) as client:
+        assert client.get("/api/videos/m1/media").status_code == 404
+        assert client.get("/api/videos/m1/audio").status_code == 404
+
+
+def test_media_is_404_for_a_missing_file_or_video(settings):
+    directory = _media_rows(settings)
+    (directory / "m1.opus").unlink()
+    with _api(settings) as client:
+        assert client.get("/api/videos/m1/audio").status_code == 404
+        assert client.get("/api/videos/nope/media").status_code == 404
+
+
+def test_media_never_leaves_the_archive_root(settings):
+    outside = settings.archive_root.parent / "outside"
+    outside.mkdir(parents=True)
+    (outside / "m1.mkv").write_bytes(b"secret")
+    _media_rows(settings, dir_path="../outside")
+    with _api(settings) as client:
+        assert client.get("/api/videos/m1/media").status_code == 404
+
+
+def test_media_needs_a_login(settings):
+    _media_rows(settings)
+    app = create_app(settings)
+    with TestClient(app) as client:
+        r = client.get("/api/videos/m1/media")
+    assert r.status_code == 401
+
+
+VTT_JA = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nこんにちは\n"
+
+
+def _subtitle_rows(settings, *, state="complete", dir_path="Ch [UC1]/videos/a [m1]"):
+    directory = _media_rows(settings, state=state, dir_path=dir_path)
+    info = json.dumps({"ext": "mkv", "subtitles": {"ja": [{"ext": "vtt", "name": "Japanese"}]}})
+    _sql(settings, f"UPDATE video SET info = '{info}' WHERE id = 'm1'")
+    (directory / "m1.ja.vtt").write_text(VTT_JA, encoding="utf-8")
+    (directory / "m1.zh-Hans.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    (directory / "m1.live_chat.json").write_text("{}", encoding="utf-8")
+    return directory
+
+
+def test_subtitles_lists_stored_vtt_languages_with_labels(settings):
+    directory = _subtitle_rows(settings)
+    (directory / "other.en.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    with _api(settings) as client:
+        r = client.get("/api/videos/m1/subtitles")
+    assert r.status_code == 200
+    assert r.json() == [
+        {"lang": "ja", "label": "Japanese"},
+        {"lang": "zh-Hans", "label": "zh-Hans"},
+    ]
+
+
+def test_subtitles_serves_the_vtt_file(settings):
+    _subtitle_rows(settings)
+    with _api(settings) as client:
+        r = client.get("/api/videos/m1/subtitles/ja")
+    assert r.status_code == 200
+    assert r.content.decode("utf-8") == VTT_JA
+    assert r.headers["content-type"] == "text/vtt; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "lang", ["en", "live_chat", "JA", "..%2F..%2Fm1.ja", "ja.vtt", "%2E%2E", "ja%00"]
+)
+def test_subtitles_is_404_for_an_unlisted_language(settings, lang):
+    _subtitle_rows(settings)
+    with _api(settings) as client:
+        assert client.get(f"/api/videos/m1/subtitles/{lang}").status_code == 404
+
+
+@pytest.mark.parametrize("state", ["pending", "failed"])
+def test_subtitles_is_404_until_the_video_is_complete(settings, state):
+    _subtitle_rows(settings, state=state)
+    with _api(settings) as client:
+        assert client.get("/api/videos/m1/subtitles").status_code == 404
+        assert client.get("/api/videos/m1/subtitles/ja").status_code == 404
+
+
+def test_subtitles_never_leave_the_archive_root(settings):
+    outside = settings.archive_root.parent / "outside"
+    outside.mkdir(parents=True)
+    (outside / "m1.en.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    _subtitle_rows(settings, dir_path="../outside")
+    with _api(settings) as client:
+        assert client.get("/api/videos/m1/subtitles").status_code == 404
+        assert client.get("/api/videos/m1/subtitles/en").status_code == 404
+
+
+def test_subtitles_need_a_login(settings):
+    _subtitle_rows(settings)
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/api/videos/m1/subtitles").status_code == 401
+        assert client.get("/api/videos/m1/subtitles/ja").status_code == 401

@@ -8,7 +8,8 @@
 - Sidebar: Home, Live, Videos, Settings, then "Channels (N)". N counts the tracked channels. A + button opens the add-channel modal, and a filter input matches a channel's name or handle. Each tracked channel shows its avatar, its name and its stored-video count, sorted by name, and links to its channel page. No channel list page exists, and `/channels` redirects to `/`.
 - The Videos page is the cross-channel library: search and filters across every channel, recent downloads, and channels known only as an uploader. A channel's own videos are browsed on its channel page, so nothing links from a channel into the Videos page.
 - Live lists record jobs: detected, upcoming and recorded streams. Archive download jobs show on their channel's page.
-- Settings holds the download limits, the general cookie profile, and the global title words. The profile select offers "None (cookie-free)" and each present profile from `GET /api/cookie-profiles`.
+- Settings holds the download limits, the general cookie profile, and the global title words. The window has an on/off checkbox beside its times, which stay editable while it is off. The daily limit field shows "n / limit today" from `downloaded_today`. The profile select offers "None (cookie-free)" and each present profile from `GET /api/cookie-profiles`.
+- Settings also holds the default subtitle language: Off, ja, en, ko, zh-Hans, zh-Hant, or another code typed in. It applies at once and lives in the browser's `localStorage` (`savetube.subtitle-lang`), not in the database, so each browser keeps its own.
 - The site header holds the pause switch for every archive download (archive.md, Pausing downloads), on every page. While paused it shows a "Downloads paused" badge and a Resume button. "Pause downloads" opens a confirmation modal first, because a pause stops the running downloads. Resume applies at once. The switch refetches the flag every 15 s, so a change from another tab shows. Settings shows the same switch above the download limits.
 - Every create and edit form opens in a large modal in the middle of the screen, never a side sheet.
 
@@ -52,7 +53,7 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 - A download shows no progress while yt-dlp fetches the metadata, subtitles and chat replay, because the progress counts the media only.
 - A video counts as the channel's when the channel uploaded it or one of its sources lists it. A collaboration on the channel's tab is stored under the uploader its info names, so the uploader alone misses it.
 - The sidebar count, the header's stored count and the video tabs count complete videos by that rule, through `listed_by`.
-- Thumbnails load from `i.ytimg.com`, because the web pod does not mount the archive.
+- Thumbnails load from `i.ytimg.com`, because no endpoint serves the stored thumbnail.
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
@@ -62,6 +63,16 @@ The channel page edits the same settings later: tabs, playlists, live recording,
 | `GET /api/jobs` | `kind`, `state` (repeat it for several states), `channel_id`, `limit` | jobs, newest first. `channel_id` matches the jobs of videos the channel uploaded or its sources list. Each job carries the video's `title`, its uploader's `channel_id` and `channel_name`, `log_tail`, and `reason`. A running download carries `progress` `{format, pct, done, total, speed, eta}`, and `pct` is null without a total |
 | `GET /api/jobs/counts` | `kind`, `channel_id` | `{state: count}` with every job state, 0 when no job holds it. `channel_id` matches as in `GET /api/jobs` |
 | `GET /api/videos` | `channel_id` (the uploader), `listed_by` (the uploader or a channel whose sources list the video), `source_id` (videos `video_source` links to the source, or for a `playlists` parent to any of its children), `type`, `state`, `q`, `order` (`newest` or `oldest` upload first, default `newest`, a missing date last), `limit` (at most 200), `offset` | `{total, items}` |
+| `GET /api/videos/{id}/media` | | the stored `<id>.<info.ext>`, as `video/x-matroska` for mkv, with HEAD and HTTP Range (206, 416). The path comes from the row's `dir_path` under the archive root only. 404 unless the video is `complete` and the file exists |
+| `GET /api/videos/{id}/audio` | | the stored `<id>.opus` audio copy as `audio/ogg`, by the same rules |
+| `GET /api/videos/{id}/subtitles` | | `[{lang, label}]` sorted by `lang`, one per `<id>.<lang>.vtt` in the video's directory. The chat replay never appears. `label` is the first `name` in `info.subtitles[lang]`, else the code. 404 like `/media` |
+| `GET /api/videos/{id}/subtitles/{lang}` | | that `.vtt` file as `text/vtt; charset=utf-8`. `lang` must equal a code the directory listing yields, so no path is built from it. 404 otherwise |
+
+## Video page
+
+- A complete video's page plays the stored mkv in a `<video>` player with the YouTube thumbnail as poster, from `GET /api/videos/{id}/media`. An "Audio only" player below it plays the Opus copy, and "No audio copy stored." replaces it when the file is missing.
+- The player gets one `<track kind="subtitles">` per stored subtitle language, so Chrome's captions menu lists each language and off. The track whose code equals the browser's default subtitle language starts showing. No match, or no default, shows none. Picking a language or off in the captions menu becomes the new default. The chat replay is not shown.
+- Chrome plays the mkv as stored: H.264, VP9 and AV1 video with Opus audio, seeking included. Safari is not supported, and no transcode or remux exists. A browser whose `canPlayType("video/x-matroska")` is empty gets a note instead of the player.
 
 ## Statistics
 

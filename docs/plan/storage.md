@@ -17,6 +17,7 @@
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- Migration `0013` adds `download_settings.window_enabled`, true where both window times are set, and `download_settings.daily_limit`, null. Its downgrade drops both.
 - Migration `0012` sets every `failed` video with a queued archive job back to `pending`. The poll used to queue a retry without resetting the video. Its downgrade changes nothing.
 - Migration `0011` adds `download_settings.paused`, false on upgrade. Its downgrade drops it.
 - Migration `0010` adds `cookie_profile`, `membership` and `download_settings.cookie_profile`, and drops `channel.use_cookies`. Its downgrade adds `use_cookies` back as false on every channel.

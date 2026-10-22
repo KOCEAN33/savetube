@@ -38,11 +38,14 @@ from savetube.limits import (
     admit,
     backoff,
     blocked,
+    capped,
     concurrency,
+    downloaded_today,
     load,
     lock,
-    next_window_start,
     running,
+    window_label,
+    window_opens,
 )
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
@@ -434,12 +437,17 @@ class Dispatched:
     blocked_until: datetime | None = None
     # The user's pause, which has no end until the user resumes.
     paused: bool = False
+    # Archive downloads today, succeeded or running, and the daily cap.
+    today: int = 0
+    daily_limit: int | None = None
+    # When the daily cap resets. None while it lets a download start.
+    capped_until: datetime | None = None
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
     """Put the oldest waiting archive jobs on the queue, one per free slot, and
-    only inside the download window, outside a block pause, and while the user
-    has not paused downloads. Commits.
+    only inside the download window, outside a block pause, under the daily
+    cap, and while the user has not paused downloads. Commits.
 
     A waiting job is a queued archive job with no queue job. A dispatched job
     holds its slot until a worker takes it or hands it back.
@@ -457,10 +465,12 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
             .returning(Job.id)
         )
     )
-    opens = next_window_start(now, limits.window_start, limits.window_end)
     block_end = blocked(limits, now)
-    if block_end is not None:
-        opens = max(opens, block_end) if opens is not None else block_end
+    today = await downloaded_today(session, now)
+    cap_end = capped(limits, today, now)
+    # The later of the window start, the block's end, and the cap's reset.
+    ends = [t for t in (window_opens(limits, now), block_end, cap_end) if t is not None]
+    opens = max(ends, default=None)
     # The user's pause has no known end, so a waiting job shows none.
     deferred = None if limits.paused else opens
     max_concurrent = concurrency(limits)
@@ -476,6 +486,8 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
             select(func.count()).select_from(Job).where(queued, Job.queue_job_id.is_not(None))
         )
         free = max_concurrent - busy - dispatched
+        if limits.daily_limit is not None:
+            free = min(free, limits.daily_limit - today - dispatched)
         waiting = await session.scalars(
             select(Job.id)
             .where(queued, Job.queue_job_id.is_(None))
@@ -496,9 +508,6 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         select(func.count()).select_from(Job).where(queued, Job.queue_job_id.is_(None))
     )
     await session.commit()
-    window = None
-    if limits.window_start is not None and limits.window_end is not None:
-        window = f"{limits.window_start:%H:%M}-{limits.window_end:%H:%M}"
     return Dispatched(
         started=started,
         waiting=left,
@@ -507,9 +516,12 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         opens=opens,
         requeued=requeued,
         rate_limit=limits.rate_limit_bytes,
-        window=window,
+        window=window_label(limits),
         blocked_until=block_end,
         paused=limits.paused,
+        today=today,
+        daily_limit=limits.daily_limit,
+        capped_until=cap_end,
     )
 
 
@@ -531,7 +543,8 @@ async def run(
     tools: integrity.Tools | None = None,
 ) -> None:
     """Run one job. An archive job outside the download window, with no free
-    slot, or while paused, goes back to waiting for the dispatcher. A pause
+    slot, at the daily cap, or while paused, goes back to waiting for the
+    dispatcher. A pause
     while it runs interrupts it. A recording ignores the limits."""
     sessionmaker = sessionmaker or default_sessionmaker()
     ratelimit = None
@@ -553,7 +566,9 @@ async def run(
                     reason = "paused"
                 elif blocked(current, now) is not None:
                     reason = "blocked"
-                elif next_window_start(now, current.window_start, current.window_end):
+                elif capped(current, await downloaded_today(session, now), now):
+                    reason = "daily_limit"
+                elif window_opens(current, now):
                     reason = "window"
                 else:
                     reason = "slots"

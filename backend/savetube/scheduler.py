@@ -114,6 +114,8 @@ class DispatchLog:
                 reason = "paused"
             elif d.blocked_until is not None:
                 reason = "blocked"
+            elif d.capped_until is not None:
+                reason = "daily_limit"
             else:
                 reason = "window" if d.opens is not None else "slots"
         if reason != self._reason:
@@ -125,6 +127,16 @@ class DispatchLog:
                     "dispatch.waiting",
                     reason=reason,
                     opens=d.opens.astimezone(TIMEZONE).isoformat(timespec="minutes"),
+                    waiting=d.waiting,
+                )
+            elif reason == "daily_limit":
+                emit(
+                    log,
+                    logging.INFO,
+                    "dispatch.waiting",
+                    reason=reason,
+                    opens=d.opens.astimezone(TIMEZONE).isoformat(timespec="minutes"),
+                    today=f"{d.today}/{d.daily_limit}",
                     waiting=d.waiting,
                 )
             elif reason == "paused":

@@ -5,6 +5,7 @@ import { DownloadPauseToggle } from "@/components/download-pause"
 import { ErrorBox, Page, PageSection, QueryState } from "@/components/query-state"
 import { WordListEditor } from "@/components/source-words"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -22,17 +23,22 @@ import {
   type DownloadSettingsIn,
   type TitleWords,
 } from "@/lib/api"
+import { COMMON_SUBTITLE_LANGS, getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
 import { EXCLUDE_HINT, INCLUDE_HINT } from "@/lib/words"
 
 const BYTES_PER_MB = 1_000_000
 // A Select item needs a non-empty value, so "no profile" gets its own.
 const NO_PROFILE = "__none__"
+const SUBTITLES_OFF = "__off__"
+const SUBTITLES_OTHER = "__other__"
 
 interface FormState {
   max_concurrent: number
   rate_mb: string
   window_start: string
   window_end: string
+  window_enabled: boolean
+  daily_limit: string
   cookie_profile: string | null
 }
 
@@ -42,6 +48,8 @@ function toForm(s: DownloadSettings): FormState {
     rate_mb: s.rate_limit_bytes === null ? "" : String(s.rate_limit_bytes / BYTES_PER_MB),
     window_start: s.window_start ?? "",
     window_end: s.window_end ?? "",
+    window_enabled: s.window_enabled,
+    daily_limit: s.daily_limit === null ? "" : String(s.daily_limit),
     cookie_profile: s.cookie_profile,
   }
 }
@@ -61,11 +69,20 @@ function toBody(f: FormState): DownloadSettingsIn | string {
   if ((start === null) !== (end === null))
     return "Set both window start and end, or leave both empty."
   if (start !== null && start === end) return "Window start and end must differ."
+  if (f.window_enabled && start === null) return "Set the window start and end to use the window."
+  let daily: number | null = null
+  if (f.daily_limit.trim() !== "") {
+    daily = Number(f.daily_limit)
+    if (!Number.isInteger(daily) || daily < 1)
+      return "Daily limit must be a whole number of at least 1, or empty."
+  }
   return {
     max_concurrent: f.max_concurrent,
     rate_limit_bytes: rate,
     window_start: start,
     window_end: end,
+    window_enabled: f.window_enabled,
+    daily_limit: daily,
     cookie_profile: f.cookie_profile,
   }
 }
@@ -136,12 +153,41 @@ function DownloadSettingsForm({
           onChange={(e) => setForm({ ...form, rate_mb: e.target.value })}
         />
       </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="dl-daily">Daily limit (downloads per day, {settings.timezone})</Label>
+        <p className="text-xs text-muted-foreground">
+          Successful downloads since 00:00, plus running ones. A download still running when the
+          limit is reached finishes. Empty means no limit.
+        </p>
+        <Input
+          id="dl-daily"
+          type="number"
+          min={1}
+          step={1}
+          placeholder="unlimited"
+          value={form.daily_limit}
+          onChange={(e) => setForm({ ...form, daily_limit: e.target.value })}
+        />
+        <p className="text-xs text-muted-foreground">
+          {settings.downloaded_today}
+          {settings.daily_limit === null ? "" : ` / ${settings.daily_limit}`} today
+        </p>
+      </div>
       <fieldset className="flex flex-col gap-2">
         <legend className="mb-2 text-sm font-medium">Daily download window ({settings.timezone})</legend>
         <p className="text-xs text-muted-foreground">
-          Downloads start only inside the window. A download still running at the window end
-          finishes. Both empty means any time. The window may cross midnight.
+          Downloads start only inside the window while it is on. A download still running at the
+          window end finishes. Off keeps the times and allows any time. The window may cross
+          midnight.
         </p>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="dl-window-enabled"
+            checked={form.window_enabled}
+            onCheckedChange={(on) => setForm({ ...form, window_enabled: on === true })}
+          />
+          <Label htmlFor="dl-window-enabled">Use the window</Label>
+        </div>
         <div className="flex items-center gap-2">
           <Input
             aria-label="Window start"
@@ -244,6 +290,56 @@ function GlobalWordsForm({ initial }: { initial: TitleWords }) {
   )
 }
 
+function SubtitleLangForm() {
+  const [lang, setLang] = useState(getSubtitleLang)
+  const [other, setOther] = useState(
+    () => lang !== null && !COMMON_SUBTITLE_LANGS.some(([code]) => code === lang),
+  )
+
+  function choose(next: string | null) {
+    setLang(next)
+    setSubtitleLang(next)
+  }
+
+  return (
+    <div className="flex max-w-md flex-col gap-2 p-4">
+      <Label htmlFor="subtitle-lang">Default subtitle language</Label>
+      <p className="text-xs text-muted-foreground">
+        A video opens with the subtitles in this language when it has them. The player&apos;s
+        captions menu changes this default too. Stored in this browser only.
+      </p>
+      <Select
+        value={other ? SUBTITLES_OTHER : (lang ?? SUBTITLES_OFF)}
+        onValueChange={(v) => {
+          setOther(v === SUBTITLES_OTHER)
+          if (v !== SUBTITLES_OTHER) choose(v === SUBTITLES_OFF ? null : v)
+        }}
+      >
+        <SelectTrigger id="subtitle-lang" className="w-64">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={SUBTITLES_OFF}>Off</SelectItem>
+          {COMMON_SUBTITLE_LANGS.map(([code, name]) => (
+            <SelectItem key={code} value={code}>
+              {name} ({code})
+            </SelectItem>
+          ))}
+          <SelectItem value={SUBTITLES_OTHER}>Other code</SelectItem>
+        </SelectContent>
+      </Select>
+      {other && (
+        <Input
+          aria-label="Subtitle language code"
+          placeholder="yt-dlp language code, such as es"
+          value={lang ?? ""}
+          onChange={(e) => choose(e.target.value.trim() || null)}
+        />
+      )}
+    </div>
+  )
+}
+
 export function SettingsPage() {
   const settings = useQuery({ queryKey: ["download-settings"], queryFn: api.downloadSettings })
   const profiles = useQuery({ queryKey: ["cookie-profiles"], queryFn: api.cookieProfiles })
@@ -252,6 +348,9 @@ export function SettingsPage() {
     <Page>
       <PageSection title="Global title words">
         <QueryState query={words}>{(data) => <GlobalWordsForm initial={data} />}</QueryState>
+      </PageSection>
+      <PageSection title="Playback">
+        <SubtitleLangForm />
       </PageSection>
       <PageSection title="Download limits">
         <QueryState query={settings}>

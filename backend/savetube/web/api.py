@@ -1,11 +1,14 @@
 import asyncio
+import glob
 import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -220,6 +223,11 @@ class VideoOut(_Out):
 
 class VideoDetail(VideoOut):
     info: dict[str, Any] | None
+
+
+class SubtitleOut(BaseModel):
+    lang: str
+    label: str
 
 
 class VideoPage(_Out):
@@ -1031,6 +1039,91 @@ async def video(session: Session, video_id: str) -> VideoDetail:
     return VideoDetail.model_validate(v)
 
 
+async def _video_dir(request: Request, session: AsyncSession, video_id: str) -> tuple[Video, Path]:
+    """The resolved `<archive root>/<dir_path>` of a complete video, built from
+    its row only and never outside the archive root."""
+    v = await session.get(Video, video_id)
+    if v is None or v.state is not VideoState.COMPLETE or not v.dir_path:
+        raise HTTPException(status_code=404)
+    root = request.app.state.archive_root.resolve()
+    directory = (root / v.dir_path).resolve()
+    if not directory.is_relative_to(root) or not directory.is_dir():
+        raise HTTPException(status_code=404)
+    return v, directory
+
+
+async def _stored_file(request: Request, session: AsyncSession, video_id: str, ext: str) -> Path:
+    """`<video dir>/<video id>.<ext>`. `ext` "" means the media's own extension
+    from `info.ext`."""
+    v, directory = await _video_dir(request, session, video_id)
+    ext = ext or (v.info or {}).get("ext")
+    if not isinstance(ext, str) or not ext:
+        raise HTTPException(status_code=404)
+    path = (directory / f"{v.id}.{ext}").resolve()
+    if not path.is_relative_to(request.app.state.archive_root.resolve()) or not path.is_file():
+        raise HTTPException(status_code=404)
+    return path
+
+
+async def _subtitle_files(
+    request: Request, session: AsyncSession, video_id: str
+) -> tuple[Video, dict[str, Path]]:
+    """Language code to file for each `<video id>.<lang>.vtt` yt-dlp left in the
+    video's directory. The language comes from the listing, never from a request."""
+    v, directory = await _video_dir(request, session, video_id)
+    files = {}
+    for path in directory.glob(f"{glob.escape(v.id)}.*.vtt"):
+        lang = path.name[len(v.id) + 1 : -len(".vtt")]
+        resolved = path.resolve()
+        if (
+            lang
+            and lang != "live_chat"
+            and resolved.is_relative_to(directory)
+            and resolved.is_file()
+        ):
+            files[lang] = resolved
+    return v, dict(sorted(files.items()))
+
+
+def _subtitle_label(info: dict[str, Any] | None, lang: str) -> str:
+    tracks = ((info or {}).get("subtitles") or {}).get(lang)
+    if isinstance(tracks, list):
+        for track in tracks:
+            if isinstance(track, dict) and isinstance(track.get("name"), str) and track["name"]:
+                return track["name"]
+    return lang
+
+
+@router.get("/videos/{video_id}/subtitles")
+async def video_subtitles(request: Request, session: Session, video_id: str) -> list[SubtitleOut]:
+    v, files = await _subtitle_files(request, session, video_id)
+    return [SubtitleOut(lang=lang, label=_subtitle_label(v.info, lang)) for lang in files]
+
+
+@router.get("/videos/{video_id}/subtitles/{lang}")
+async def video_subtitle(
+    request: Request, session: Session, video_id: str, lang: str
+) -> FileResponse:
+    _, files = await _subtitle_files(request, session, video_id)
+    if lang not in files:
+        raise HTTPException(status_code=404)
+    return FileResponse(files[lang], media_type="text/vtt; charset=utf-8")
+
+
+# Starlette's FileResponse answers Range (206, 416, multipart) and HEAD itself.
+@router.api_route("/videos/{video_id}/media", methods=["GET", "HEAD"])
+async def video_media(request: Request, session: Session, video_id: str) -> FileResponse:
+    path = await _stored_file(request, session, video_id, "")
+    return FileResponse(path, media_type="video/x-matroska" if path.suffix == ".mkv" else None)
+
+
+@router.api_route("/videos/{video_id}/audio", methods=["GET", "HEAD"])
+async def video_audio(request: Request, session: Session, video_id: str) -> FileResponse:
+    return FileResponse(
+        await _stored_file(request, session, video_id, "opus"), media_type="audio/ogg"
+    )
+
+
 _HHMM = Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]
 
 
@@ -1039,6 +1132,10 @@ class DownloadSettingsIn(BaseModel):
     rate_limit_bytes: Annotated[int | None, Field(gt=0)] = None
     window_start: _HHMM | None = None
     window_end: _HHMM | None = None
+    # Off keeps the times and ignores them.
+    window_enabled: bool = False
+    # Archive downloads per Asia/Seoul day. Null for no cap.
+    daily_limit: Annotated[int | None, Field(ge=1)] = None
     # A present cookie profile's name. Null runs polls, live probes and
     # non-members downloads cookie-free.
     cookie_profile: str | None = None
@@ -1049,6 +1146,8 @@ class DownloadSettingsIn(BaseModel):
             raise ValueError("set both window_start and window_end, or neither")
         if self.window_start is not None and self.window_start == self.window_end:
             raise ValueError("window_start and window_end must differ")
+        if self.window_enabled and self.window_start is None:
+            raise ValueError("set window_start and window_end to enable the window")
         return self
 
 
@@ -1059,6 +1158,8 @@ class DownloadSettingsOut(DownloadSettingsIn):
     block_count: int = 0
     # Set through PUT /api/download-settings/paused only.
     paused: bool = False
+    # Archive downloads succeeded today in Asia/Seoul, plus running ones.
+    downloaded_today: int = 0
 
 
 class PausedIn(BaseModel):
@@ -1069,23 +1170,26 @@ def _hhmm(t: time | None) -> str | None:
     return t.strftime("%H:%M") if t is not None else None
 
 
-def _settings_out(row: DownloadSettings) -> DownloadSettingsOut:
+async def _settings_out(session: AsyncSession, row: DownloadSettings) -> DownloadSettingsOut:
     return DownloadSettingsOut(
         max_concurrent=row.max_concurrent,
         rate_limit_bytes=row.rate_limit_bytes,
         window_start=_hhmm(row.window_start),
         window_end=_hhmm(row.window_end),
+        window_enabled=row.window_enabled,
+        daily_limit=row.daily_limit,
         cookie_profile=row.cookie_profile,
         timezone=TIMEZONE.key,
         blocked_until=row.blocked_until,
         block_count=row.block_count,
         paused=row.paused,
+        downloaded_today=await limits.downloaded_today(session, datetime.now(UTC)),
     )
 
 
 @router.get("/download-settings")
 async def download_settings(session: Session) -> DownloadSettingsOut:
-    return _settings_out(await limits.load(session))
+    return await _settings_out(session, await limits.load(session))
 
 
 @router.put("/download-settings")
@@ -1106,6 +1210,8 @@ async def replace_download_settings(
     row.rate_limit_bytes = body.rate_limit_bytes
     row.window_start = time.fromisoformat(body.window_start) if body.window_start else None
     row.window_end = time.fromisoformat(body.window_end) if body.window_end else None
+    row.window_enabled = body.window_enabled
+    row.daily_limit = body.daily_limit
     row.cookie_profile = body.cookie_profile
     await session.commit()
     emit(
@@ -1116,10 +1222,11 @@ async def replace_download_settings(
         rate_limit=f"{logs.human_bytes(body.rate_limit_bytes)}/s"
         if body.rate_limit_bytes
         else "none",
-        window=f"{body.window_start}-{body.window_end}" if body.window_start else "none",
+        window=limits.window_label(row) or "none",
+        daily_limit=body.daily_limit or "none",
         cookie_profile=body.cookie_profile or "none",
     )
-    return _settings_out(row)
+    return await _settings_out(session, row)
 
 
 @router.put("/download-settings/paused")
@@ -1141,7 +1248,7 @@ async def pause_downloads(session: Session, body: PausedIn) -> DownloadSettingsO
             "dispatch.paused" if body.paused else "dispatch.resumed",
             running=running,
         )
-    return _settings_out(row)
+    return await _settings_out(session, row)
 
 
 class CookieProfileOut(_Out):

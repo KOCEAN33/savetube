@@ -73,11 +73,34 @@ yt-dlp mount them. The internet-facing web pod never does. */}}
     secretName: {{ .Values.cookies.existingSecret }}
 {{- end -}}
 
+{{- define "savetube.archiveRootEnv" -}}
+- name: SAVETUBE_ARCHIVE_ROOT
+  value: /archive
+{{- end -}}
+
+{{- define "savetube.archiveVolume" -}}
+- name: archive
+  persistentVolumeClaim:
+    claimName: {{ required "archive.existingClaim is required" .Values.archive.existingClaim }}
+{{- end -}}
+
+{{/* The archive for the web pod, which only reads stored files for playback.
+Both the claim and the mount are read-only, so the pod cannot write the tree. */}}
+{{- define "savetube.archiveReadOnlyMount" -}}
+- name: archive
+  mountPath: /archive
+  readOnly: true
+{{- end -}}
+
+{{- define "savetube.archiveReadOnlyVolume" -}}
+{{ include "savetube.archiveVolume" . }}
+    readOnly: true
+{{- end -}}
+
 {{/* Env for a container that downloads or reads the archive tree. */}}
 {{- define "savetube.archiveEnv" -}}
 {{ include "savetube.dbEnv" . }}
-- name: SAVETUBE_ARCHIVE_ROOT
-  value: /archive
+{{ include "savetube.archiveRootEnv" . }}
 {{- if .Values.cookies.existingSecret }}
 {{ include "savetube.cookiesEnv" . }}
 {{- end }}
@@ -94,9 +117,7 @@ yt-dlp mount them. The internet-facing web pod never does. */}}
 {{- end -}}
 
 {{- define "savetube.archiveVolumes" -}}
-- name: archive
-  persistentVolumeClaim:
-    claimName: {{ required "archive.existingClaim is required" .Values.archive.existingClaim }}
+{{ include "savetube.archiveVolume" . }}
 - name: tmp
   emptyDir: {}
 {{- if .Values.cookies.existingSecret }}

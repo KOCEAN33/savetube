@@ -2,6 +2,10 @@ import type { JobState, Source, VideoTab } from "@/lib/api"
 
 export const DEFAULT_FORMAT = "bv*+ba/b"
 
+// YouTube's image host. No endpoint serves the stored thumbnail.
+export const thumbUrl = (id: string, size: "mq" | "hq" | "oar") =>
+  `https://i.ytimg.com/vi/${encodeURIComponent(id)}/${size}default.jpg`
+
 export const VIDEO_TABS: { tab: VideoTab; label: string }[] = [
   { tab: "videos", label: "Videos" },
   { tab: "shorts", label: "Shorts" },
