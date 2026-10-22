@@ -325,9 +325,9 @@ async def test_a_pause_interrupts_a_running_archive_download_and_keeps_its_parts
 ):
     import logging
 
-    from savetube import jobs as jobs_module
+    from savetube.jobs import guards
 
-    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(guards, "PAUSE_POLL_SECONDS", 0.05)
     _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
 
     async def downloading(params, report):
@@ -354,10 +354,9 @@ async def test_a_pause_interrupts_a_running_archive_download_and_keeps_its_parts
 
 @pytest.mark.anyio
 async def test_a_pause_never_cancels_a_live_recording(settings, monkeypatch):
-    from savetube import jobs as jobs_module
-    from savetube.jobs import DownloadFailed, run
+    from savetube.jobs import DownloadFailed, guards, run
 
-    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(guards, "PAUSE_POLL_SECONDS", 0.01)
     _job_rows(
         settings,
         "UPDATE job SET kind = 'record'",

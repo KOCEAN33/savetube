@@ -131,9 +131,9 @@ async def test_a_run_whose_job_was_reclaimed_stops_and_leaves_the_directory(
 ):
     import logging
 
-    from savetube import jobs as jobs_module
+    from savetube.jobs import guards
 
-    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(guards, "PAUSE_POLL_SECONDS", 0.05)
     _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
     cancelled = asyncio.Event()
 

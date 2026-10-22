@@ -67,9 +67,9 @@ async def test_the_daily_limit_hands_back_a_4th_start_at_limit_3(settings, caplo
 async def test_a_download_running_when_the_daily_limit_is_reached_runs_to_the_end(
     settings, monkeypatch
 ):
-    from savetube import jobs as jobs_module
+    from savetube.jobs import guards
 
-    monkeypatch.setattr(jobs_module, "PAUSE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(guards, "PAUSE_POLL_SECONDS", 0.05)
     _job_rows(settings, "UPDATE channel SET format = 'wa'")
 
     async def capped_mid_run(params, report):

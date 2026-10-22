@@ -4,7 +4,7 @@ import multiprocessing
 import pytest
 
 from savetube import jobs
-from savetube.jobs import pump_progress, youtube_block
+from savetube.jobs import pump_progress, runners, youtube_block
 from savetube.web.api import job_reason
 from savetube.ytdl import network_error
 
@@ -190,7 +190,7 @@ def test_the_child_sends_the_merge_step_when_the_merger_starts(monkeypatch):
         hook({"status": "finished", "postprocessor": "Merger"})
         return {}
 
-    monkeypatch.setattr(jobs, "download", download)
+    monkeypatch.setattr(runners, "download", download)
     sent = []
     jobs.logged_download("u", {}, sent.append)
     assert sent == [{"step": "merging"}]
