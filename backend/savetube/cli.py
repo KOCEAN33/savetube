@@ -92,6 +92,29 @@ def _migrate(args: argparse.Namespace) -> None:
     migrate(get_settings())
 
 
+def _extract_audio(args: argparse.Namespace) -> None:
+    from savetube import audio
+    from savetube.db import make_engine, make_sessionmaker
+    from savetube.integrity import Tools
+
+    settings = get_settings()
+
+    async def main() -> dict[str, int]:
+        engine = make_engine(settings.sqlalchemy_url)
+        try:
+            return await audio.backfill(
+                make_sessionmaker(engine),
+                settings.archive_root,
+                tools=Tools(),
+                dry_run=args.dry_run,
+            )
+        finally:
+            await engine.dispose()
+
+    if asyncio.run(main())["failed"]:
+        raise SystemExit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="savetube")
     sub = parser.add_subparsers(required=True)
@@ -115,6 +138,10 @@ def main() -> None:
     sub.add_parser("migrate", help="install or upgrade the database schema").set_defaults(
         func=_migrate
     )
+
+    p = sub.add_parser("extract-audio", help="write the missing audio copy of every stored video")
+    p.add_argument("--dry-run", action="store_true", help="list what would be written")
+    p.set_defaults(func=_extract_audio)
 
     args = parser.parse_args()
     logs.configure(get_settings().log_level)
