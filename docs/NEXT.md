@@ -2,11 +2,11 @@
 
 ## Goal
 
-The no-behavior-change refactor of the backend and the frontend is on develop and unreleased (Next steps 1). Production checks wait for the user: the step label on the Downloads card, the HTTP 500 format fallback, playback and subtitles.
+The no-behavior-change refactor of the backend and the frontend is released as `v0.12.1`. Production checks wait for the user: the step label on the Downloads card, the HTTP 500 format fallback, playback and subtitles.
 
 ## Current progress
 
-- Running in `savetube-prod`: `v0.12.0`, migrations `0001`-`0015`, released 13:11 KST on 2026-10-22 through PR #40. The user confirmed the deploy and that Move now moves staged videos at once. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning). The release workflow run appears about 85 s after the merge.
+- Released: `v0.12.1`, the refactor, 14:43 KST on 2026-10-22 through PR #41, no migration. Argo CD deploys it. `v0.12.0` (PR #40, migrations `0001`-`0015`) ran before it, and the user confirmed that Move now moves staged videos at once. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning). The release workflow run appears about 85 s after the merge.
 - `v0.11.0` added the step label on the Downloads card after the last byte (merging, checking the file, writing the audio copy). `job.progress` then holds `{step}` (`docs/plan/storage.md`).
 - `v0.11.0` added staging (`docs/plan/storage.md`, Staging). Archive downloads work on the 40Gi `nvme` PVC `savetube-staging` and move into the archive in batches: at 20 GiB staged, below 15 GiB free, or after 1 hour with no download running. Staged videos stay hidden until moved. Checked after the deploy: the PVC is Bound, `/staging` belongs to 1000:1000, the worker has `SAVETUBE_STAGING_ROOT=/staging`, alembic is `0014`.
 - Checked after the `v0.10.0` deploy: the web pod mounts the archive read-only (`touch` fails with "Read-only file system"), and `GET /api/videos/<id>/media` without a session answers 401.
@@ -23,7 +23,7 @@ The no-behavior-change refactor of the backend and the frontend is on develop an
 - CULUA is the one production channel.
 - `v0.12.0` added Move now on the Downloads card staging line (`POST /api/staging/move`, migration `0015`). The web cannot move files, so it sets `download_settings.move_requested_at` and the scheduler moves within a minute.
 - `v0.12.0` added the Videos channel filter that lists each name once and filters by `channel_name`. The user chose grouping by the shared name: group member channels such as KMNZ's (@KMNZOFFICIAL, @KMNZOFFICIAL_TINAS, @KMNZOFFICIAL_TINAM) have their own ids but carry the group's name in their video info. The user expects RK Music's other units to follow the same pattern. A playlist listing can name the group channel for a member's video, which leaves an empty group channel row once the download stores the video under the member. Inside a name group it is harmless.
-- On develop, not released: the refactor. `web/api/` and `jobs/` are packages whose `__init__.py` re-exports the old public names. Tests patch a name on the submodule whose call site reads it (`jobs.runners.download`, `jobs.guards.PAUSE_POLL_SECONDS`, `web.api.scan.CHANNEL_PLAYLISTS_TIMEOUT`). Modules in `jobs/` name their logger `savetube.jobs` and `web/api/deps.py` names it `savetube.web.api`, so the `logger=` field stays. `TIMEZONE` lives in `savetube/tz.py`. `cli.py` keeps lazy imports on purpose: `savetube.queue` reads Settings at import, and the rest are role-specific heavy packages. `poll.sync` and `live.check_channel` share only `get_or_create_channel`; every other stage differs in behavior. DB tests live in `backend/tests/test_db_*.py` with shared fixtures and helpers in `conftest.py`.
+- `v0.12.1` holds the refactor. `web/api/` and `jobs/` are packages whose `__init__.py` re-exports the old public names. Tests patch a name on the submodule whose call site reads it (`jobs.runners.download`, `jobs.guards.PAUSE_POLL_SECONDS`, `web.api.scan.CHANNEL_PLAYLISTS_TIMEOUT`). Modules in `jobs/` name their logger `savetube.jobs` and `web/api/deps.py` names it `savetube.web.api`, so the `logger=` field stays. `TIMEZONE` lives in `savetube/tz.py`. `cli.py` keeps lazy imports on purpose: `savetube.queue` reads Settings at import, and the rest are role-specific heavy packages. `poll.sync` and `live.check_channel` share only `get_or_create_channel`; every other stage differs in behavior. DB tests live in `backend/tests/test_db_*.py` with shared fixtures and helpers in `conftest.py`.
 
 ## What worked
 
@@ -55,12 +55,11 @@ The no-behavior-change refactor of the backend and the frontend is on develop an
 
 ## Next steps
 
-1. Release the refactor once the user says yes. Every step kept 371 passed with the ffmpeg shims and smoke 6/6.
-2. Check the step label on the Downloads card through merge, verify and the audio copy.
-3. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
-4. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
-5. Batch work is on hold: the user expects no more batch jobs. `savetube extract-audio` runs through `kubectl exec` with `print` output, invisible in Loki and tied to the caller's connection. A failed audio extraction after a download is not retried, and only a rerun of `extract-audio` fills it.
-6. Follow-ups:
+1. Check the step label on the Downloads card through merge, verify and the audio copy.
+2. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
+3. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
+4. Batch work is on hold: the user expects no more batch jobs. `savetube extract-audio` runs through `kubectl exec` with `print` output, invisible in Loki and tied to the caller's connection. A failed audio extraction after a download is not retried, and only a rerun of `extract-audio` fills it.
+5. Follow-ups:
    - The channel page hides "Show more" once all 500 listed queued jobs show, even when more wait.
    - `GET /api/sources` sends `last_error` raw. The Home card only cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
    - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
@@ -77,9 +76,9 @@ The no-behavior-change refactor of the backend and the frontend is on develop an
    - pyright flags `jobs/job.py` `failed + 1`, where `session.scalar` can return None. pyright is not in `make lint`.
    - `frontend/src/pages/channel/archive-section.tsx` is 450 lines.
    - ffmpeg is about 180-210 MB of the image. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
-7. Safari playback is out of scope until the user asks. The plan then: a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
-8. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
-9. Later: i18n with Korean added beside English.
+6. Safari playback is out of scope until the user asks. The plan then: a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
+7. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
+8. Later: i18n with Korean added beside English.
 
 ## Suggested skills
 
