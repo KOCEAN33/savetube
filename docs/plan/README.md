@@ -11,7 +11,7 @@ Read this file, then only the files your task touches.
 | `background.md` | tool survey, yt-dlp behaviour the design rests on, why one custom app |
 | `runtime.md` | the web, scheduler, worker and recorder roles, how yt-dlp runs in-process |
 | `frontend.md` | sidebar, pages, modals, adding a channel and its API, dashboard statistics |
-| `storage.md` | tables and migrations, the directory tree on `tank/youtube` |
+| `storage.md` | tables and migrations, the directory tree on `tank/youtube`, staging and batch moves |
 | `archive.md` | polling sources, playlists, title words, pausing downloads, download limits, resuming and verifying downloads |
 | `live.md` | live detection, recording, the VOD |
 | `access.md` | login through Zitadel, YouTube cookies |

@@ -48,6 +48,12 @@ archive:
   # The PVC holding the archive tree and its .incoming/ directory, on one filesystem.
   existingClaim: ""
 
+staging:
+  # A PVC on quiet disks where archive downloads work and finished ones wait,
+  # mounted by the worker and the scheduler. The scheduler moves them into the
+  # archive in batches. Empty downloads into the archive's .incoming/.
+  existingClaim: ""
+
 cookies:
   # A Secret whose every key `<name>.txt` is a Netscape cookie file, the cookie
   # profile `<name>`. Empty leaves no profile, so every request runs cookie-free.

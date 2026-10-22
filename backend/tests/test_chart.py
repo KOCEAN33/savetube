@@ -286,3 +286,28 @@ def test_web_mounts_the_archive_read_only_at_its_archive_root():
     assert mount["readOnly"] is True
     claim = {v["name"]: v for v in spec["volumes"]}[mount["name"]]["persistentVolumeClaim"]
     assert claim == {"claimName": "savetube-archive", "readOnly": True}
+
+
+def test_staging_mounts_in_the_worker_and_the_scheduler_only():
+    w = workloads(render({**VALUES, "staging": {"existingClaim": "savetube-staging"}}))
+    for role in ("worker", "scheduler"):
+        spec = pod_spec(w[role])
+        volumes = {v["name"]: v for v in spec["volumes"]}
+        assert volumes["staging"]["persistentVolumeClaim"] == {"claimName": "savetube-staging"}
+        [app] = [c for c in spec["containers"] if c["name"] == role]
+        assert {"name": "staging", "mountPath": "/staging"} in app["volumeMounts"], role
+        assert {"name": "SAVETUBE_STAGING_ROOT", "value": "/staging"} in app["env"], role
+        # A new volume's root belongs to root. Only this container runs as root.
+        [owner] = [c for c in spec["initContainers"] if c["name"] == "staging-owner"]
+        assert owner["command"] == ["chown", "1000:1000", "/staging"]
+        assert owner["securityContext"]["runAsUser"] == 0
+        assert owner["securityContext"]["capabilities"] == {"drop": ["ALL"], "add": ["CHOWN"]}
+    for role in ("web", "recorder"):
+        assert "staging" not in {v["name"] for v in pod_spec(w[role])["volumes"]}, role
+
+
+def test_no_staging_claim_renders_no_staging():
+    for role, obj in workloads(render()).items():
+        spec = pod_spec(obj)
+        assert "staging" not in {v["name"] for v in spec.get("volumes", [])}, role
+        assert "staging-owner" not in {c["name"] for c in spec.get("initContainers", [])}, role

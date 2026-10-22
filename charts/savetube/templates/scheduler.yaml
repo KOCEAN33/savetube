@@ -74,6 +74,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+        {{- include "savetube.stagingOwner" . | nindent 8 }}
         {{- include "savetube.potProvider" . | nindent 8 }}
       containers:
         - name: scheduler
@@ -88,6 +89,7 @@ spec:
           {{- include "savetube.livenessProbe" . | nindent 10 }}
           env:
             {{- include "savetube.archiveEnv" . | nindent 12 }}
+            {{- include "savetube.stagingEnv" . | nindent 12 }}
             - name: SAVETUBE_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -98,7 +100,9 @@ spec:
             {{- include "savetube.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
             {{- include "savetube.archiveMounts" . | nindent 12 }}
+            {{- include "savetube.stagingMount" . | nindent 12 }}
           resources:
             {{- toYaml .Values.scheduler.resources | nindent 12 }}
       volumes:
         {{- include "savetube.archiveVolumes" . | nindent 8 }}
+        {{- include "savetube.stagingVolume" . | nindent 8 }}

@@ -986,6 +986,24 @@ async def job_counts(
     return counts
 
 
+class StagedOut(BaseModel):
+    count: int
+    bytes: int
+
+
+@router.get("/staging")
+async def staging(session: Session) -> StagedOut:
+    """The videos waiting on staging for the move into the tree."""
+    count, size = (
+        await session.execute(
+            select(func.count(), func.coalesce(func.sum(Video.size_bytes), 0)).where(
+                Video.state == VideoState.STAGED
+            )
+        )
+    ).one()
+    return StagedOut(count=count, bytes=size)
+
+
 @router.get("/videos")
 async def videos(
     session: Session,

@@ -391,6 +391,8 @@ export const api = {
   // Every state is present, zero when no job holds it.
   jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),
+  // The videos waiting on staging for the move into the tree.
+  staging: () => get<{ count: number; bytes: number }>("/api/staging"),
   videos: (query: {
     // The uploader.
     channel_id?: string

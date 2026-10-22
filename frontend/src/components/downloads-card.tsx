@@ -15,7 +15,7 @@ import {
   RUNNING_REFETCH_MS,
   jobStateVariant,
 } from "@/lib/channel"
-import { formatDateTime } from "@/lib/format"
+import { formatBytes, formatDateTime } from "@/lib/format"
 
 function ProblemJob({ job }: { job: Job }) {
   return (
@@ -65,6 +65,11 @@ export function DownloadsCard() {
     queryFn: () => api.jobCounts({ kind: "archive" }),
     refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
   })
+  const staged = useQuery({
+    queryKey: ["staging"],
+    queryFn: api.staging,
+    refetchInterval: IDLE_REFETCH_MS,
+  })
   const problems = useQuery({
     queryKey: ["jobs", "archive", "all", "problems", problemLimit],
     queryFn: () =>
@@ -83,6 +88,12 @@ export function DownloadsCard() {
           {counts.data
             ? `${counts.data.running} running, ${counts.data.queued} queued`
             : "Loading"}
+          {staged.data && staged.data.count > 0 && (
+            <>
+              <br />
+              {`${staged.data.count} finished, waiting to move into the archive (${formatBytes(staged.data.bytes)})`}
+            </>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="px-0">

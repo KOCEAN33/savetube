@@ -81,14 +81,26 @@ async def store(
     info: dict[str, Any],
     incoming: Path,
     archive_root: Path,
+    ready_root: Path | None = None,
     from_shorts_tab: bool = False,
 ) -> Video:
-    """Move the download into the tree and record it. The caller commits."""
+    """Move the download into the tree and record it. The caller commits.
+
+    With `ready_root`, the download moves to `<ready_root>/<video id>/`
+    instead and the video is staged. `dir_path` names its place in the tree,
+    and savetube.staging moves it there later."""
     channel = await get_or_create_channel(session, info)
     video_type = classify(info, from_shorts_tab=from_shorts_tab)
     rel = video_dir(channel.dir_name, video_type, info)
     final = archive_root / rel
-    finalize(incoming, final)
+    if ready_root is None:
+        finalize(incoming, final)
+    else:
+        # The mover reads an existing directory as its own finished move.
+        if final.exists():
+            raise FileExistsError(final)
+        final = ready_root / info["id"]
+        finalize(incoming, final)
 
     video = await session.get(Video, info["id"]) or Video(id=info["id"])
     session.add(video)
@@ -104,7 +116,7 @@ async def store(
     video.dir_path = rel.as_posix()
     video.size_bytes = dir_size(final)
     video.completed_at = datetime.now(UTC)
-    video.state = VideoState.COMPLETE
+    video.state = VideoState.COMPLETE if ready_root is None else VideoState.STAGED
     video.info = info
 
     job.state = JobState.SUCCEEDED

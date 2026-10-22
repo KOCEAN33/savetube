@@ -25,6 +25,7 @@ from savetube.limits import TIMEZONE
 from savetube.live import Seen, check_logged, watched_channels
 from savetube.logs import emit, human_bytes
 from savetube.poll import due_sources, poll_source
+from savetube.staging import move_staged
 from savetube.storage import disk_usage
 from savetube.ytdl import (
     fetch_feed,
@@ -287,6 +288,10 @@ async def run(settings: Settings) -> None:
                     CLEANUP_SECONDS,
                 )
             )
+            if settings.staging_root is not None:
+                tg.create_task(
+                    _every("staging move", lambda: move_staged(default_sessionmaker(), settings))
+                )
             tg.create_task(
                 _every(
                     "database cleanup",

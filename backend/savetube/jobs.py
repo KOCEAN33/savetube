@@ -358,7 +358,7 @@ async def _describe(session: AsyncSession, video_id: str) -> dict[str, Any]:
 def incoming_dir(settings: Settings, video_id: str) -> Path:
     """An archive download's working directory. It is per video, so a retry
     after an interruption finds the parts."""
-    return settings.incoming_root / video_id
+    return settings.download_root / video_id
 
 
 async def _interrupt(session: AsyncSession, job: Job, reason: str) -> None:
@@ -765,6 +765,8 @@ async def run(
                     info=info,
                     incoming=workdir,
                     archive_root=settings.archive_root,
+                    # A recording goes straight into the tree.
+                    ready_root=None if live else settings.ready_root,
                     from_shorts_tab=shorts,
                 )
                 if checks is not None:
@@ -1201,8 +1203,10 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
     """Delete partial directories that no queued or running job wants and that
     nothing wrote to for ORPHAN_DAYS, so cancelled or abandoned parts do not
     fill the dataset."""
-    root = settings.incoming_root
-    if not root.is_dir():
+    roots = [
+        r for r in dict.fromkeys([settings.incoming_root, settings.download_root]) if r.is_dir()
+    ]
+    if not roots:
         return
     active = Job.state.in_([JobState.QUEUED, JobState.RUNNING])
     async with sessionmaker() as session:
@@ -1213,7 +1217,7 @@ async def clean_incoming(sessionmaker: async_sessionmaker, settings: Settings) -
         wanted |= {str(i) for i in await session.scalars(select(Job.id).where(active))}
     cutoff = time.time() - ORPHAN_DAYS * 86400
     deleted = []
-    for d in root.iterdir():
+    for d in (d for root in roots for d in root.iterdir()):
         if not d.is_dir() or d.name in wanted:
             continue
         newest = max(p.stat().st_mtime for p in [d, *d.rglob("*")])
