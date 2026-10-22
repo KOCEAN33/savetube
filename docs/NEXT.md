@@ -59,6 +59,7 @@ Confirm `v0.8.0` in production, then in-browser playback.
    - The channel page hides "Show more" once all 500 listed queued jobs show, even when more wait.
    - `GET /api/sources` sends `last_error` raw. The Home card only cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
    - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
+   - The user wants to review the log format. Logs are logfmt, not JSON, by the decision in `docs/plan/operations.md` Logging: plain text in a terminal, and Alloy and LogQL `| logfmt` parse it. A switch to JSON changes that section, `backend/savetube/logs.py`, and any Loki query that uses `| logfmt`.
    - ffmpeg is about 180-210 MB of the image. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
 6. In-browser playback, which the user approved: mount `tank/youtube` read-only in the web pod, serve media with HTTP Range, add a `<video>` element on the video page. Safari needs mp4 or WebM.
 7. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
