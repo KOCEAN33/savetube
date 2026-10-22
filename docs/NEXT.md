@@ -2,7 +2,7 @@
 
 ## Goal
 
-Confirm staging on the first download after the user resumes downloads. Confirm in production: the HTTP 500 format fallback on a real video, playback and subtitles in the user's browser.
+Refactor the backend and the frontend with no behavior change (Next steps 1). The user finds both messy after many features and chose the full plan. Production checks wait for the user: staging on the first download after the user resumes downloads, the HTTP 500 format fallback, playback and subtitles.
 
 ## Current progress
 
@@ -52,7 +52,21 @@ Confirm staging on the first download after the user resumes downloads. Confirm 
 
 ## Next steps
 
-1. Refactor the backend and the frontend, which the user finds messy after many features. Plan it with the user first.
+1. Refactor, all 8 steps below, which the user approved. Behavior stays the same.
+   - Before step 1, ask the user whether to release develop first: Move now and the channel-name grouping are unreleased, and a release needs the user's yes.
+   - Run in parallel worktrees (What worked, Parallel agents): the frontend and the backend at once, and backend parts at once where their files do not overlap. Each step lands on develop by itself.
+   - The user wants e2e tests to guarantee the result. Build them first, run them on develop as the baseline, then after each step. Backend: the full pytest suite with the same pass count, ffmpeg tests included through the shims, plus an end-to-end run of the built app: uvicorn on a test database, the API routes the frontend calls, and a download through the worker runner with a fake yt-dlp step. Frontend: smoke level only, because the user expects the UI to keep changing. Each page loads without a console error, and the main controls exist and respond: Home cards, the Videos filter, the channel page tabs, Settings, the video page. Assert no layout or copy details.
+   - Survey facts, 2026-10-22: `backend/savetube/web/api.py` 1,303 lines, 32 routes and about 30 pydantic models. `backend/savetube/jobs.py` 1,243 lines: download plumbing 159-335, stall reclaim 364-421, dispatch 424-527, `run` 538-880 (343 lines), pause, block and network guards 883-1008, `_archive` 1070-1199, `clean_incoming` from 1202. `poll.sync` 135-282 and `live.check_channel` 134-245 may share a classify, channel, cookie and store shape, not yet read line by line. `web/api.py:161` `job_reason` imports log constants from `jobs`. `scheduler.py` (64, 178, 194, 263) and `cli.py` (14-98) import inside functions, cause unknown. `logs.py` imports `limits.TIMEZONE`. `frontend/src/pages/channel.tsx` 964 lines with 19 components, `components/add-channel-dialog.tsx` 524 lines. `downloads-card.tsx` imports `RunningJob` and `ChannelLink` from `channel-jobs.tsx`. Query keys such as `["channels"]` are inline strings in many files, and `15_000` sits in `pages/live.tsx:27` and `pages/channel.tsx:943` beside `IDLE_REFETCH_MS`. `backend/tests/test_db.py` is 5,577 lines with no `conftest.py`. Leave the shadcn files in `components/ui/` alone.
+   - Order, which keeps the riskiest steps last:
+     1. Split `backend/tests/test_db.py` by area into new files, with a `conftest.py` for `test_dsn`, `anyio_backend`, `settings`, `_sql` and `_sql_rows`. Do not reuse the names `test_jobs.py`, `test_live.py` or `test_staging.py`. Every test name stays.
+     2. Split `web/api.py` into a route package, with shared schemas and dependencies in their own modules. URLs stay. Move the log constants `job_reason` reads into a shared module.
+     3. Split `jobs.py` into a package by the spans above, files moved as they are. The package re-exports the public names. Check `monkeypatch.setattr` paths first: `tests/test_jobs.py` patches `savetube.jobs.download`.
+     4. Split `pages/channel.tsx` and `add-channel-dialog.tsx` into folders. Move `ChannelLink`, `RunningJob` and `ProgressLine` into a shared job row file.
+     5. Merge the shared part of `poll.sync` and `live.check_channel`, only where reading both confirms it.
+     6. Frontend data layer: query keys and refetch hooks in one module, constants in one module, `lib/api.ts` split into types, client and endpoints.
+     7. Break `jobs.run` and `jobs._archive` into smaller functions.
+     8. Resolve the in-function imports in `scheduler.py` and `cli.py`, and move `TIMEZONE` out of `limits`. Then start each CLI role to check imports.
+   - Steps 1, 2 and 4 share no files and can run at once. Steps 3 and 5 follow. Step 6 goes after 4. Steps 7 and 8 come last.
 2. Once the user resumes downloads: check that the worker writes `/staging/incoming/<video id>/`, a finished video lands in `/staging/ready/` as `staged`, and the scheduler logs `staging.move` and `staging.moved` with the video then `complete` in the tree. Also check the step label on the card through merge, verify and the audio copy.
 3. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
 4. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
