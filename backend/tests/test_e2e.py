@@ -667,16 +667,24 @@ def test_every_api_route_is_covered():
             oidc_client_id="c",
         )
     )
+    # app.routes holds included routers, not their routes, so read the OpenAPI paths.
     routes = {
-        (method, route.path)
-        for route in app.routes
-        if getattr(route, "path", "").startswith("/api/")
-        for method in route.methods - {"HEAD"}
+        (method.upper(), path)
+        for path, operations in app.openapi()["paths"].items()
+        if path.startswith("/api/")
+        for method in operations
+        if method != "head"
     }
+    assert len(routes) > 30
     source = Path(__file__).read_text()
     called = set(
         re.findall(r'server\.(get|post|put|patch|delete|head)\(\s*f?"(/api/[^"]*)"', source)
     )
-    called = {(m.upper(), re.sub(r"\{[^}]*\}", "{}", p)) for m, p in called}
-    missing = sorted((m, p) for m, p in routes if (m, re.sub(r"\{[^}]*\}", "{}", p)) not in called)
+    called = {(m.upper(), re.sub(r"\{[^}]*\}", "x", p)) for m, p in called}
+
+    def hit(method, path):
+        pattern = re.compile(re.sub(r"\\\{[^}]*\\\}", "[^/]+", re.escape(path)) + r"(\?.*)?")
+        return any(m == method and pattern.fullmatch(p) for m, p in called)
+
+    missing = sorted((m, p) for m, p in routes if not hit(m, p))
     assert missing == []
