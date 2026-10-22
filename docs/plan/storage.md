@@ -42,7 +42,7 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 .incoming/<job id>/     recordings
 ```
 
-- Each video directory holds the media, `.info.json`, the thumbnail, subtitles, and the chat replay when YouTube offers one.
+- Each video directory holds the media, its audio-only copy (archive.md, Audio copy), `.info.json`, the thumbnail, subtitles, and the chat replay when YouTube offers one.
 - Type rule, first match wins: `availability == subscriber_only` is `members`. A `was_live` or recorded live is `lives`. A video from the `/shorts` tab is `shorts`. The rest is `videos`.
 - The channel directory name is fixed at first add and stored in `channel`. A later channel rename changes the display name only, never the path.
 - Downloads land in `.incoming/` on the same dataset, so the final move is a rename and a half-written file never appears in the tree. An archive download's directory is per video, so a retry resumes its parts (archive.md, Resuming and verifying downloads).

@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import cookies, integrity, logs
+from savetube import audio, cookies, integrity, logs
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import (
@@ -719,6 +719,7 @@ async def run(
                             tools=tools or integrity.Tools(),
                         ),
                     )
+                    await audio.add(_media_path(info), tools or integrity.Tools())
 
             async with sessionmaker() as session:
                 if await disowned(session):
