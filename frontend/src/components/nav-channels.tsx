@@ -57,7 +57,13 @@ export function NavChannels() {
         <SidebarMenu>
           {shown.map((c) => (
             <SidebarMenuItem key={c.id}>
-              <SidebarMenuButton asChild isActive={c.id === current} tooltip={c.name}>
+              {/* The badge sits absolute over the button, so pad the name clear of it. */}
+              <SidebarMenuButton
+                asChild
+                isActive={c.id === current}
+                tooltip={c.name}
+                className="pr-12"
+              >
                 <Link to={channelHref(c.id)}>
                   <ChannelAvatar name={c.name} url={c.avatar_url} size="sm" className="size-5" />
                   <span>{c.name}</span>
