@@ -18,6 +18,9 @@ export const OTHER_CHANNELS_LABEL =
 export const OTHER_CHANNELS_HINT =
   "A video downloads once. It is stored under its uploader's channel folder and shows on this channel's page."
 
+export const PLAYLISTS_PASS_HINT =
+  "Title words then only exclude in playlists. A video passes when its title passes the words or a chosen playlist lists it."
+
 export const JOB_STATES: JobState[] = [
   "queued",
   "running",

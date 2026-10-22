@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Link } from "react-router"
 
 import { DownloadPauseToggle } from "@/components/download-pause"
 import { ErrorBox, Page, PageSection, QueryState } from "@/components/query-state"
 import { WordListEditor } from "@/components/source-words"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -16,13 +18,23 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
   api,
   mutations,
+  type Channel,
   type DownloadSettings,
   type CookieProfile,
   type DownloadSettingsIn,
   type TitleWords,
 } from "@/lib/api"
+import { formatDateTime } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { COMMON_SUBTITLE_LANGS, getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
 import { EXCLUDE_HINT, INCLUDE_HINT } from "@/lib/words"
@@ -341,10 +353,73 @@ function SubtitleLangForm() {
   )
 }
 
+// Every membership result across channels, one column per present profile.
+// The channel page shows the same results for one channel.
+function MembershipTable({ channels, profiles }: { channels: Channel[]; profiles: CookieProfile[] }) {
+  const checked = channels
+    .filter((c) => c.memberships.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name))
+  return (
+    <div className="flex flex-col gap-3 p-4">
+      <p className="text-xs text-muted-foreground">
+        A poll that lists a members-only video checks each profile against its channel, at most
+        once a day. A channel without a listed members-only video is never checked.
+      </p>
+      {checked.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No membership checked yet.</p>
+      ) : (
+        <Table>
+          <TableHeader className="bg-muted">
+            <TableRow>
+              <TableHead>Channel</TableHead>
+              {profiles.map((p) => (
+                <TableHead key={p.name} className="font-mono">
+                  {p.name}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {checked.map((c) => (
+              <TableRow key={c.id}>
+                <TableCell>
+                  <Link className="hover:underline" to={`/channels/${encodeURIComponent(c.id)}`}>
+                    {c.name}
+                  </Link>
+                </TableCell>
+                {profiles.map((p) => {
+                  const m = c.memberships.find((x) => x.profile === p.name)
+                  return (
+                    <TableCell key={p.name}>
+                      {m ? (
+                        <span className="flex items-center gap-2">
+                          <Badge variant={m.is_member ? "default" : "secondary"}>
+                            {m.is_member ? "member" : "not a member"}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">
+                            {formatDateTime(m.checked_at)}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">not checked</span>
+                      )}
+                    </TableCell>
+                  )
+                })}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </div>
+  )
+}
+
 export function SettingsPage() {
   const settings = useQuery({ queryKey: queryKeys.downloadSettings(), queryFn: api.downloadSettings })
   const profiles = useQuery({ queryKey: queryKeys.cookieProfiles(), queryFn: api.cookieProfiles })
   const words = useQuery({ queryKey: queryKeys.words(), queryFn: api.globalWords })
+  const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
   return (
     <Page>
       <PageSection title="Global title words">
@@ -358,6 +433,15 @@ export function SettingsPage() {
           {(data) => (
             <QueryState query={profiles}>
               {(list) => <DownloadSettingsForm settings={data} profiles={list} />}
+            </QueryState>
+          )}
+        </QueryState>
+      </PageSection>
+      <PageSection title="Memberships">
+        <QueryState query={channels}>
+          {(list) => (
+            <QueryState query={profiles}>
+              {(names) => <MembershipTable channels={list} profiles={names} />}
             </QueryState>
           )}
         </QueryState>

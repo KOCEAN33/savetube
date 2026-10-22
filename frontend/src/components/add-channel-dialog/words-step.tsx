@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query"
 
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
 import { SuggestionChips, TitlesPreview, WordListEditor } from "@/components/source-words"
 import { api, type ChannelScan, type TitleWords, type VideoTab } from "@/lib/api"
-import { VIDEO_TABS } from "@/lib/channel"
+import { PLAYLISTS_PASS_HINT, VIDEO_TABS } from "@/lib/channel"
 import { queryKeys } from "@/lib/query-keys"
 import { EXCLUDE_HINT, INCLUDE_HINT, addWord, type WordList } from "@/lib/words"
 
@@ -11,11 +13,16 @@ export function WordsStep({
   tabs,
   words,
   onChange,
+  playlistsPass,
+  onPlaylistsPassChange,
 }: {
   scan: ChannelScan
   tabs: VideoTab[]
   words: TitleWords
   onChange: (words: TitleWords) => void
+  // Null while no playlist is chosen: the checkbox stays hidden.
+  playlistsPass: boolean | null
+  onPlaylistsPassChange: (on: boolean) => void
 }) {
   const globalWords = useQuery({ queryKey: queryKeys.words(), queryFn: api.globalWords })
   // The chosen tabs' titles, or every scanned title when only playlists are chosen.
@@ -52,6 +59,18 @@ export function WordsStep({
           words={words.exclude_words}
           onChange={(exclude_words) => onChange({ ...words, exclude_words })}
         />
+        {playlistsPass !== null && (
+          <div className="flex flex-col gap-2">
+            <Label className="font-normal">
+              <Checkbox
+                checked={playlistsPass}
+                onCheckedChange={(on) => onPlaylistsPassChange(on === true)}
+              />
+              Keep every video in the chosen playlists
+            </Label>
+            <p className="text-xs text-muted-foreground">{PLAYLISTS_PASS_HINT}</p>
+          </div>
+        )}
         <div className="flex flex-col gap-2">
           <span className="text-sm font-medium">Suggested words</span>
           {scan.suggestions.length === 0 ? (

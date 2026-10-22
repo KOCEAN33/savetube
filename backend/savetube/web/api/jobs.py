@@ -3,7 +3,8 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
-from sqlalchemy import func, select
+from sqlalchemy import and_, exists, func, select
+from sqlalchemy.orm import aliased
 
 from savetube.db.models import Channel, Job, JobKind, JobState, Video
 from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, NO_MEMBER, SHUTDOWN_LOG, STALLED_LOG
@@ -78,6 +79,8 @@ async def jobs(
     # Repeat the parameter for several states.
     state: Annotated[list[JobState] | None, Query()] = None,
     channel_id: str | None = None,
+    # Drop a failed or interrupted archive run once a later run of its video succeeded.
+    unresolved: bool = False,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[JobOut]:
     q = (
@@ -93,6 +96,21 @@ async def jobs(
         q = q.where(Job.state.in_(state))
     if channel_id:
         q = q.where(_of_channel(channel_id))
+    if unresolved:
+        later = aliased(Job)
+        resolved = exists().where(
+            later.video_id == Job.video_id,
+            later.kind == JobKind.ARCHIVE,
+            later.state == JobState.SUCCEEDED,
+            later.finished_at > Job.finished_at,
+        )
+        q = q.where(
+            ~and_(
+                Job.kind == JobKind.ARCHIVE,
+                Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),
+                resolved,
+            )
+        )
     own = JobOut.model_fields.keys() - {"title", "channel_id", "channel_name", "reason"}
     return [
         JobOut(

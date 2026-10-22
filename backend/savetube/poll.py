@@ -82,15 +82,22 @@ def _skip(
     channel: Channel | None,
     lists: words.Lists,
     members: set[str],
+    members_all: bool,
 ) -> str | None:
     """None when the entry passes, else the reason it does not. `members` holds
-    the channels a present cookie profile is a confirmed member of."""
+    the channels a present cookie profile is a confirmed member of.
+    `members_all` is the uploader channel's switch that exempts its
+    members-only videos from the words. A playlist source of a channel with
+    `playlists_pass` on keeps only the exclude words."""
     if entry.get("live_status") in _UNFINISHED_LIVE:
         return "live"
-    if not words.matches(entry.get("title") or "", *lists):
+    if source.kind is SourceKind.PLAYLIST and channel is not None and channel.playlists_pass:
+        lists = ([], lists[1])
+    is_members = classify(entry) is VideoType.MEMBERS
+    if not (is_members and members_all) and not words.matches(entry.get("title") or "", *lists):
         return "words"
     # Without a member's cookies a members-only download fails every attempt.
-    if classify(entry) is VideoType.MEMBERS and entry["channel_id"] not in members:
+    if is_members and entry["channel_id"] not in members:
         return "members"
     if (
         source.kind is SourceKind.PLAYLIST
@@ -187,10 +194,13 @@ async def sync(
     own.append((source.include_words, source.exclude_words))
     # The channel level is the uploader's, so another channel's video in a
     # playlist meets its own channel's words.
-    lists = {
-        cid: await words.effective(session, cid, *own)
-        for cid in {e["channel_id"] for e in listed.values()}
-    }
+    uploaders = {e["channel_id"] for e in listed.values()} - {None}
+    lists = {cid: await words.effective(session, cid, *own) for cid in uploaders}
+    members_all = set(
+        await session.scalars(
+            select(Channel.id).where(Channel.id.in_(uploaders), Channel.members_all)
+        )
+    )
     # The source's channel holds the date cutoff, also for another channel's
     # video in its playlist.
     channel = await session.get(Channel, source.channel_id) if source.channel_id else None
@@ -200,7 +210,9 @@ async def sync(
     for vid, e in listed.items():
         # A private or deleted video in a playlist lists with no channel.
         reason = (
-            _skip(e, source, channel, lists[e["channel_id"]], members)
+            _skip(
+                e, source, channel, lists[e["channel_id"]], members, e["channel_id"] in members_all
+            )
             if e["channel_id"]
             else "private"
         )
@@ -352,7 +364,9 @@ async def _wants(
     own.append((source.include_words, source.exclude_words))
     lists = await words.effective(session, entry["channel_id"], *own)
     channel = await session.get(Channel, source.channel_id) if source.channel_id else None
-    return _skip(entry, source, channel, lists, members) is None
+    uploader = await session.get(Channel, entry["channel_id"])
+    members_all = uploader is not None and uploader.members_all
+    return _skip(entry, source, channel, lists, members, members_all) is None
 
 
 async def _replace_listing(

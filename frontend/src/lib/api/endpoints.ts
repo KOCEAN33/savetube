@@ -68,8 +68,14 @@ export const api = {
   // A POST that writes nothing: titles that are not stored, such as a scan's.
   titlesPreview: (body: TitleWords & { titles: string[]; channel_id?: string }) =>
     request<TitleKept[]>("POST", "/api/title-preview", body),
-  jobs: (query: { kind?: JobKind; state?: JobState[]; channel_id?: string; limit?: number }) =>
-    get<Job[]>("/api/jobs", query),
+  jobs: (query: {
+    kind?: JobKind
+    state?: JobState[]
+    channel_id?: string
+    // Drop a failed or interrupted archive run once a later run of its video succeeded.
+    unresolved?: boolean
+    limit?: number
+  }) => get<Job[]>("/api/jobs", query),
   // Every state is present, zero when no job holds it.
   jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),

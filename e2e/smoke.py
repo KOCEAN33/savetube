@@ -100,6 +100,38 @@ def check_live(page: Page) -> str:
     return "jobs table rendered"
 
 
+def check_downloads(page: Page) -> str:
+    def finished(r) -> bool:
+        return path_of(r.url) == "/api/jobs" and "succeeded" in query_of(r.url).get(
+            "state", []
+        )
+
+    with page.expect_response(finished) as first:
+        page.goto(BASE + "/downloads")
+    assert first.value.ok
+    assert query_of(first.value.url).get("unresolved") == ["true"], first.value.url
+    expect(page.get_by_role("table").last).to_be_visible()
+    settle(page)
+
+    hide = page.get_by_role("checkbox", name="Hide resolved")
+    expect(hide).to_be_checked()
+    with page.expect_response(finished) as every:
+        hide.click()
+    assert every.value.ok and "unresolved" not in query_of(every.value.url)
+    expect(page).to_have_url(re.compile(r"[?&]resolved=show"))
+    settle(page)
+
+    page.get_by_role("combobox", name="State", exact=True).click()
+    with page.expect_response(
+        lambda r: path_of(r.url) == "/api/jobs" and query_of(r.url).get("state") == ["failed"]
+    ) as failed:
+        page.get_by_role("option", name="failed", exact=True).click()
+    assert failed.value.ok
+    expect(page).to_have_url(re.compile(r"[?&]state=failed"))
+    settle(page)
+    return "hide resolved and state filter sent"
+
+
 def check_channel(page: Page) -> str:
     channel_id = MANIFEST["channel_id"]
     page.goto(f"{BASE}/channels/{channel_id}")
@@ -178,6 +210,7 @@ CHECKS = [
     ("Home", check_home),
     ("Videos", check_videos),
     ("Live", check_live),
+    ("Downloads", check_downloads),
     ("Channel", check_channel),
     ("Settings", check_settings),
     ("Video", check_video),

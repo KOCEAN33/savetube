@@ -22,6 +22,8 @@ from conftest import (
 
 from savetube.db import make_engine, make_sessionmaker
 from savetube.db.models import (
+    Channel,
+    Job,
     Source,
     SourceKind,
     Video,
@@ -350,6 +352,123 @@ async def test_a_live_is_recorded_only_when_a_watching_source_passes_its_title(s
     assert sorted(j.video_id for j in await _record_jobs(sessionmaker)) == ["utawaku"]
     # A skipped detection is not probed again by the same process.
     assert sorted(probed) == ["guerrilla", "members", "utawaku"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_members_all_records_a_members_only_live_whatever_its_title(settings):
+    from savetube.live import check_channel
+
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name, watch_lives, members_all) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', true, true)",
+        "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes,"
+        " include_words) VALUES"
+        f" ('https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360,"
+        "  '{歌枠}')",
+    )
+
+    def stream(video_id, availability):
+        return {
+            "id": video_id,
+            "title": GUERRILLA,
+            "channel_id": VESP,
+            "channel": "VESPERBELL",
+            "live_status": "is_upcoming",
+            "release_timestamp": 1792778400,
+            "availability": availability,
+        }
+
+    probes = {"members": stream("members", "subscriber_only"), "public": stream("public", "public")}
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await check_channel(
+        sessionmaker,
+        VESP,
+        fetch_feed=lambda c: _feed("members", "public"),
+        probe=lambda v: probes[v],
+        probe_live=lambda c: stream("public", "public"),
+        list_streams=_no_streams,
+        seen={},
+    )
+    # The public stream of the same channel still meets the words.
+    assert [j.video_id for j in await _record_jobs(sessionmaker)] == ["members"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_playlists_pass_keeps_every_playlist_entry_the_exclude_words_allow(settings):
+    from savetube.poll import sync
+
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name, include_words, exclude_words) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', '{{歌枠}}', '{{告知}}')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360),"
+        f" (2, 'https://www.youtube.com/channel/{VESP}/playlists', 'playlists', '{VESP}',"
+        "  true, 360)",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
+        " parent_id) VALUES"
+        f" (3, 'https://www.youtube.com/playlist?list=PLx', 'playlist', '{VESP}', true, 360, 2)",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        f" ('chat', '{VESP}', 'lives', '雑談', 'pending')",
+        "INSERT INTO video_source (video_id, source_id) VALUES ('chat', 3)",
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (101, 'archive', 'queued', 'chat', 0)",
+        "SELECT setval('job_id_seq', 200)",
+    )
+    entries = [
+        {"id": "utawaku", "title": UTAWAKU, "live_status": "was_live"},
+        {"id": "chat", "title": "雑談", "live_status": "was_live"},
+        {"id": "notice", "title": "雑談 告知", "live_status": "was_live"},
+    ]
+    playlist = {"entries": [{**e, "channel_id": VESP} for e in entries]}
+    tab = {"channel_id": VESP, "channel": "VESPERBELL", "entries": entries}
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def run(playlists_pass, source_id, listing):
+        async with sessionmaker() as session:
+            await session.execute(
+                sa.update(Channel).where(Channel.id == VESP).values(playlists_pass=playlists_pass)
+            )
+            synced = await sync(session, await session.get(Source, source_id), listing, [])
+            queued = sorted(
+                await session.scalars(sa.select(Job.video_id).where(Job.id.in_(synced.job_ids)))
+            )
+            await session.rollback()
+        return dict(synced.skips), queued, synced.drops
+
+    # Off: a playlist entry meets the words like a tab entry.
+    assert await run(False, 3, playlist) == (
+        {"words": 2},
+        ["utawaku"],
+        [(101, "chat", "words")],
+    )
+    # On: the include words drop for the playlist. An exclude word still skips.
+    assert await run(True, 3, playlist) == ({"words": 1}, ["utawaku"], [])
+    # A tab of the same channel still meets the include words. The playlist
+    # still passes the queued job, so it stays.
+    assert await run(True, 1, tab) == ({"words": 2}, ["utawaku"], [])
+    assert await run(False, 1, tab) == ({"words": 2}, ["utawaku"], [(101, "chat", "words")])
+
+    async with sessionmaker() as session:
+        await sync(session, await session.get(Source, 3), playlist, [])
+        await session.commit()
+    with _api(settings) as client:
+
+        def kept():
+            preview = client.post(
+                "/api/sources/3/title-preview", json={"include_words": [], "exclude_words": []}
+            ).json()
+            return {t["video_id"] for t in preview["titles"] if t["kept"]}
+
+        assert kept() == {"utawaku"}
+        r = client.patch(f"/api/channels/{VESP}", json={"playlists_pass": True})
+        assert r.status_code == 200 and r.json()["playlists_pass"] is True
+        assert kept() == {"utawaku", "chat"}
     await engine.dispose()
 
 

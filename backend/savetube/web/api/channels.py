@@ -46,6 +46,8 @@ class ChannelOut(_Out):
     date_after: date | None
     format: str
     watch_lives: bool
+    members_all: bool
+    playlists_pass: bool
     avatar_url: str | None
     video_count: int
     bytes: int
@@ -62,6 +64,8 @@ class ChannelPatch(BaseModel):
     date_after: date | None = None
     format: Annotated[str | None, Field(min_length=1)] = None
     watch_lives: bool | None = None
+    members_all: bool | None = None
+    playlists_pass: bool | None = None
 
 
 def _channels_query():
@@ -76,6 +80,8 @@ def _channels_query():
             Channel.date_after,
             Channel.format,
             Channel.watch_lives,
+            Channel.members_all,
+            Channel.playlists_pass,
             Channel.avatar_url,
             func.count(Video.id).label("video_count"),
             _size.label("bytes"),
@@ -153,6 +159,7 @@ class ChannelIn(WordsIn):
     # Applies to the playlist sources only. A tab keeps what its channel tab lists.
     other_channels: bool = True
     watch_lives: bool = False
+    playlists_pass: bool = False
     date_after: date | None = None
     format: Annotated[str, Field(min_length=1)] = DEFAULT_FORMAT
     poll_interval_minutes: Annotated[int, Field(ge=10, le=7 * 24 * 60)] = 360
@@ -197,6 +204,7 @@ async def create_channel(session: Session, body: ChannelIn) -> ChannelWithSource
     channel.include_words, channel.exclude_words = body.include_words, body.exclude_words
     channel.date_after, channel.format = body.date_after, body.format
     channel.watch_lives = body.watch_lives
+    channel.playlists_pass = body.playlists_pass
     channel.avatar_url = body.avatar_url or channel.avatar_url
     # No relationship() orders inserts, so the FK target is flushed first.
     await session.flush()

@@ -1,4 +1,5 @@
 import {
+  DownloadIcon,
   FilmIcon,
   HouseIcon,
   RadioIcon,
@@ -16,6 +17,7 @@ export const navItems: NavItem[] = [
   { title: "Home", url: "/", icon: HouseIcon },
   { title: "Live", url: "/live", icon: RadioIcon },
   { title: "Videos", url: "/videos", icon: FilmIcon },
+  { title: "Downloads", url: "/downloads", icon: DownloadIcon },
   { title: "Settings", url: "/settings", icon: SettingsIcon },
 ]
 

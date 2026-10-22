@@ -7,6 +7,7 @@
 - The RSS feed holds only the 15 newest uploads. On a busy channel a waiting room drops out of it days before the stream, so the Live tab's `is_upcoming` and `is_live` entries are candidates too.
 - Each candidate id is probed once per scheduler process with yt-dlp and `ignore_no_formats_error`. Without that option an upcoming stream raises "This live event will begin in ..." instead of returning `release_timestamp`. The Live tab listing and the probes use the general cookie profile. The RSS feed takes no cookies. A probe that fails with a members-only error is probed once more with the channel's first member profile by name, if one is present. A probe that still fails, such as a private video or a members-only video no profile may watch, is skipped.
 - A detection through the member profile, or whose probe reports `availability` `subscriber_only`, stores its video as type `members`. Its recording then takes a member profile (access.md, Cookies and account).
+- A members-only detection of a channel with `members_all` on passes the title words of any watching source (archive.md, Title words).
 - The `/live` page probe takes the general profile only.
 - The `/live` page finds a stream with no waiting room. "The channel is not currently live" is the normal answer and is not an error.
 - No Data API key is used. The probe reads the scheduled start that `videos.list` would.

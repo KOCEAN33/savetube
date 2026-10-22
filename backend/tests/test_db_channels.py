@@ -183,7 +183,7 @@ def test_api_creates_a_channel_with_its_settings_and_archiving_sources(settings)
             "wa",
             True,
         )
-        assert body["memberships"] == []
+        assert body["memberships"] == [] and body["playlists_pass"] is False
         assert [
             (s["url"], s["kind"], s["title"], s["channel_id"], s["archiving"], s["include_words"])
             for s in body["sources"]
@@ -282,6 +282,28 @@ def test_api_jobs_carry_the_channel_name_and_the_failure_reason(settings):
         (2, "t", "UC1", "A", "network error"),
     ]
     assert jobs[1]["log_tail"].endswith("10 bytes read, 5 more expected")
+
+
+def test_api_unresolved_drops_failures_a_later_success_fixed(settings):
+    _job_rows(
+        settings,
+        # busy1: two interrupted runs, then a success.
+        "INSERT INTO job (id, kind, state, video_id, attempts, finished_at) VALUES"
+        " (2, 'archive', 'interrupted', 'busy1', 0, '2026-01-01 10:00Z'),"
+        " (3, 'archive', 'interrupted', 'busy1', 0, '2026-01-01 11:00Z'),"
+        " (4, 'archive', 'succeeded', 'busy1', 1, '2026-01-01 12:00Z'),"
+        # busy2: failed, never succeeded.
+        " (5, 'archive', 'failed', 'busy2', 3, '2026-01-01 10:00Z'),"
+        # v1: a success older than its failure.
+        " (6, 'archive', 'succeeded', 'v1', 1, '2026-01-01 09:00Z'),"
+        " (7, 'archive', 'failed', 'v1', 1, '2026-01-01 13:00Z')",
+    )
+    state = ["failed", "interrupted"]
+    with _api(settings) as client:
+        every = client.get("/api/jobs", params={"state": state}).json()
+        unresolved = client.get("/api/jobs", params={"state": state, "unresolved": True}).json()
+    assert [j["id"] for j in every] == [7, 5, 3, 2]
+    assert [j["id"] for j in unresolved] == [7, 5]
 
 
 def test_migration_0006_hands_waiting_archive_jobs_to_the_dispatcher(settings):

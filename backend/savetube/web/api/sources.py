@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import words
-from savetube.db.models import ListingEntry, Source
+from savetube.db.models import Channel, ListingEntry, Source, SourceKind
 from savetube.logs import emit
 from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
@@ -172,7 +172,8 @@ async def delete_source(session: Session, source_id: int) -> None:
 async def title_preview(session: Session, source_id: int, body: WordsIn) -> Preview:
     """How the words would filter the source's last listing. The body holds the
     source's own lists. The stored global, uploader channel and parent lists are
-    merged in, as the poll does."""
+    merged in, as the poll does, and the include words drop for a playlist of
+    a channel with `playlists_pass` on."""
     source = await _source(session, source_id)
     own = [(body.include_words, body.exclude_words)]
     if source.parent_id is not None:
@@ -186,6 +187,10 @@ async def title_preview(session: Session, source_id: int, body: WordsIn) -> Prev
         )
     ).all()
     lists = {cid: await words.effective(session, cid, *own) for cid in {r.channel_id for r in rows}}
+    if source.kind is SourceKind.PLAYLIST and source.channel_id is not None:
+        channel = await session.get(Channel, source.channel_id)
+        if channel is not None and channel.playlists_pass:
+            lists = {cid: ([], exclude) for cid, (_, exclude) in lists.items()}
     titles = [
         PreviewTitle(
             video_id=r.video_id, title=r.title, kept=words.matches(r.title, *lists[r.channel_id])
