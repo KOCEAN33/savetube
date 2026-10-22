@@ -13,7 +13,7 @@ export function loginUrl(): string {
 }
 
 // An array repeats the parameter, once per value.
-type Query = Record<string, string | number | string[] | undefined>
+type Query = Record<string, string | number | boolean | string[] | undefined>
 
 // Parallel requests that all get 401 must start one login, not one each: every
 // /auth/login rewrites the session cookie with a new state and PKCE verifier,

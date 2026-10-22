@@ -1,48 +1,54 @@
-import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
 
-import { ChannelLink, RunningJob } from "@/components/job-row"
+import { RunningJob } from "@/components/job-row"
 import { ErrorBox, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { api, mutations, type Job } from "@/lib/api"
 import { jobStateVariant } from "@/lib/channel"
-import { IDLE_REFETCH_MS, JOB_PAGE, MAX_JOB_LIMIT } from "@/lib/constants"
+import { IDLE_REFETCH_MS } from "@/lib/constants"
 import { formatBytes, formatDateTime } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
+const PROBLEM_ROWS = 3
+
+// One line per run. Hovering the reason shows the full log_tail.
 function ProblemJob({ job }: { job: Job }) {
   return (
-    <li className="flex flex-col gap-1 p-3">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <ChannelLink job={job} />
-        <span className="text-xs text-muted-foreground">{formatDateTime(job.finished_at)}</span>
-      </div>
-      <div className="flex min-w-0 items-baseline gap-2">
-        <Badge variant={jobStateVariant(job.state)}>{job.state}</Badge>
-        {job.video_id ? (
-          <Link
-            className="min-w-0 truncate font-medium hover:underline"
-            title={job.title ?? job.video_id}
-            to={`/videos/${encodeURIComponent(job.video_id)}`}
-          >
-            {job.title ?? job.video_id}
-          </Link>
-        ) : (
-          <span className="font-medium">Job {job.id}</span>
-        )}
-      </div>
-      {job.log_tail && (
-        <details className="text-xs">
-          <summary className="cursor-pointer text-muted-foreground">{job.reason}</summary>
-          <pre className="mt-1 max-h-60 overflow-auto rounded bg-muted p-2 whitespace-pre-wrap break-all">
-            {job.log_tail}
-          </pre>
-        </details>
+    <li className="flex min-w-0 items-baseline gap-2 px-3 py-2 text-sm">
+      <Badge variant={jobStateVariant(job.state)}>{job.state}</Badge>
+      {job.video_id ? (
+        <Link
+          className="min-w-0 truncate font-medium hover:underline"
+          title={job.title ?? job.video_id}
+          to={`/videos/${encodeURIComponent(job.video_id)}`}
+        >
+          {job.title ?? job.video_id}
+        </Link>
+      ) : (
+        <span className="font-medium">Job {job.id}</span>
       )}
+      {job.reason && (
+        <span
+          className="min-w-0 truncate text-xs text-muted-foreground"
+          title={job.log_tail ?? undefined}
+        >
+          {job.reason}
+        </span>
+      )}
+      <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+        {formatDateTime(job.finished_at)}
+      </span>
     </li>
   )
 }
@@ -82,9 +88,8 @@ function StagingLine() {
 }
 
 // Archive downloads across every channel: what runs now, how many wait, and
-// the latest failed and interrupted runs with their reason.
+// the latest failed and interrupted runs no later run fixed. /downloads lists the rest.
 export function DownloadsCard() {
-  const [problemLimit, setProblemLimit] = useState(JOB_PAGE)
   const active = useQuery({
     queryKey: queryKeys.runningJobs(),
     queryFn: () => api.jobs({ kind: "archive", state: ["running"] }),
@@ -97,10 +102,14 @@ export function DownloadsCard() {
     refetchInterval: refetchMs(busy),
   })
   const problems = useQuery({
-    queryKey: queryKeys.problemJobs(problemLimit),
+    queryKey: queryKeys.problemJobs(),
     queryFn: () =>
-      api.jobs({ kind: "archive", state: ["failed", "interrupted"], limit: problemLimit }),
-    placeholderData: (previous) => previous,
+      api.jobs({
+        kind: "archive",
+        state: ["failed", "interrupted"],
+        unresolved: true,
+        limit: PROBLEM_ROWS,
+      }),
     refetchInterval: refetchMs(busy),
   })
 
@@ -115,6 +124,11 @@ export function DownloadsCard() {
             ? `${counts.data.running} running, ${counts.data.queued} queued`
             : "Loading"}
         </CardDescription>
+        <CardAction>
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/downloads">View all</Link>
+          </Button>
+        </CardAction>
         <StagingLine />
       </CardHeader>
       <CardContent className="px-0">
@@ -131,37 +145,19 @@ export function DownloadsCard() {
             )
           }
         </QueryState>
-        <h3 className="border-y bg-muted px-3 py-2 text-sm font-medium">
-          Recently failed and interrupted
-        </h3>
+        <h3 className="border-y bg-muted px-3 py-2 text-sm font-medium">Unresolved failures</h3>
         <QueryState query={problems}>
-          {(jobs) => (
-            <>
-              {jobs.length === 0 ? (
-                <p className="p-3 text-sm text-muted-foreground">No failed or interrupted job.</p>
-              ) : (
-                <ul className="flex flex-col divide-y">
-                  {jobs.map((j) => (
-                    <ProblemJob key={j.id} job={j} />
-                  ))}
-                </ul>
-              )}
-              {/* A full page means more may exist. */}
-              {jobs.length >= problemLimit && problemLimit < MAX_JOB_LIMIT && (
-                <div className="border-t p-3">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      setProblemLimit(Math.min(problemLimit + JOB_PAGE, MAX_JOB_LIMIT))
-                    }
-                  >
-                    Show more
-                  </Button>
-                </div>
-              )}
-            </>
-          )}
+          {(jobs) =>
+            jobs.length === 0 ? (
+              <p className="p-3 text-sm text-muted-foreground">No unresolved failure.</p>
+            ) : (
+              <ul className="flex flex-col divide-y">
+                {jobs.map((j) => (
+                  <ProblemJob key={j.id} job={j} />
+                ))}
+              </ul>
+            )
+          }
         </QueryState>
       </CardContent>
     </Card>

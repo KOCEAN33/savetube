@@ -44,6 +44,9 @@ export const queryKeys = {
   channelRecentJobs: (channelId: string, limit: number) =>
     ["jobs", "archive", channelId, "recent", limit] as const,
   runningJobs: () => ["jobs", "archive", "all", "running"] as const,
-  problemJobs: (limit: number) => ["jobs", "archive", "all", "problems", limit] as const,
+  problemJobs: () => ["jobs", "archive", "all", "problems"] as const,
+  allActiveJobs: () => ["jobs", "archive", "all", "active"] as const,
+  allRecentJobs: (filter: { state: JobState | undefined; unresolved: boolean; limit: number }) =>
+    ["jobs", "archive", "all", "recent", filter] as const,
   recordJobs: (state: JobState | undefined) => ["jobs", "record", state] as const,
 }

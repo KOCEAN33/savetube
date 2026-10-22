@@ -15,7 +15,7 @@ DB tests live in `backend/tests/test_db_*.py`, with shared fixtures and helpers 
 ## Refactor guards
 
 - `backend/tests/test_e2e.py` runs uvicorn and the real `savetube worker` with `yt_dlp.YoutubeDL` faked through a `sitecustomize.py` on `PYTHONPATH`. It fails when an `/api` route has no call.
-- `make e2e-smoke`, run through `run-tests.sh`, drives Playwright over 6 pages. The ids, aria-labels, roles and URL params it targets must stay.
+- `make e2e-smoke`, run through `run-tests.sh`, drives Playwright over 7 pages. The ids, aria-labels, roles and URL params it targets must stay.
 
 ## Local UI
 

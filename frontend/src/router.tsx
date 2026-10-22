@@ -15,6 +15,7 @@ export const router = createBrowserRouter([
           // The sidebar lists the channels. An old link to the list lands on Home.
           { path: "/channels", element: <Navigate to="/" replace /> },
           { path: "/channels/:id", lazy: () => import("@/pages/channel").then((m) => ({ Component: m.ChannelPage })) },
+          { path: "/downloads", lazy: () => import("@/pages/downloads").then((m) => ({ Component: m.DownloadsPage })) },
           { path: "/live", lazy: () => import("@/pages/live").then((m) => ({ Component: m.LivePage })) },
           { path: "/settings", lazy: () => import("@/pages/settings").then((m) => ({ Component: m.SettingsPage })) },
           { path: "/videos", lazy: () => import("@/pages/videos").then((m) => ({ Component: m.VideosPage })) },
