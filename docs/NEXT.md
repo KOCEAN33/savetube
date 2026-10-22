@@ -39,7 +39,7 @@ Refactor the backend and the frontend with no behavior change (Next steps 1). Th
 - Copying an archive file out of the worker pod (`kubectl exec ... cat`) is denied by the permission classifier as "Production Reads". Download the same video with the local image instead.
 - A command run through `kubectl exec` writes nothing to pod logs or Loki, and Python buffers its stdout until exit.
 - The harness `isolation: worktree` starts from an old main merge commit, not develop.
-- A background loop polling production with kubectl is denied by the permission classifier as "Production Deploy".
+- Do not watch a deploy with kubectl. Argo CD deploys a release through webhooks, and the user does not want it polled. A kubectl polling loop is also denied by the permission classifier as "Production Deploy".
 - `bsk` on `savetube.lab.hiriri.com` fails: the page holds another extension's frame. The user checks the production UI.
 - An Argo CD refresh annotation is denied by the permission classifier. The webhooks make it unnecessary.
 - respx cannot mock Authlib or Starlette's TestClient, because both use `httpx2`.
