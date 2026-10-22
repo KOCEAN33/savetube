@@ -46,6 +46,8 @@ export interface Channel {
   // A yt-dlp format selector.
   format: string
   watch_lives: boolean
+  // Members-only videos skip the title words. A confirmed member profile is still needed.
+  members_all: boolean
   // The profile picture YouTube serves. Null until a scan or a tab poll finds it.
   avatar_url: string | null
   // False for a channel known only as the uploader of a video a source lists.
@@ -255,7 +257,7 @@ export interface ChannelIn extends TitleWords, ChannelSettings {
   other_channels: boolean
 }
 
-export type ChannelPatch = Partial<TitleWords & ChannelSettings>
+export type ChannelPatch = Partial<TitleWords & ChannelSettings & Pick<Channel, "members_all">>
 
 export interface DownloadSettingsIn {
   max_concurrent: number

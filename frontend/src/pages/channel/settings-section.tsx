@@ -5,6 +5,7 @@ import { DateCutoffField, QualityField } from "@/components/channel-fields"
 import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { mutations, type Channel, type ChannelSettings, type Membership } from "@/lib/api"
 import { formatDateTime } from "@/lib/format"
@@ -42,9 +43,12 @@ function MembershipList({ memberships }: { memberships: Membership[] }) {
 
 export function SettingsSection({ channel }: { channel: Channel }) {
   const invalidate = useInvalidate()
-  const [form, setForm] = useState<Omit<ChannelSettings, "watch_lives">>({
+  const [form, setForm] = useState<
+    Omit<ChannelSettings, "watch_lives"> & Pick<Channel, "members_all">
+  >({
     date_after: channel.date_after,
     format: channel.format,
+    members_all: channel.members_all,
   })
   const save = useMutation({
     mutationFn: () => mutations.updateChannel(channel.id, form),
@@ -68,6 +72,19 @@ export function SettingsSection({ channel }: { channel: Channel }) {
         format={form.format}
         onChange={(format) => setForm({ ...form, format })}
       />
+      <div className="flex flex-col gap-2">
+        <Label className="font-normal">
+          <Checkbox
+            checked={form.members_all}
+            onCheckedChange={(on) => setForm({ ...form, members_all: on === true })}
+          />
+          Download every members-only video
+        </Label>
+        <p className="text-xs text-muted-foreground">
+          Title words do not apply to members-only videos. They download only while a cookie
+          profile is a confirmed member of this channel.
+        </p>
+      </div>
       <MembershipList memberships={channel.memberships} />
       {save.isError && <ErrorBox error={save.error} />}
       <div className="flex items-center gap-2">

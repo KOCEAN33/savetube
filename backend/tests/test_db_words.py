@@ -354,6 +354,48 @@ async def test_a_live_is_recorded_only_when_a_watching_source_passes_its_title(s
 
 
 @pytest.mark.anyio
+async def test_members_all_records_a_members_only_live_whatever_its_title(settings):
+    from savetube.live import check_channel
+
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name, watch_lives, members_all) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', true, true)",
+        "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes,"
+        " include_words) VALUES"
+        f" ('https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360,"
+        "  '{歌枠}')",
+    )
+
+    def stream(video_id, availability):
+        return {
+            "id": video_id,
+            "title": GUERRILLA,
+            "channel_id": VESP,
+            "channel": "VESPERBELL",
+            "live_status": "is_upcoming",
+            "release_timestamp": 1792778400,
+            "availability": availability,
+        }
+
+    probes = {"members": stream("members", "subscriber_only"), "public": stream("public", "public")}
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await check_channel(
+        sessionmaker,
+        VESP,
+        fetch_feed=lambda c: _feed("members", "public"),
+        probe=lambda v: probes[v],
+        probe_live=lambda c: stream("public", "public"),
+        list_streams=_no_streams,
+        seen={},
+    )
+    # The public stream of the same channel still meets the words.
+    assert [j.video_id for j in await _record_jobs(sessionmaker)] == ["members"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
 async def test_poll_and_preview_merge_global_channel_and_source_words(settings):
     from savetube.poll import poll_source
 

@@ -474,7 +474,7 @@ def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):
     [channel] = [c for c in r.json() if c["id"] == CHANNEL_ID]
     assert channel["tracked"] is True and channel["video_count"] == 1
     for key in ("handle", "dir_name", "bytes", "include_words", "exclude_words", "date_after",
-                "format", "watch_lives", "avatar_url", "memberships"):  # fmt: skip
+                "format", "watch_lives", "members_all", "avatar_url", "memberships"):  # fmt: skip
         assert key in channel
 
 
@@ -607,11 +607,13 @@ def test_a_channel_scan_then_add(server):
             "date_after": "2026-01-01",
             "exclude_words": [" Shorts", "shorts"],
             "watch_lives": False,
+            "members_all": True,
         },
         headers=WRITE,
     )
     assert r.status_code == 200
     patched = r.json()
+    assert patched["members_all"] is True
     assert patched["date_after"] == "2026-01-01" and patched["exclude_words"] == ["Shorts"]
     assert patched["watch_lives"] is False
     assert server.patch("/api/channels/UCnone", json={}, headers=WRITE).status_code == 404

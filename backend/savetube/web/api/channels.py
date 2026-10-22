@@ -46,6 +46,7 @@ class ChannelOut(_Out):
     date_after: date | None
     format: str
     watch_lives: bool
+    members_all: bool
     avatar_url: str | None
     video_count: int
     bytes: int
@@ -62,6 +63,7 @@ class ChannelPatch(BaseModel):
     date_after: date | None = None
     format: Annotated[str | None, Field(min_length=1)] = None
     watch_lives: bool | None = None
+    members_all: bool | None = None
 
 
 def _channels_query():
@@ -76,6 +78,7 @@ def _channels_query():
             Channel.date_after,
             Channel.format,
             Channel.watch_lives,
+            Channel.members_all,
             Channel.avatar_url,
             func.count(Video.id).label("video_count"),
             _size.label("bytes"),
