@@ -156,13 +156,6 @@ def _log_format(info: dict[str, Any]) -> None:
     )
 
 
-def _on_postprocessor(d: dict[str, Any]) -> None:
-    if d.get("status") != "started":
-        return
-    step = d.get("postprocessor")
-    emit(log, logging.INFO if step == "Merger" else logging.DEBUG, "download.merge", step=step)
-
-
 def logged_download(
     url: str, params: dict[str, Any], send: Callable[[dict[str, Any]], None] | None = None
 ) -> dict[str, Any]:
@@ -207,7 +200,16 @@ def logged_download(
             last_send = now
             send(logs.progress(d))
 
-    params = {**params, "progress_hooks": [on_progress], "postprocessor_hooks": [_on_postprocessor]}
+    def on_postprocessor(d: dict[str, Any]) -> None:
+        if d.get("status") != "started":
+            return
+        step = d.get("postprocessor")
+        merger = step == "Merger"
+        emit(log, logging.INFO if merger else logging.DEBUG, "download.merge", step=step)
+        if merger and send is not None:
+            send({"step": "merging"})
+
+    params = {**params, "progress_hooks": [on_progress], "postprocessor_hooks": [on_postprocessor]}
     return download(url, params, on_format=on_format)
 
 
@@ -689,6 +691,15 @@ async def run(
                     )
                 await session.commit()
 
+        async def step(name: str) -> None:
+            """Name the stage after the last byte on the job row: `merging`
+            (from the child), `verifying`, or `audio`."""
+            try:
+                await report({"step": name})
+            except Exception as e:
+                # Display only. A failure here must not fail a stored download.
+                emit(log, logging.WARNING, "job.progress_failed", reason=f"{e}")
+
         # Any failure past RUNNING must reach the row, or the job stays running and
         # no poll queues the video again.
         try:
@@ -736,10 +747,12 @@ async def run(
                             fmt=fmt,
                             pinned=pinned,
                             report=report,
+                            step=step,
                             streams=streams,
                             tools=tools or integrity.Tools(),
                         ),
                     )
+                    await step("audio")
                     await audio.add(_media_path(info), tools or integrity.Tools())
 
             async with sessionmaker() as session:
@@ -1062,6 +1075,7 @@ async def _archive(
     fmt: str,
     pinned: str | None,
     report: Report,
+    step: Callable[[str], Awaitable[None]],
     streams: list[dict[str, Any]],
     tools: integrity.Tools,
 ) -> tuple[dict[str, Any], list[str]]:
@@ -1158,6 +1172,7 @@ async def _archive(
             info = await fetch()
 
         media = _media_path(info) or workdir / "missing"
+        await step("verifying")
         try:
             checks = await asyncio.to_thread(
                 integrity.verify, media, info, list(streams), resumed=resumed, tools=tools

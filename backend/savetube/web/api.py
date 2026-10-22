@@ -200,6 +200,7 @@ class JobOut(_Out):
     deferred_until: datetime | None
     # A running download's current stream, written every few seconds:
     # {format, pct, done, total, speed, eta}. pct is null without a total.
+    # After the last byte, {step}: merging, verifying, or audio.
     progress: dict[str, Any] | None
     created_at: datetime
     started_at: datetime | None

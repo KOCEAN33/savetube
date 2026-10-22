@@ -5,7 +5,7 @@ import { Link } from "react-router"
 import { JobsTable } from "@/components/jobs-table"
 import { QueryState } from "@/components/query-state"
 import { Button } from "@/components/ui/button"
-import { api, type Job } from "@/lib/api"
+import { api, type Job, type JobStep } from "@/lib/api"
 import {
   IDLE_REFETCH_MS,
   JOB_PAGE,
@@ -13,6 +13,12 @@ import {
   RUNNING_REFETCH_MS,
 } from "@/lib/channel"
 import { formatBytes, formatDateTime, formatDuration } from "@/lib/format"
+
+const STEP_LABELS: Record<JobStep["step"], string> = {
+  merging: "Merging the video and audio streams.",
+  verifying: "Checking the file.",
+  audio: "Writing the audio copy.",
+}
 
 function ProgressLine({ job }: { job: Job }) {
   const p = job.progress
@@ -22,6 +28,7 @@ function ProgressLine({ job }: { job: Job }) {
         Preparing. Metadata, subtitles and the chat replay come before the media.
       </p>
     )
+  if ("step" in p) return <p className="text-xs text-muted-foreground">{STEP_LABELS[p.step]}</p>
   const parts = [
     p.pct !== null ? `${p.pct.toFixed(1)}%` : null,
     p.done !== null && p.total !== null ? `${formatBytes(p.done)} of ${formatBytes(p.total)}` : null,

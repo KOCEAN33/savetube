@@ -3326,6 +3326,24 @@ def _events(caplog, name):
 
 
 @pytest.mark.anyio
+async def test_the_job_row_names_the_step_after_the_last_byte(settings):
+    _job_rows(settings, "UPDATE channel SET format = 'wa'")
+    seen = []
+
+    class Tools(_FakeTools):
+        def probe(self, path):
+            # The checks and the audio copy both start with a probe.
+            [(progress,)] = _sql_rows(settings, "SELECT progress FROM job WHERE id = 1")
+            seen.append(progress)
+            return super().probe(path)
+
+    jobs, _ = await _run_steps(settings, _Steps(_finished()), tools=Tools())
+
+    assert jobs[1].state is JobState.SUCCEEDED
+    assert seen == [{"step": "verifying"}, {"step": "audio"}]
+
+
+@pytest.mark.anyio
 async def test_a_worker_shutdown_interrupts_the_download_and_keeps_its_parts(settings, caplog):
     import logging
 
