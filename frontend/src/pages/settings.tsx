@@ -35,6 +35,7 @@ import {
   type TitleWords,
 } from "@/lib/api"
 import { formatDateTime } from "@/lib/format"
+import { profileLabel } from "@/lib/profiles"
 import { queryKeys } from "@/lib/query-keys"
 import { COMMON_SUBTITLE_LANGS, getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
 import { EXCLUDE_HINT, INCLUDE_HINT } from "@/lib/words"
@@ -228,14 +229,14 @@ function DownloadSettingsForm({
           value={form.cookie_profile ?? NO_PROFILE}
           onValueChange={(v) => setForm({ ...form, cookie_profile: v === NO_PROFILE ? null : v })}
         >
-          <SelectTrigger id="dl-cookie-profile" className="w-64">
+          <SelectTrigger id="dl-cookie-profile" className="w-96 max-w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={NO_PROFILE}>None (cookie-free)</SelectItem>
             {profiles.map((p) => (
               <SelectItem key={p.name} value={p.name}>
-                {p.name}
+                {profileLabel(p.name, profiles)}
               </SelectItem>
             ))}
             {form.cookie_profile !== null &&
@@ -373,9 +374,7 @@ function MembershipTable({ channels, profiles }: { channels: Channel[]; profiles
             <TableRow>
               <TableHead>Channel</TableHead>
               {profiles.map((p) => (
-                <TableHead key={p.name} className="font-mono">
-                  {p.name}
-                </TableHead>
+                <TableHead key={p.name}>{profileLabel(p.name, profiles)}</TableHead>
               ))}
             </TableRow>
           </TableHeader>

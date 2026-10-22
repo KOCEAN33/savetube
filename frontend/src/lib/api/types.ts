@@ -67,6 +67,9 @@ export interface Membership {
 // A cookie file in SAVETUBE_COOKIES_DIR, by name. The API never sends its content.
 export interface CookieProfile {
   name: string
+  // The YouTube account the file signs in. Null until the scheduler reads it.
+  account_name: string | null
+  account_handle: string | null
 }
 
 export interface Source {
@@ -257,10 +260,10 @@ export interface ChannelIn extends TitleWords, ChannelSettings {
   all_playlists: boolean
   playlists: { url: string; title: string }[]
   other_channels: boolean
+  members_all: boolean
   playlists_pass: boolean
 }
 
-  members_all: boolean
 export type ChannelPatch = Partial<
   TitleWords & ChannelSettings & Pick<Channel, "members_all" | "playlists_pass">
 >

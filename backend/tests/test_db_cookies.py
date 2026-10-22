@@ -277,8 +277,8 @@ def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplo
     with _api(settings) as client:
         assert settings.cookies_dir is None
         assert client.get("/api/cookie-profiles").json() == [
-            {"name": "main"},
-            {"name": "throwaway"},
+            {"name": "main", "account_name": None, "account_handle": None},
+            {"name": "throwaway", "account_name": None, "account_handle": None},
         ]
         with caplog.at_level(logging.INFO, logger="savetube"):
             put = client.put("/api/download-settings", json={"cookie_profile": "throwaway"})
@@ -290,6 +290,126 @@ def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplo
         put = client.put("/api/download-settings", json={"cookie_profile": "gone"})
         assert put.status_code == 422
         assert client.put("/api/download-settings", json={}).json()["cookie_profile"] is None
+
+
+@pytest.mark.anyio
+async def test_each_profile_account_is_read_once_per_file_content(settings, caplog):
+    import logging
+
+    from yt_dlp.utils import DownloadError
+
+    from savetube.cookies import read_accounts, record_profiles
+    from savetube.ytdl import NotSignedIn
+
+    settings = _profiles(settings, "alt", "main")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        await record_profiles(session, ["alt", "main"], datetime.now(UTC))
+        await session.commit()
+    read = []
+    accounts = {"main": ("vivi kikirara", "@vivikikirara"), "alt": NotSignedIn()}
+
+    def reader(cookiefile):
+        profile = cookiefile.read_text().splitlines()[0].removeprefix("# ")
+        read.append(profile)
+        account = accounts[profile]
+        if isinstance(account, Exception):
+            raise account
+        return account
+
+    def rows():
+        engine = sa.create_engine(settings.sqlalchemy_url)
+        with engine.connect() as c:
+            found = c.execute(
+                sa.text(
+                    "SELECT name, account_name, account_handle, account_digest IS NOT NULL,"
+                    " account_checked_at IS NOT NULL FROM cookie_profile ORDER BY name"
+                )
+            ).all()
+        engine.dispose()
+        return [tuple(r) for r in found]
+
+    # No read while a YouTube block pauses downloads.
+    _sql(settings, "UPDATE download_settings SET blocked_until = now() + interval '1 hour'")
+    await read_accounts(sessionmaker, settings, reader=reader)
+    assert read == []
+    _sql(settings, "UPDATE download_settings SET blocked_until = NULL")
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await read_accounts(sessionmaker, settings, reader=reader)
+    assert read == ["alt", "main"]
+    assert rows() == [
+        ("alt", None, None, False, True),
+        ("main", "vivi kikirara", "@vivikikirara", True, True),
+    ]
+    [failed] = [r for r in caplog.records if r.getMessage() == "cookies.account_failed"]
+    assert (failed.levelno, _fields(failed)) == (
+        logging.WARNING,
+        {"profile": "alt", "reason": "not signed in"},
+    )
+    assert failed.exc_info is None
+    [ok] = [r for r in caplog.records if r.getMessage() == "cookies.account"]
+    assert _fields(ok) == {"profile": "main", "name": "vivi kikirara", "handle": "@vivikikirara"}
+    assert "# main" not in caplog.text and "# alt" not in caplog.text
+
+    # Same content, and a failure under an hour old: no read.
+    await read_accounts(sessionmaker, settings, reader=reader)
+    assert read == ["alt", "main"]
+
+    def memberships():
+        engine = sa.create_engine(settings.sqlalchemy_url)
+        with engine.connect() as c:
+            found = c.execute(sa.text("SELECT profile FROM membership ORDER BY profile")).all()
+        engine.dispose()
+        return [r[0] for r in found]
+
+    _sql(
+        settings,
+        f"INSERT INTO channel (id, name, dir_name) VALUES ('{VESP}', 'V', 'V [{VESP}]')",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        f" ('{VESP}', 'main', true, now(), 'm1'), ('{VESP}', 'alt', false, now(), 'm1')",
+    )
+
+    # A changed file reads again at once, and a replaced file that read
+    # before drops its membership results. A failed one waits for the hour.
+    (settings.cookies_dir / "main.txt").write_text("# main\n# rotated\n")
+    (settings.cookies_dir / "alt.txt").write_text("# alt\n# signed in\n")
+    accounts = {"main": ("other", None), "alt": ("alt account", "@alt")}
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await read_accounts(sessionmaker, settings, reader=reader)
+    assert read == ["alt", "main", "main"]
+    assert rows()[1] == ("main", "other", None, True, True)
+    assert memberships() == ["alt"]
+    [changed] = [r for r in caplog.records if r.getMessage() == "cookies.changed"]
+    assert _fields(changed) == {"profile": "main", "memberships": 1}
+    _sql(
+        settings,
+        "UPDATE cookie_profile SET account_checked_at = now() - interval '2 hours'"
+        " WHERE name = 'alt'",
+    )
+    await read_accounts(sessionmaker, settings, reader=reader)
+    assert read == ["alt", "main", "main", "alt"]
+    assert rows()[0] == ("alt", "alt account", "@alt", True, True)
+    # The first successful read after a failure had no digest to replace.
+    assert memberships() == ["alt"]
+
+    # A bot check stops the reads of this tick and clears the stale account.
+    for name in ("alt", "main"):
+        (settings.cookies_dir / f"{name}.txt").write_text(f"# {name}\n# third\n")
+    accounts = {"alt": DownloadError(BOT_CHECK_ERROR), "main": ("never", None)}
+    await read_accounts(sessionmaker, settings, reader=reader)
+    assert read == ["alt", "main", "main", "alt", "alt"]
+    assert rows()[0] == ("alt", None, None, False, True)
+    assert memberships() == []
+
+    with _api(settings) as client:
+        assert client.get("/api/cookie-profiles").json() == [
+            {"name": "alt", "account_name": None, "account_handle": None},
+            {"name": "main", "account_name": "other", "account_handle": None},
+        ]
+    await engine.dispose()
 
 
 @pytest.mark.anyio

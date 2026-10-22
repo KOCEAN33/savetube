@@ -22,5 +22,6 @@ Failures paid for once that the code does not show.
 ## Code
 
 - `web/api/` and `jobs/` are packages whose `__init__.py` re-exports the old public names. A test patches a name on the submodule whose call site reads it, such as `jobs.runners.download`, `jobs.guards.PAUSE_POLL_SECONDS` or `web.api.scan.CHANNEL_PLAYLISTS_TIMEOUT`. Patching the package name has no effect.
+- `ytdl.read_account` uses yt-dlp's private `YoutubeTab` methods `_download_webpage`, `extract_ytcfg`, `_extract_response` and `generate_api_headers`. A yt-dlp upgrade can break it, and then every profile shows "account unknown" with `cookies.account_failed` in the log.
 - `cli.py` keeps lazy imports on purpose: `savetube.queue` reads Settings at import, and the rest are role-specific heavy packages.
 - `savetube_proto` on pg-dev holds seeded demo data. Its complete videos have no `dir_path` or `info`, so a playback test points a row at files and reverts it after.

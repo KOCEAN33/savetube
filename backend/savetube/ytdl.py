@@ -238,6 +238,37 @@ def probe_member(video_id: str, cookiefile: Path) -> dict[str, Any]:
     return _probe(video_url(video_id), cookiefile, formats_required=True)
 
 
+class NotSignedIn(Exception):
+    def __init__(self) -> None:
+        super().__init__("not signed in")
+
+
+def read_account(cookiefile: Path) -> tuple[str, str | None]:
+    """The name and handle of the YouTube account a writable cookie file copy
+    signs in. Raises NotSignedIn for a logged-out file.
+
+    yt-dlp has no public call for this, so it uses YoutubeTab's private
+    methods (docs/traps.md)."""
+    params = {"quiet": True, "logger": YtdlpLogger(), "cookiefile": str(cookiefile)}
+    with yt_dlp.YoutubeDL(params) as ydl:
+        ie = ydl.get_info_extractor("YoutubeTab")
+        page = ie._download_webpage("https://www.youtube.com/", None, note=False)
+        cfg = ie.extract_ytcfg(None, page)
+        response = ie._extract_response(
+            item_id="x",
+            query={},
+            ep="account/account_menu",
+            ytcfg=cfg,
+            headers=ie.generate_api_headers(ytcfg=cfg),
+            note=False,
+        )
+    menu = response["actions"][0]["openPopupAction"]["popup"]["multiPageMenuRenderer"]
+    header = (menu.get("header") or {}).get("activeAccountHeaderRenderer")
+    if header is None:
+        raise NotSignedIn
+    return header["accountName"]["simpleText"], header.get("channelHandle", {}).get("simpleText")
+
+
 def avatar_url(listing: dict[str, Any]) -> str | None:
     """The channel's profile picture from a tab listing's thumbnails: the square
     one, else the uncropped original, which can be megabytes."""

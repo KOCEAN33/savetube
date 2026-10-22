@@ -5,7 +5,7 @@
 | Table | Holds |
 | --- | --- |
 | `channel` | channel id, handle, display name, avatar URL, the directory name fixed at first add, include and exclude title words, date cutoff, format selector, watch lives |
-| `cookie_profile` | the cookie profile names the scheduler last found in `SAVETUBE_COOKIES_DIR`, each with the time it was seen |
+| `cookie_profile` | the cookie profile names the scheduler last found in `SAVETUBE_COOKIES_DIR`, each with the time it was seen, the YouTube account name and handle its file signs in, the file's sha256 the account was read from, and the read time |
 | `membership` | per channel and cookie profile: whether the profile's account is a member, when the check ran, the members-only video it read |
 | `global_words` | one row: the global include and exclude title words |
 | `source` | a channel tab, a channel's playlists, or a playlist URL, enabled flag, archiving flag, poll interval, include and exclude title words, other-channel flag, parent source, last poll time and error |
@@ -17,6 +17,7 @@
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- Migration `0018` adds `cookie_profile.account_name`, `account_handle`, `account_digest` and `account_checked_at`, all null. Its downgrade drops them.
 - Migration `0015` adds `download_settings.move_requested_at`, null. Its downgrade drops it.
 - Migration `0014` adds the video state `staged` (Staging). Its downgrade turns every `staged` video into `pending`, so the old code downloads it again.
 - Migration `0013` adds `download_settings.window_enabled`, true where both window times are set, and `download_settings.daily_limit`, null. Its downgrade drops both.
