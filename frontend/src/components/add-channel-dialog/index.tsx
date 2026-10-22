@@ -22,8 +22,9 @@ import { DEFAULT_FORMAT, VIDEO_TABS } from "@/lib/channel"
 import { queryKeys } from "@/lib/query-keys"
 
 const STEPS = ["Channel", "What to archive", "Title words", "Download settings"]
+const WORDS_STEP = 2
 
-function Steps({ step }: { step: number }) {
+function Steps({ step, skipped }: { step: number; skipped: number | null }) {
   return (
     <ol className="flex flex-wrap items-center gap-2 text-xs">
       {STEPS.map((label, i) => (
@@ -32,21 +33,25 @@ function Steps({ step }: { step: number }) {
           className={
             i === step
               ? "flex items-center gap-1.5 font-medium"
-              : "flex items-center gap-1.5 text-muted-foreground"
+              : i === skipped
+                ? "flex items-center gap-1.5 text-muted-foreground opacity-50"
+                : "flex items-center gap-1.5 text-muted-foreground"
           }
         >
           <span
             className={
-              i < step
-                ? "flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground"
-                : i === step
-                  ? "flex size-5 items-center justify-center rounded-full border-2 border-primary"
-                  : "flex size-5 items-center justify-center rounded-full border"
+              i === skipped
+                ? "flex size-5 items-center justify-center rounded-full border border-dashed"
+                : i < step
+                  ? "flex size-5 items-center justify-center rounded-full bg-primary text-primary-foreground"
+                  : i === step
+                    ? "flex size-5 items-center justify-center rounded-full border-2 border-primary"
+                    : "flex size-5 items-center justify-center rounded-full border"
             }
           >
-            {i < step ? <CheckIcon className="size-3" /> : i + 1}
+            {i === skipped ? "-" : i < step ? <CheckIcon className="size-3" /> : i + 1}
           </span>
-          {label}
+          {i === skipped ? `${label} (skipped)` : label}
           {i < STEPS.length - 1 && <span className="mx-1 h-px w-6 bg-border" />}
         </li>
       ))}
@@ -83,11 +88,11 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
     picked: [],
     otherChannels: true,
     watchLives: false,
+    keepAll: false,
   })
   const [words, setWords] = useState<TitleWords>({ include_words: [], exclude_words: [] })
   const [membersAll, setMembersAll] = useState(false)
   const [playlistsPass, setPlaylistsPass] = useState(false)
-  const [keepAll, setKeepAll] = useState(false)
   const [dateAfter, setDateAfter] = useState<string | null>(null)
   const [format, setFormat] = useState(DEFAULT_FORMAT)
   const save = useMutation({
@@ -108,6 +113,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
       picked: [],
       otherChannels: true,
       watchLives: false,
+      keepAll: false,
     })
   }
 
@@ -115,6 +121,12 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
     choice.playlists === "all" || (choice.playlists === "some" && choice.picked.length > 0)
   const chosen = choice.tabs.length > 0 || playlistsChosen
   const canNext = [scan !== null, chosen, true, false][step]
+  const skipped = choice.keepAll ? WORDS_STEP : null
+
+  function move(by: 1 | -1) {
+    const next = step + by
+    setStep(next === skipped ? next + by : next)
+  }
 
   function submit() {
     if (!scan) return
@@ -132,10 +144,11 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
           : [],
       other_channels: choice.otherChannels,
       watch_lives: choice.watchLives,
-      members_all: membersAll,
-      playlists_pass: playlistsChosen && playlistsPass,
-      keep_all: keepAll,
-      ...words,
+      // With keep_all on, no word applies, so the words step's leftover state is dropped.
+      members_all: !choice.keepAll && membersAll,
+      playlists_pass: !choice.keepAll && playlistsChosen && playlistsPass,
+      keep_all: choice.keepAll,
+      ...(choice.keepAll ? { include_words: [], exclude_words: [] } : words),
       date_after: dateAfter,
       format,
     }
@@ -149,10 +162,9 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
           Add channel{scan && step > 0 ? `: ${scan.name}` : ""}
         </DialogTitle>
         <DialogDescription>
-          From a URL to downloading in four steps. Downloads start on the next scheduler tick
-          after saving.
+          From a URL to downloading. Downloads start on the next scheduler tick after saving.
         </DialogDescription>
-        <Steps step={step} />
+        <Steps step={step} skipped={skipped} />
       </DialogHeader>
       <div className="min-h-[24rem] flex-1 overflow-y-auto p-6">
         {step === 0 && (
@@ -174,8 +186,6 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
             onMembersAllChange={setMembersAll}
             playlistsPass={playlistsChosen ? playlistsPass : null}
             onPlaylistsPassChange={setPlaylistsPass}
-            keepAll={keepAll}
-            onKeepAllChange={setKeepAll}
           />
         )}
         {step === 3 && scan && (
@@ -206,11 +216,19 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
                 </span>
               )}
               <span>Live recording: {choice.watchLives ? "on" : "off"}</span>
-              <span>Every members-only video: {membersAll ? "download" : "title words apply"}</span>
-              <span>
-                Words: include {words.include_words.join(", ") || "any"}, exclude{" "}
-                {words.exclude_words.join(", ") || "none"}
-              </span>
+              {choice.keepAll ? (
+                <span>Every video: download, regardless of title words</span>
+              ) : (
+                <>
+                  <span>
+                    Every members-only video: {membersAll ? "download" : "title words apply"}
+                  </span>
+                  <span>
+                    Words: include {words.include_words.join(", ") || "any"}, exclude{" "}
+                    {words.exclude_words.join(", ") || "none"}
+                  </span>
+                </>
+              )}
             </div>
             {save.isError && <ErrorBox error={save.error} />}
           </div>
@@ -218,12 +236,12 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
       </div>
       <DialogFooter className="m-0 rounded-b-xl px-6">
         {step > 0 && (
-          <Button variant="outline" onClick={() => setStep(step - 1)} disabled={save.isPending}>
+          <Button variant="outline" onClick={() => move(-1)} disabled={save.isPending}>
             Back
           </Button>
         )}
         {step < STEPS.length - 1 ? (
-          <Button onClick={() => setStep(step + 1)} disabled={!canNext}>
+          <Button onClick={() => move(1)} disabled={!canNext}>
             Next
           </Button>
         ) : (
