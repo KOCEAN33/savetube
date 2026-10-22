@@ -2,11 +2,12 @@
 
 ## Goal
 
-Show the merge and verify steps on the Downloads card (Next steps 1). Confirm `v0.10.0` in production: the HTTP 500 format fallback on a real video, playback and subtitles in the user's browser.
+Confirm `v0.10.0` in production: the HTTP 500 format fallback on a real video, playback and subtitles in the user's browser.
 
 ## Current progress
 
 - Running in `savetube-prod`: `v0.10.0`, migrations `0001`-`0013`, deployed 10:52 KST on 2026-10-22 through PR #38. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning). The release workflow run appears about 85 s after the merge.
+- On develop, not released: the Downloads card shows the step after the last byte (merging, checking the file, writing the audio copy) in place of the percent. `job.progress` then holds `{step}` (`docs/plan/storage.md`). The next release of develop into main ships it.
 - Checked after the deploy: alembic `0013`, the web pod mounts the archive read-only (`touch` fails with "Read-only file system"), and `GET /api/videos/<id>/media` without a session answers 401.
 - Download settings in production: window off with no times stored, `daily_limit` null, `max_concurrent` 1, general cookie profile `burner`. The user turns the window on in Settings ("Use the window").
 - `v0.9.0` and `v0.10.0` added:
@@ -22,7 +23,7 @@ Show the merge and verify steps on the Downloads card (Next steps 1). Confirm `v
 
 ## What worked
 
-- DB tests: `bash /tmp/savetube-testdb/run-tests.sh <repo root> make check`, or pytest args instead of `make check`. It reads `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` and the password from `op read 'op://Homelab/savetube-dev-db/password'`. It prints no secret. Parallel runs are safe. Tests that need ffmpeg skip on this Mac. Run them with the shims in `/tmp/savetube-ffshim` first on PATH, which call the local `savetube:after` image.
+- DB tests: `bash /tmp/savetube-testdb/run-tests.sh <repo root> make check`, or pytest args instead of `make check`. It reads `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` and the password from `op read 'op://Homelab/savetube-dev-db/password'`. It prints no secret. Parallel runs are safe. Tests that need ffmpeg skip on this Mac. Run them with the shims in `/tmp/savetube-ffshim` first on PATH, which call the local `savetube:after` image. The shims mount only `/private/tmp`, so add `--basetemp=/private/tmp/<dir>` to the pytest args, or the fixtures' ffmpeg fails with exit 254.
 - `psql` 18 is installed through Homebrew `libpq`.
 - Parallel agents: make the worktrees yourself with `git worktree add -b <branch> ../savetube-wt-<name> origin/develop` and give each a file boundary. `CLAUDE.md` Merging says how a branch lands. Two branches that append tests to the end of `backend/tests/test_db.py` conflict on rebase. Keep both blocks.
 - `.claude/settings.local.json` allows `gh pr merge`, `git rebase`, `git merge`, `git pull`, and `git push origin develop`. Without them the auto mode classifier blocks them as "Merge Without Review". It also blocked a read-only `gh pr view` loop right after a merge.
@@ -48,11 +49,10 @@ Show the merge and verify steps on the Downloads card (Next steps 1). Confirm `v
 
 ## Next steps
 
-1. Downloads card step label, which the user asked for. The card shows nothing after the last byte, so a download looks stopped through merge, verify and the audio copy: about 2 minutes on a 7 GiB video (`MSS6tecJ5iw`: merge 10:10:10, verified 10:11:43, `audio.extracted` 10:12:14 KST). Today `job.progress` holds only the progress hook message (`backend/savetube/jobs.py:688`). The merge hook only logs `download.merge` (`jobs.py:163`), and `download.verified` logs at `jobs.py:1180`. Write a step such as merging, verifying, or audio copy into `job.progress` at each stage, and show it on the dashboard Downloads card in place of the frozen percent. Check how the card and `backend/savetube/web/api.py` read `progress`, and keep the `progress` clear at the end (`jobs.py:384`). `docs/plan/frontend.md` describes the card.
-2. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
-3. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
-4. Batch work is on hold: the user expects no more batch jobs. `savetube extract-audio` runs through `kubectl exec` with `print` output, invisible in Loki and tied to the caller's connection. A failed audio extraction after a download is not retried, and only a rerun of `extract-audio` fills it.
-5. Follow-ups:
+1. When `7l-RzDkD7a0` runs, check the worker log for `download.fallback` (299, then 312, then 298+251) and `job.done`.
+2. The user checks playback, the audio player and subtitles on `savetube.lab.hiriri.com` in Chrome, including a multi-hour live and the ⋮ captions menu, which no test clicked.
+3. Batch work is on hold: the user expects no more batch jobs. `savetube extract-audio` runs through `kubectl exec` with `print` output, invisible in Loki and tied to the caller's connection. A failed audio extraction after a download is not retried, and only a rerun of `extract-audio` fills it.
+4. Follow-ups:
    - The channel page hides "Show more" once all 500 listed queued jobs show, even when more wait.
    - `GET /api/sources` sends `last_error` raw. The Home card only cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
    - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
@@ -62,9 +62,9 @@ Show the merge and verify steps on the Downloads card (Next steps 1). Confirm `v
    - The fallback treats any HLS run that ends "The downloaded file is empty" with no bytes as a refused format, whatever the cause. The cap of 3 per attempt bounds it.
    - The settings page uses a checkbox for the window, because the project has no Switch component.
    - ffmpeg is about 180-210 MB of the image. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
-6. Safari playback is out of scope until the user asks. The plan then: a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
-7. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
-8. Later: i18n with Korean added beside English.
+5. Safari playback is out of scope until the user asks. The plan then: a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
+6. Review live recording with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
+7. Later: i18n with Korean added beside English.
 
 ## Suggested skills
 
