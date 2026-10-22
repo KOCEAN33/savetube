@@ -126,6 +126,8 @@ class DownloadSettings(Base):
             " AND window_start <> window_end)",
             name="window",
         ),
+        CheckConstraint("NOT window_enabled OR window_start IS NOT NULL", name="window_enabled"),
+        CheckConstraint("daily_limit >= 1", name="daily_limit"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1, autoincrement=False)
@@ -134,6 +136,10 @@ class DownloadSettings(Base):
     # Local times in savetube.limits.TIMEZONE. Both set or both null.
     window_start: Mapped[time | None]
     window_end: Mapped[time | None]
+    # Off keeps the times and ignores them.
+    window_enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
+    # Archive downloads per Asia/Seoul day. Null for no cap.
+    daily_limit: Mapped[int | None]
     # The pause after a YouTube block, and the blocks since the last success.
     blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     block_count: Mapped[int] = mapped_column(default=0, server_default="0")

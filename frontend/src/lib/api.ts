@@ -321,6 +321,10 @@ export interface DownloadSettingsIn {
   rate_limit_bytes: number | null
   window_start: string | null
   window_end: string | null
+  // Off keeps the times and ignores them.
+  window_enabled: boolean
+  // Archive downloads per Asia/Seoul day. Null: no cap.
+  daily_limit: number | null
   // The profile of every poll, live probe and non-members download. Null: cookie-free.
   cookie_profile: string | null
 }
@@ -329,6 +333,8 @@ export interface DownloadSettings extends DownloadSettingsIn {
   timezone: string
   // The user's pause of archive downloads. Set only through setDownloadsPaused.
   paused: boolean
+  // Archive downloads succeeded today, plus running ones. Read-only.
+  downloaded_today: number
 }
 
 export const mutations = {

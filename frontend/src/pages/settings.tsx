@@ -5,6 +5,7 @@ import { DownloadPauseToggle } from "@/components/download-pause"
 import { ErrorBox, Page, PageSection, QueryState } from "@/components/query-state"
 import { WordListEditor } from "@/components/source-words"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -33,6 +34,8 @@ interface FormState {
   rate_mb: string
   window_start: string
   window_end: string
+  window_enabled: boolean
+  daily_limit: string
   cookie_profile: string | null
 }
 
@@ -42,6 +45,8 @@ function toForm(s: DownloadSettings): FormState {
     rate_mb: s.rate_limit_bytes === null ? "" : String(s.rate_limit_bytes / BYTES_PER_MB),
     window_start: s.window_start ?? "",
     window_end: s.window_end ?? "",
+    window_enabled: s.window_enabled,
+    daily_limit: s.daily_limit === null ? "" : String(s.daily_limit),
     cookie_profile: s.cookie_profile,
   }
 }
@@ -61,11 +66,20 @@ function toBody(f: FormState): DownloadSettingsIn | string {
   if ((start === null) !== (end === null))
     return "Set both window start and end, or leave both empty."
   if (start !== null && start === end) return "Window start and end must differ."
+  if (f.window_enabled && start === null) return "Set the window start and end to use the window."
+  let daily: number | null = null
+  if (f.daily_limit.trim() !== "") {
+    daily = Number(f.daily_limit)
+    if (!Number.isInteger(daily) || daily < 1)
+      return "Daily limit must be a whole number of at least 1, or empty."
+  }
   return {
     max_concurrent: f.max_concurrent,
     rate_limit_bytes: rate,
     window_start: start,
     window_end: end,
+    window_enabled: f.window_enabled,
+    daily_limit: daily,
     cookie_profile: f.cookie_profile,
   }
 }
@@ -136,12 +150,41 @@ function DownloadSettingsForm({
           onChange={(e) => setForm({ ...form, rate_mb: e.target.value })}
         />
       </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="dl-daily">Daily limit (downloads per day, {settings.timezone})</Label>
+        <p className="text-xs text-muted-foreground">
+          Successful downloads since 00:00, plus running ones. A download still running when the
+          limit is reached finishes. Empty means no limit.
+        </p>
+        <Input
+          id="dl-daily"
+          type="number"
+          min={1}
+          step={1}
+          placeholder="unlimited"
+          value={form.daily_limit}
+          onChange={(e) => setForm({ ...form, daily_limit: e.target.value })}
+        />
+        <p className="text-xs text-muted-foreground">
+          {settings.downloaded_today}
+          {settings.daily_limit === null ? "" : ` / ${settings.daily_limit}`} today
+        </p>
+      </div>
       <fieldset className="flex flex-col gap-2">
         <legend className="mb-2 text-sm font-medium">Daily download window ({settings.timezone})</legend>
         <p className="text-xs text-muted-foreground">
-          Downloads start only inside the window. A download still running at the window end
-          finishes. Both empty means any time. The window may cross midnight.
+          Downloads start only inside the window while it is on. A download still running at the
+          window end finishes. Off keeps the times and allows any time. The window may cross
+          midnight.
         </p>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="dl-window-enabled"
+            checked={form.window_enabled}
+            onCheckedChange={(on) => setForm({ ...form, window_enabled: on === true })}
+          />
+          <Label htmlFor="dl-window-enabled">Use the window</Label>
+        </div>
         <div className="flex items-center gap-2">
           <Input
             aria-label="Window start"

@@ -78,16 +78,21 @@
 
 ## Download limits
 
-- One global row, `download_settings`, holds three limits. They apply to archive jobs only. A live recording ignores all three, because a live missed is lost.
+- One global row, `download_settings`, holds four limits. They apply to archive jobs only. A live recording ignores all four, because a live missed is lost.
 - `max_concurrent`, 1 to 10, default 1: archive downloads running at once. The chart's `worker.concurrency` is the hard ceiling and defaults to 10, so the setting decides.
 - `rate_limit_bytes`, null for no limit: passed to yt-dlp as `ratelimit`, so it limits each download. Three downloads at once can use three times the rate.
-- `window_start` and `window_end`, `HH:MM` in Asia/Seoul, both null for no window: archive downloads start only inside the window. A window may cross midnight, such as 23:00-05:00. Equal start and end is rejected.
+- `window_start` and `window_end`, `HH:MM` in Asia/Seoul, both set or both null: archive downloads start only inside the window. A window may cross midnight, such as 23:00-05:00. Equal start and end is rejected.
+- `window_enabled` switches the window on and off. The window applies only when `window_enabled` is true and both times are set. Turning it off keeps the stored times. Enabling it with a missing time is a 422.
+- Migration `0013` sets `window_enabled` true where both times are set, else false.
 - A download already running when the window closes runs to the end.
+- `daily_limit`, at least 1, null for no cap: archive downloads per Asia/Seoul calendar day, which resets at 00:00 KST. The count is the archive jobs `succeeded` with `finished_at` since today's 00:00 KST, plus the running archive jobs. A job starts only while the count is below `daily_limit`.
+- The count holds successes, not starts, so an interrupted or resumed run takes nothing from the cap. A failed run takes nothing either.
+- A download already running when the count reaches `daily_limit` runs to the end.
 - A waiting archive job is a `queued` `job` row with no procrastinate job (`queue_job_id` null). Waiting adds no row to `procrastinate_jobs`.
-- The scheduler dispatches every 10 s, apart from its 60 s tick, because with `max_concurrent` 1 a slot sits idle until the next dispatch. Inside the window, the dispatcher queues the oldest waiting jobs, by job id, up to `max_concurrent` minus running archive jobs minus dispatched jobs. A dispatched job is a `queued` row with a procrastinate job. Outside the window it queues nothing.
-- `job.deferred_until` holds the next window start for a waiting job outside the window, and null inside it. The dispatcher sets it on every run.
+- The scheduler dispatches every 10 s, apart from its 60 s tick, because with `max_concurrent` 1 a slot sits idle until the next dispatch. Inside the window and under the daily cap, the dispatcher queues the oldest waiting jobs, by job id, up to `max_concurrent` minus running archive jobs minus dispatched jobs. With a `daily_limit`, it also queues at most `daily_limit` minus the daily count minus dispatched jobs. A dispatched job is a `queued` row with a procrastinate job. Outside the window or at the cap it queues nothing.
+- `job.deferred_until` holds the next window start for a waiting job outside the window, the next 00:00 KST at the daily cap, and the later of the two when both hold. It is null when neither holds. The dispatcher sets it on every run.
 - A dispatched job whose procrastinate job is no longer `todo` or `doing`, such as one that failed before the worker marked the row, goes back to waiting on the next dispatch. Otherwise it would hold its slot for good.
-- The worker checks the window and the free slots again before it starts. If it may not start, it hands the job back to waiting and queues nothing. The check, the `running` mark, and the dispatch all take one Postgres advisory lock, so a slot is never taken twice.
+- The worker checks the window, the daily cap and the free slots again before it starts. If it may not start, it hands the job back to waiting, queues nothing, and logs `job.returned` with reason `paused`, `blocked`, `daily_limit`, `window` or `slots`, the first that holds. The check, the `running` mark, and the dispatch all take one Postgres advisory lock, so a slot is never taken twice.
 - The worker deletes a procrastinate job when it succeeds, so `procrastinate_jobs` holds only todo, running, failed and cancelled jobs. The hourly database cleanup deletes the finished ones after 30 days (Resuming and verifying downloads). A `job` row keeps the history. A `job.queue_job_id` that names a deleted procrastinate job reads as "no longer `todo` or `doing`".
 - A `PUT /api/download-settings` changes no job. The next dispatch, within 10 s, applies the new limits.
 - Migration `0006` deletes every `succeeded` procrastinate job and every `todo` archive procrastinate job. It clears `queue_job_id` and `deferred_until` on every `queued` archive job whose procrastinate job is not `doing`, so the dispatcher takes it. A `doing` job and its `job` row stay. The downgrade cancels every waiting archive job, so the old poll queues its video again.
@@ -96,7 +101,7 @@
 - A blocked archive job is interrupted, not failed: it counts as no attempt, keeps `.incoming/<video id>/` and its pinned format, and logs `job.interrupted` at WARNING with reason "blocked by YouTube". The `interrupted` row's `log_tail` holds the yt-dlp text.
 - The first block past an expired pause adds 1 to `download_settings.block_count` and sets `blocked_until` to now plus the backoff, under the slot lock. The backoff is 30 min, doubling with each count, at most 12 h: 30 min, 1 h, 2 h, 4 h, 8 h, 12 h. It logs `dispatch.blocked` at WARNING with `until`, `backoff`, `count`, the job, the video, and the reason.
 - A block while a pause holds, such as jobs refused together, only interrupts its job.
-- While `blocked_until` is in the future, the dispatcher queues nothing and the worker hands a job back with `job.returned` reason "blocked". `job.deferred_until` holds the later of `blocked_until` and the next window start.
+- While `blocked_until` is in the future, the dispatcher queues nothing and the worker hands a job back with `job.returned` reason "blocked". `job.deferred_until` holds the latest of `blocked_until`, the next window start, and the daily cap's reset.
 - After the pause and until a download succeeds, `block_count` is above 0 and the effective `max_concurrent` is 1. One job tests whether YouTube still blocks.
 - A succeeded archive job after the pause resets `block_count` to 0 and `blocked_until` to null, and logs `dispatch.unblocked` at INFO with the previous count. A success while a pause holds resets nothing, because that download started before the block.
 - A live recording ignores blocks. A blocked recording fails like any other failure.
@@ -108,8 +113,8 @@
 
 | Method and path | Body | Returns |
 | --- | --- | --- |
-| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile, timezone, blocked_until, block_count, paused}`. The last three are read-only here |
-| `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end, cookie_profile}`. A `cookie_profile` the scheduler has not recorded as present is a 422 | the settings |
+| `GET /api/download-settings` | | `{max_concurrent, rate_limit_bytes, window_start, window_end, window_enabled, daily_limit, cookie_profile, timezone, blocked_until, block_count, paused, downloaded_today}`. The last four are read-only here. `downloaded_today` is the daily count |
+| `PUT /api/download-settings` | `{max_concurrent, rate_limit_bytes, window_start, window_end, window_enabled, daily_limit, cookie_profile}`. A `daily_limit` below 1, or `window_enabled` true with a missing time, is a 422. A `cookie_profile` the scheduler has not recorded as present is a 422 | the settings |
 | `PUT /api/download-settings/paused` | `{paused}` | the settings |
 | `GET /api/cookie-profiles` | | `[{name}]`, the profiles the scheduler last recorded, by name. Never their content |
 | `GET /api/jobs` | | each job also carries `deferred_until` |

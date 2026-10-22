@@ -28,7 +28,7 @@
 - A download logs `download.progress` at most once a minute, with percent, bytes, speed and ETA of the current stream. A time interval bounds both the delay and the volume of progress lines for any file size or rate limit.
 - The progress hook fires only when bytes arrive. A download with no progress line for several minutes, and no `download.merge`, is stalled.
 - A live recording has no total, so its progress line shows bytes, fragments and elapsed time.
-- The scheduler logs `dispatch.waiting` when the reason work waits changes: no free slot, a YouTube block pause, or the window opens at a later time. It logs `queue.summary` every 10 minutes while a job waits or runs, with `blocked=` the pause end or `none`.
+- The scheduler logs `dispatch.waiting` when the reason work waits changes: no free slot, a YouTube block pause, the daily cap, with `today=` the count and the cap, or the window opens at a later time. It logs `queue.summary` every 10 minutes while a job waits or runs, with `blocked=` the pause end or `none`.
 - A YouTube block logs `dispatch.blocked` at WARNING when it starts a pause. The first archive success after the pause logs `dispatch.unblocked` at INFO.
 - The user's pause switch logs `dispatch.paused` or `dispatch.resumed` at INFO with `running`, the running archive downloads, only when the value changes. A running download whose pause check fails logs `job.pause_check_failed` at WARNING and goes on.
 - A run whose job row a reclaim took logs `job.disowned` at WARNING with `job`, `video` and `reason`, and writes nothing more (archive.md, Download limits).

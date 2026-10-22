@@ -1039,6 +1039,10 @@ class DownloadSettingsIn(BaseModel):
     rate_limit_bytes: Annotated[int | None, Field(gt=0)] = None
     window_start: _HHMM | None = None
     window_end: _HHMM | None = None
+    # Off keeps the times and ignores them.
+    window_enabled: bool = False
+    # Archive downloads per Asia/Seoul day. Null for no cap.
+    daily_limit: Annotated[int | None, Field(ge=1)] = None
     # A present cookie profile's name. Null runs polls, live probes and
     # non-members downloads cookie-free.
     cookie_profile: str | None = None
@@ -1049,6 +1053,8 @@ class DownloadSettingsIn(BaseModel):
             raise ValueError("set both window_start and window_end, or neither")
         if self.window_start is not None and self.window_start == self.window_end:
             raise ValueError("window_start and window_end must differ")
+        if self.window_enabled and self.window_start is None:
+            raise ValueError("set window_start and window_end to enable the window")
         return self
 
 
@@ -1059,6 +1065,8 @@ class DownloadSettingsOut(DownloadSettingsIn):
     block_count: int = 0
     # Set through PUT /api/download-settings/paused only.
     paused: bool = False
+    # Archive downloads succeeded today in Asia/Seoul, plus running ones.
+    downloaded_today: int = 0
 
 
 class PausedIn(BaseModel):
@@ -1069,23 +1077,26 @@ def _hhmm(t: time | None) -> str | None:
     return t.strftime("%H:%M") if t is not None else None
 
 
-def _settings_out(row: DownloadSettings) -> DownloadSettingsOut:
+async def _settings_out(session: AsyncSession, row: DownloadSettings) -> DownloadSettingsOut:
     return DownloadSettingsOut(
         max_concurrent=row.max_concurrent,
         rate_limit_bytes=row.rate_limit_bytes,
         window_start=_hhmm(row.window_start),
         window_end=_hhmm(row.window_end),
+        window_enabled=row.window_enabled,
+        daily_limit=row.daily_limit,
         cookie_profile=row.cookie_profile,
         timezone=TIMEZONE.key,
         blocked_until=row.blocked_until,
         block_count=row.block_count,
         paused=row.paused,
+        downloaded_today=await limits.downloaded_today(session, datetime.now(UTC)),
     )
 
 
 @router.get("/download-settings")
 async def download_settings(session: Session) -> DownloadSettingsOut:
-    return _settings_out(await limits.load(session))
+    return await _settings_out(session, await limits.load(session))
 
 
 @router.put("/download-settings")
@@ -1106,6 +1117,8 @@ async def replace_download_settings(
     row.rate_limit_bytes = body.rate_limit_bytes
     row.window_start = time.fromisoformat(body.window_start) if body.window_start else None
     row.window_end = time.fromisoformat(body.window_end) if body.window_end else None
+    row.window_enabled = body.window_enabled
+    row.daily_limit = body.daily_limit
     row.cookie_profile = body.cookie_profile
     await session.commit()
     emit(
@@ -1116,10 +1129,11 @@ async def replace_download_settings(
         rate_limit=f"{logs.human_bytes(body.rate_limit_bytes)}/s"
         if body.rate_limit_bytes
         else "none",
-        window=f"{body.window_start}-{body.window_end}" if body.window_start else "none",
+        window=limits.window_label(row) or "none",
+        daily_limit=body.daily_limit or "none",
         cookie_profile=body.cookie_profile or "none",
     )
-    return _settings_out(row)
+    return await _settings_out(session, row)
 
 
 @router.put("/download-settings/paused")
@@ -1141,7 +1155,7 @@ async def pause_downloads(session: Session, body: PausedIn) -> DownloadSettingsO
             "dispatch.paused" if body.paused else "dispatch.resumed",
             running=running,
         )
-    return _settings_out(row)
+    return await _settings_out(session, row)
 
 
 class CookieProfileOut(_Out):

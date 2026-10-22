@@ -1,7 +1,15 @@
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from savetube.limits import backoff, next_window_start
+from savetube.db.models import DownloadSettings
+from savetube.limits import (
+    backoff,
+    day_start,
+    next_day_start,
+    next_window_start,
+    window_label,
+    window_opens,
+)
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -44,3 +52,22 @@ def test_the_window_is_read_in_seoul_time_whatever_the_clock_zone():
 def test_the_block_backoff_doubles_from_30_minutes_up_to_12_hours():
     hours = [backoff(n) / timedelta(hours=1) for n in range(1, 8)]
     assert hours == [0.5, 1, 2, 4, 8, 12, 12]
+
+
+def test_the_day_resets_at_midnight_in_seoul():
+    assert day_start(kst(21, 0, 0)) == kst(21, 0)
+    assert day_start(kst(21, 23, 59)) == kst(21, 0)
+    assert next_day_start(kst(21, 0, 0)) == kst(22, 0)
+    assert next_day_start(kst(21, 23, 59)) == kst(22, 0)
+    # 15:30 UTC on the 21st is 00:30 on the 22nd in Seoul.
+    assert day_start(datetime(2026, 10, 21, 15, 30, tzinfo=UTC)) == kst(22, 0)
+
+
+def test_a_disabled_window_is_ignored_and_keeps_its_times():
+    limits = DownloadSettings(window_start=time(23, 0), window_end=time(5, 0), window_enabled=False)
+    assert window_opens(limits, kst(21, 12)) is None
+    limits.window_enabled = True
+    assert window_opens(limits, kst(21, 12)) == kst(21, 23)
+    assert window_label(limits) == "23:00-05:00"
+    limits.window_enabled = False
+    assert window_label(limits) is None
