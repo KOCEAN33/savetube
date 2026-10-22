@@ -398,6 +398,52 @@ async def test_members_all_records_a_members_only_live_whatever_its_title(settin
 
 
 @pytest.mark.anyio
+async def test_keep_all_records_a_live_whatever_its_title(settings):
+    from savetube.live import check_channel
+
+    _sql(
+        settings,
+        "UPDATE global_words SET include_words = '{歌枠}', exclude_words = '{告知}'",
+        "INSERT INTO channel (id, name, dir_name, watch_lives, keep_all) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', true, true)",
+        "INSERT INTO source (url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" ('https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360)",
+    )
+
+    def stream(video_id):
+        # No include word, and an exclude word.
+        return {
+            "id": video_id,
+            "title": "【雑談】 告知",
+            "channel_id": VESP,
+            "channel": "VESPERBELL",
+            "live_status": "is_upcoming",
+            "release_timestamp": 1792778400,
+        }
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def detect(video_id):
+        await check_channel(
+            sessionmaker,
+            VESP,
+            fetch_feed=lambda c: _feed(video_id),
+            probe=stream,
+            probe_live=lambda c: stream(video_id),
+            list_streams=_no_streams,
+            seen={},
+        )
+
+    await detect("kept")
+    assert [j.video_id for j in await _record_jobs(sessionmaker)] == ["kept"]
+    _sql(settings, "UPDATE channel SET keep_all = false")
+    await detect("dropped")
+    assert [j.video_id for j in await _record_jobs(sessionmaker)] == ["kept"]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
 async def test_playlists_pass_keeps_every_playlist_entry_the_exclude_words_allow(settings):
     from savetube.poll import sync
 
