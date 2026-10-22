@@ -1,13 +1,13 @@
 import { useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
 
 import { ChannelLink, RunningJob } from "@/components/channel-jobs"
-import { QueryState } from "@/components/query-state"
+import { ErrorBox, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { api, type Job } from "@/lib/api"
+import { api, mutations, type Job } from "@/lib/api"
 import {
   IDLE_REFETCH_MS,
   JOB_PAGE,
@@ -50,6 +50,40 @@ function ProblemJob({ job }: { job: Job }) {
   )
 }
 
+// Finished videos waiting on staging, and Move now, which the scheduler takes
+// on its next check (docs/plan/storage.md, Staging).
+function StagingLine() {
+  const queryClient = useQueryClient()
+  const staged = useQuery({
+    queryKey: ["staging"],
+    queryFn: api.staging,
+    refetchInterval: IDLE_REFETCH_MS,
+  })
+  const move = useMutation({
+    mutationFn: mutations.moveStaged,
+    onSuccess: (updated) => queryClient.setQueryData(["staging"], updated),
+  })
+  if (!staged.data || staged.data.count === 0) return null
+  const { count, bytes, move_requested } = staged.data
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+      <span>
+        {`${count} finished, waiting to move into the archive (${formatBytes(bytes)}).`}
+        {move_requested && " Move requested, it starts within a minute."}
+      </span>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={move_requested || move.isPending}
+        onClick={() => move.mutate()}
+      >
+        Move now
+      </Button>
+      {move.error && <ErrorBox error={move.error} />}
+    </div>
+  )
+}
+
 // Archive downloads across every channel: what runs now, how many wait, and
 // the latest failed and interrupted runs with their reason.
 export function DownloadsCard() {
@@ -64,11 +98,6 @@ export function DownloadsCard() {
     queryKey: ["jobs", "archive", "all", "counts"],
     queryFn: () => api.jobCounts({ kind: "archive" }),
     refetchInterval: busy ? RUNNING_REFETCH_MS : IDLE_REFETCH_MS,
-  })
-  const staged = useQuery({
-    queryKey: ["staging"],
-    queryFn: api.staging,
-    refetchInterval: IDLE_REFETCH_MS,
   })
   const problems = useQuery({
     queryKey: ["jobs", "archive", "all", "problems", problemLimit],
@@ -88,13 +117,8 @@ export function DownloadsCard() {
           {counts.data
             ? `${counts.data.running} running, ${counts.data.queued} queued`
             : "Loading"}
-          {staged.data && staged.data.count > 0 && (
-            <>
-              <br />
-              {`${staged.data.count} finished, waiting to move into the archive (${formatBytes(staged.data.bytes)})`}
-            </>
-          )}
         </CardDescription>
+        <StagingLine />
       </CardHeader>
       <CardContent className="px-0">
         <QueryState query={active}>

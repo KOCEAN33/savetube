@@ -989,6 +989,8 @@ async def job_counts(
 class StagedOut(BaseModel):
     count: int
     bytes: int
+    # A Move now the scheduler has not taken yet.
+    move_requested: bool
 
 
 @router.get("/staging")
@@ -1001,13 +1003,31 @@ async def staging(session: Session) -> StagedOut:
             )
         )
     ).one()
-    return StagedOut(count=count, bytes=size)
+    requested = (await limits.load(session)).move_requested_at is not None
+    return StagedOut(count=count, bytes=size, move_requested=requested)
+
+
+@router.post("/staging/move")
+async def move_staging(session: Session) -> StagedOut:
+    """Move every staged video now. The scheduler does it on its next check,
+    within a minute (savetube.staging)."""
+    row = await session.get(DownloadSettings, 1)
+    if row is None:
+        row = DownloadSettings(id=1)
+        session.add(row)
+    row.move_requested_at = datetime.now(UTC)
+    await session.commit()
+    emit(log, logging.INFO, "staging.move_requested")
+    return await staging(session)
 
 
 @router.get("/videos")
 async def videos(
     session: Session,
     channel_id: str | None = None,
+    # Uploaders by name. A group's member channels each have their own id
+    # under the group's name, so the Videos page filters them as one.
+    channel_name: str | None = None,
     # The channel page's view: also the videos the channel's sources list.
     listed_by: str | None = None,
     # Videos the source lists. A `playlists` parent lists through its children.
@@ -1023,6 +1043,8 @@ async def videos(
     where = []
     if channel_id:
         where.append(Video.channel_id == channel_id)
+    if channel_name:
+        where.append(Video.channel_id.in_(select(Channel.id).where(Channel.name == channel_name)))
     if listed_by:
         where.append(_of_channel(listed_by))
     if source_id is not None:

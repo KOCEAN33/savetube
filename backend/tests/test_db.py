@@ -5530,4 +5530,48 @@ def test_api_counts_the_videos_waiting_on_staging(settings):
         " ('c1', 'UC1', 'videos', 't', 'complete', 100)",
     )
     with _api(settings) as client:
-        assert client.get("/api/staging").json() == {"count": 2, "bytes": 15}
+        assert client.get("/api/staging").json() == {
+            "count": 2,
+            "bytes": 15,
+            "move_requested": False,
+        }
+        assert client.post("/api/staging/move").json()["move_requested"] is True
+        assert client.get("/api/staging").json()["move_requested"] is True
+
+
+@pytest.mark.anyio
+async def test_a_move_request_moves_a_small_batch_during_a_download(settings, caplog):
+    import logging
+
+    staged = _staged_rows(
+        settings,
+        waited="5 minutes",
+        extra=(
+            "INSERT INTO job (kind, state, video_id, attempts)"
+            " VALUES ('archive', 'running', 's1', 1)",
+            "UPDATE download_settings SET move_requested_at = now()",
+        ),
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        video = await _move(staged)
+
+    assert video.state is VideoState.COMPLETE
+    [start] = _events(caplog, "staging.move")
+    assert _fields(start)["reason"] == "manual"
+    assert _sql_rows(settings, "SELECT move_requested_at FROM download_settings") == [(None,)]
+
+
+def test_api_filters_videos_by_the_uploader_name_across_channels(settings):
+    # Member channels of one group share its name under their own ids.
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UCa', 'KMNZ', 'KMNZ [UCa]'),"
+        " ('UCb', 'KMNZ', 'KMNZ [UCb]'), ('UCc', 'Other', 'Other [UCc]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('a1', 'UCa', 'videos', 't', 'complete'), ('b1', 'UCb', 'lives', 't', 'complete'),"
+        " ('c1', 'UCc', 'videos', 't', 'complete')",
+    )
+    with _api(settings) as client:
+        page = client.get("/api/videos", params={"channel_name": "KMNZ"}).json()
+    assert sorted(v["id"] for v in page["items"]) == ["a1", "b1"]
+    assert page["total"] == 2

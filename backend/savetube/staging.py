@@ -12,12 +12,12 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from savetube.config import Settings
-from savetube.db.models import Video, VideoState
-from savetube.limits import running
+from savetube.db.models import DownloadSettings, Video, VideoState
+from savetube.limits import load, running
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.storage import disk_usage
 
@@ -34,12 +34,21 @@ MOVE_IDLE = timedelta(hours=1)
 
 
 def move_reason(
-    staged_bytes: int, free_bytes: int, running: int, newest: datetime | None, now: datetime
+    staged_bytes: int,
+    free_bytes: int,
+    running: int,
+    newest: datetime | None,
+    now: datetime,
+    *,
+    requested: bool = False,
 ) -> str | None:
     """Why the staged videos move now, or None while they wait. `newest` is
-    when the latest one was staged, None when none waits."""
+    when the latest one was staged, None when none waits. `requested` is the
+    user's Move now."""
     if newest is None:
         return None
+    if requested:
+        return "manual"
     if staged_bytes >= MOVE_BATCH_BYTES:
         return "batch"
     if free_bytes < MIN_FREE_BYTES:
@@ -59,6 +68,20 @@ def _copy_in(ready: Path, final: Path, incoming_root: Path) -> None:
     final.parent.mkdir(parents=True, exist_ok=True)
     os.rename(tmp, final)
     shutil.rmtree(ready)
+
+
+async def _clear_request(sessionmaker: async_sessionmaker, requested: datetime | None) -> None:
+    """Clear the Move now read at `requested`. A newer one stays for the next
+    check, because it may name a video staged during this move."""
+    if requested is None:
+        return
+    async with sessionmaker() as session:
+        await session.execute(
+            update(DownloadSettings)
+            .where(DownloadSettings.move_requested_at <= requested)
+            .values(move_requested_at=None)
+        )
+        await session.commit()
 
 
 async def move_staged(sessionmaker: async_sessionmaker, settings: Settings) -> None:
@@ -83,9 +106,14 @@ async def move_staged(sessionmaker: async_sessionmaker, settings: Settings) -> N
             )
         ).one()
         busy = await running(session)
+        requested = (await load(session)).move_requested_at
     free = disk_usage(ready_root.parent)[1]
-    reason = move_reason(size, free, busy, newest, datetime.now(UTC))
+    reason = move_reason(
+        size, free, busy, newest, datetime.now(UTC), requested=requested is not None
+    )
     if reason is None:
+        # A request with nothing staged is done.
+        await _clear_request(sessionmaker, requested)
         return
 
     async with sessionmaker() as session:
@@ -124,6 +152,7 @@ async def move_staged(sessionmaker: async_sessionmaker, settings: Settings) -> N
             )
             continue
         moved += 1
+    await _clear_request(sessionmaker, requested)
     emit(
         log,
         logging.INFO,

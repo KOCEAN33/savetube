@@ -17,6 +17,7 @@
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- Migration `0015` adds `download_settings.move_requested_at`, null. Its downgrade drops it.
 - Migration `0014` adds the video state `staged` (Staging). Its downgrade turns every `staged` video into `pending`, so the old code downloads it again.
 - Migration `0013` adds `download_settings.window_enabled`, true where both window times are set, and `download_settings.daily_limit`, null. Its downgrade drops both.
 - Migration `0012` sets every `failed` video with a queued archive job back to `pending`. The poll used to queue a retry without resetting the video. Its downgrade changes nothing.
@@ -68,6 +69,7 @@ The archive's disks are loud while a download writes to them for hours. With `SA
   - The staged videos hold 20 GiB or more (`MOVE_BATCH_BYTES`), even while a download runs.
   - Staging has less than 15 GiB free (`MIN_FREE_BYTES`). The largest stored video is 7 GB, and yt-dlp holds about twice that while it merges.
   - No archive download runs, and the newest staged video has waited 1 hour (`MOVE_IDLE`).
+  - The user pressed Move now on the Downloads card. `POST /api/staging/move` sets `download_settings.move_requested_at`, because the web pod mounts neither staging nor a writable archive. The scheduler clears it after the move, and clears it at once when nothing is staged. A request made during a move stays for the next check.
 - A move copies every staged video, oldest first. Each copy goes to `.incoming/<video id>.moving/` on the archive, is renamed to its place in the tree, and its `ready/` directory is deleted. Then the video becomes `complete`.
 - A staged video whose place in the tree exists was renamed there by a move cut off before its row changed. It becomes `complete`. To keep that rule true, a download is not staged when its place in the tree already exists.
 - A staged video whose files are in neither place goes back to `pending`, and the next poll downloads it. It logs `staging.missing` at WARNING.
