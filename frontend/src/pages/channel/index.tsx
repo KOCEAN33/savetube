@@ -77,11 +77,13 @@ function ChannelView({ channel, sources }: { channel: Channel; sources: Source[]
   return (
     <div className="flex flex-col gap-5 px-4 py-4 md:py-6 lg:px-6">
       <ChannelHeader channel={channel} sources={sources} />
-      <div className="flex flex-wrap items-center gap-3">
+      {/* Underlined tabs on a full-width rule, like YouTube's channel tabs. The
+          ToggleGroup keeps its radiogroup role, which the smoke test targets. */}
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-2 border-b">
         <ToggleGroup
           type="single"
-          variant="outline"
-          spacing={0}
+          size="lg"
+          spacing={1}
           aria-label="Channel section"
           value={tab}
           onValueChange={(v) => isTab(v) && selectTab(v)}
@@ -91,17 +93,17 @@ function ChannelView({ channel, sources }: { channel: Channel; sources: Source[]
             <ToggleGroupItem
               key={t}
               value={t}
-              className="px-3 data-[state=on]:bg-foreground data-[state=on]:text-background"
+              className="-mb-px h-11 gap-1.5 rounded-none border-b-2 border-transparent px-4 text-base text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:border-foreground data-[state=on]:bg-transparent data-[state=on]:text-foreground"
             >
               {TAB_LABEL[t]}
               {count(t) !== undefined && (
-                <span className="text-xs tabular-nums opacity-60">{formatCount(count(t) ?? 0)}</span>
+                <span className="text-sm tabular-nums opacity-60">{formatCount(count(t) ?? 0)}</span>
               )}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
         {tab !== "downloads" && (
-          <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-2 pb-2">
             <div className="relative">
               <SearchIcon className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
               <Input
