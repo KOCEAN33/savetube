@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router"
 import { Page, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { VideoPlayer } from "@/components/video-player"
 import { api, type VideoDetail } from "@/lib/api"
 import {
   formatBytes,
@@ -48,6 +49,7 @@ export function VideoDetailPage() {
                 <CardTitle className="text-xl">{v.title}</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-6">
+                {v.state === "complete" && <VideoPlayer video={v} />}
                 <dl className="grid grid-cols-2 gap-4 md:grid-cols-4">
                   <Field label="ID">
                     <span className="font-mono">{v.id}</span>

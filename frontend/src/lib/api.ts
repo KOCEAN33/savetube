@@ -396,4 +396,7 @@ export const api = {
     offset?: number
   }) => get<VideoPage>("/api/videos", query),
   video: (id: string) => get<VideoDetail>(`/api/videos/${encodeURIComponent(id)}`),
+  // A complete video's stored mkv and its Opus audio copy, served with Range.
+  mediaUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/media`,
+  audioUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/audio`,
 }

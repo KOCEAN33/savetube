@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { api, type Source, type Video, type VideoOrder, type VideoType } from "@/lib/api"
-import { sourceLabel } from "@/lib/channel"
+import { sourceLabel, thumbUrl } from "@/lib/channel"
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatUploadDate } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -18,10 +18,6 @@ const PAGE = 30
 export type VideoScope = { listedBy: string; type: VideoType } | { sourceId: number }
 
 const videoHref = (id: string) => `/videos/${encodeURIComponent(id)}`
-
-// YouTube's image host. The stored thumbnail sits on the archive volume, which web does not mount.
-const thumbUrl = (id: string, size: "mq" | "hq" | "oar") =>
-  `https://i.ytimg.com/vi/${encodeURIComponent(id)}/${size}default.jpg`
 
 function useStoredVideos(scope: VideoScope, q: string, order: VideoOrder) {
   const filter =
