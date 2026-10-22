@@ -2,14 +2,14 @@
 
 ## Goal
 
-Ship what develop holds since `v0.7.0` when the user approves, then in-browser playback.
+Confirm `v0.8.0` in production, then in-browser playback.
 
 ## Current progress
 
-- Running in `savetube-prod`: `v0.7.0`, chart `v0.7.0`, migrations `0001`-`0011`. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning).
+- Running in `savetube-prod`: `v0.8.0`, chart `v0.8.0`, migrations `0001`-`0012`, deployed 23:08 KST on 2026-10-21 through PR #33. A merge to develop deploys nothing. A merge of develop into main releases and deploys (`docs/plan/operations.md` Versioning).
 - The general cookie profile is `burner`, `max_concurrent` is 1. No bot check has returned since 18:39 KST on 2026-10-21.
-- Production still fails a download on every dropped googlevideo connection, because `v0.7.0` passes no `retries` to yt-dlp. As a library, yt-dlp then retries 0 times. Develop fixes it (PR #18). The follow-ups the user wanted cleared before the deploy are merged.
-- Develop holds, not deployed (PRs #17-#31):
+- Checked after the deploy: no `failed` video has a queued archive job, and the first job resumed from its `.part` file. No dropped connection had happened yet, so yt-dlp "Retrying" lines are not seen.
+- `v0.8.0` added (PRs #17-#32):
   - yt-dlp retries: `retries` 10, `fragment_retries` 10, `extractor_retries` 3, `file_access_retries` 3. A local test server that stops halfway reproduces the production error without them.
   - Network interrupts count toward the cap of 5 only when a run added no bytes, so a download that moves on is retried until it ends.
   - Migration `0012` sets `failed` videos with a queued archive job back to `pending`, and the poll now does that when it queues.
@@ -21,16 +21,16 @@ Ship what develop holds since `v0.7.0` when the user approves, then in-browser p
   - The worker ends a queue job the reclaim already failed without a procrastinate error.
   - The channel page "Queued (N)" counts from `GET /api/jobs/counts`. The Home chart and recharts load lazily: dashboard chunk 382.75 kB to 57.30 kB.
   - Home shows a "Sources waiting" card while a source has no channel: before its first poll, after a failed first poll, or disabled.
-- Verified in production on `v0.7.0`: resume from `.part` files after a deploy, and `size`, `probe`, `packets` on the resumed file.
   - Channel library layout (PR #25), the variant the user picked from a three-variant prototype: sidebar channel list with filter, channel header row, tabs with counts, Playlists through the new `source_id` filter on `GET /api/videos`, no global search. `docs/plan/frontend.md` holds the rules.
+- Verified in production on `v0.7.0`: resume from `.part` files after a deploy, and `size`, `probe`, `packets` on the resumed file.
 - `savetube_proto` on pg-dev holds seeded demo data. `/tmp/savetube-library/serve.sh` serves a production build of a worktree against it, login skipped. Drop the database when no longer needed.
 - CULUA is the one production channel.
 
 ## What worked
 
 - DB tests: `bash /tmp/savetube-testdb/run-tests.sh <repo root> make check`. The script reads `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` and the password from `op read 'op://Homelab/savetube-dev-db/password'`, URL-quoted, with `sslrootcert` `~/.postgresql/postgres-dev-ca.crt`. It prints no secret. Parallel runs are safe.
-- Parallel agents: make the worktrees yourself with `git worktree add -b <branch> ../savetube-wt-<name> develop`, give each a file boundary, and merge one PR per worktree. `gh pr merge --delete-branch` also removes the local worktree and branch.
-- `.claude/settings.local.json` allows `gh pr merge`, which the auto mode classifier otherwise blocks as "Merge Without Review". The user approved merging PRs into develop.
+- Parallel agents: make the worktrees yourself with `git worktree add -b <branch> ../savetube-wt-<name> develop` and give each a file boundary. `CLAUDE.md` Merging says how a branch lands.
+- `.claude/settings.local.json` allows `gh pr merge`, `git rebase`, `git merge`, `git pull`, and `git push origin develop`. The auto mode classifier otherwise blocks them as "Merge Without Review", and it blocked `git pull --ff-only` and a read-only `gh pr view` loop right after a merge.
 - Production reads: `kubectl --context homelab-tailnet -n postgres exec postgres-2 -c postgres -- psql -d savetube -c "set default_transaction_read_only=on;" -c "<one query>"`. One query per call passes the permission classifier.
 - Local UI checks: Playwright through `uvx --with playwright python -I <script>` with `channel="chrome"`. Frontend uses pnpm.
 - yt-dlp with browser cookies on this Mac needs `--js-runtimes node`.
@@ -51,7 +51,7 @@ Ship what develop holds since `v0.7.0` when the user approves, then in-browser p
 
 ## Next steps
 
-1. Deploy develop when the user approves: merge develop into main, then check that 0012 ran, the 105 videos turned `pending`, and the worker logs yt-dlp "Retrying" lines instead of job errors.
+1. Check the worker logs for yt-dlp "Retrying" lines instead of job errors once a googlevideo connection drops.
 2. The user checks the dashboard Downloads card and the header pause switch in production.
 3. The user checks the channel library layout after the deploy.
 4. The user checks the "Sources waiting" card after the deploy. Its "Poll now" button is not clicked in any test.

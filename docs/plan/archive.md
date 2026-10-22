@@ -132,6 +132,12 @@
 - A retry with a pinned format and an existing directory passes the pinned format ids to yt-dlp instead of the channel's selector, with `continuedl` on, so yt-dlp continues each `.part` file. It logs `download.resume` with the bytes in the directory and in `.part` files.
 - A retry skips the chat replay when `<video id>.live_chat.json` is in the directory or its `.tmp/`, by adding `-live_chat` to `subtitleslangs`. yt-dlp rewrites every subtitle it finds, and a chat replay cannot resume. A finished chat has its final name, because yt-dlp renames it from its `.part` at the end.
 - When yt-dlp answers "Requested format is not available" to the pinned format, the run logs `download.restart` at WARNING, deletes the directory and the pin, and downloads again with the channel's selector in the same attempt.
+- googlevideo answers HTTP 500 to every request for some formats of some videos, from any network. yt-dlp then fails with "HTTP Error 500 ... Giving up after N retries" (`format_server_error` in `savetube.ytdl`).
+- The HLS copy of such a format, such as `312` for `299`, fails the same way on every fragment. yt-dlp skips each fragment and fails with "The downloaded file is empty", which counts as the same error.
+- When that error ends a run that added no bytes to any `.part` file or `.part-Frag<n>` fragment, the run downloads again in the same attempt with the failing format id excluded from the channel's selector. The failing format is the first id of the chosen format, such as `299` in `299+251`, that sent no finished-stream event, because yt-dlp downloads the streams in that order.
+- The exclusion wraps the selector in a group with one filter per refused id, such as `(bv*+ba/b)[format_id!='299']`. The filter drops the format before every alternative inside the group picks. The id is quoted, because yt-dlp reads an unquoted `format_id!=299` as a number comparison that keeps every format.
+- One attempt excludes at most 3 formats (`MAX_FORMAT_FALLBACKS`). The next refusal fails the job as before. A refusal is neither a network interruption nor a YouTube block.
+- Each exclusion logs `download.fallback` at WARNING with the excluded id and the format the next run picks. The next run pins its own format, and its `.part` files of other formats continue.
 - A pin without its directory is cleared, and the download starts with the channel's selector.
 - A succeeded download moves the directory into the tree and clears the pin. A failed one deletes the directory and clears the pin.
 - The scheduler deletes, every hour, a directory under `.incoming/` with no file written for 7 days whose name is neither the video of a queued or running archive job nor the id of a queued or running job. It clears the `resume_format` pin of the video a deleted directory belongs to, and logs `incoming.deleted`. Seven days is longer than any wait for a download window, and a waiting job's directory is never deleted. Cancelled jobs and a video whose source stops archiving leave such directories.
@@ -144,3 +150,18 @@
 - A failed check logs `download.integrity_failed` at WARNING with the check and its numbers. The run deletes the directory and the pin and downloads from zero once, in the same attempt. A second failure fails the job with `log_tail` "integrity check failed: <check> ...", which counts as an attempt.
 - A passed download logs `download.verified` with the checks that ran. `video.verified_at` and `video.verified_checks` hold the result, and `GET /api/videos` and `GET /api/videos/{id}` carry both.
 - The channel's Downloads list shows `interrupted` rows among the finished jobs.
+
+## Audio copy
+
+- Every archived video gets an audio-only file in its directory, named `<video id>.<ext>` like the video file. No extra YouTube request is made.
+- After a download passes its integrity check, `savetube.audio` copies the first audio stream of the merged file with `ffmpeg -map 0:a:0 -c copy`. Nothing is re-encoded.
+- The extension follows the audio codec that `ffprobe` reports: `opus` gives `.opus`, `aac` gives `.m4a`, and any other codec gives `.mka`.
+- ffmpeg writes to `<name>.tmp` and the file is renamed when ffmpeg succeeds, so a crash never leaves a half file under the final name.
+- The copy is written in `.incoming/<video id>/` before the move, so it moves into the tree with the video. `video.size_bytes` counts it (frontend.md).
+- A file with no video stream, such as a `ba/b` download, or with no audio stream gets no copy. The worker logs `audio.skipped` at DEBUG.
+- A failed copy logs `audio.failed` at WARNING with the reason. The job still succeeds and the video stays `complete`.
+- A live recording gets no copy.
+- `savetube extract-audio` writes the missing copy of every `complete` video, except a video with a succeeded `record` job. It finds the video file as `<dir_path>/<video id>.<info ext>` under the archive root.
+- A video that already has a `.opus`, `.m4a` or `.mka` file beside its video file is skipped, so a second run writes nothing.
+- The command prints one line per video and a summary line, and continues past a failed video. It updates `video.size_bytes` after each copy. It exits 1 when any video failed.
+- `--dry-run` probes each video and prints the file it would write, and writes no file and no row.
