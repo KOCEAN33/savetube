@@ -36,3 +36,4 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - `jobs/guards.py` and `jobs/job.py` import private names (`_interrupt`, `_owner_lost` and others) from sibling modules.
 - pyright flags `jobs/job.py` `failed + 1`, where `session.scalar` can return None. pyright is not in `make lint`.
 - `frontend/src/pages/channel/archive-section.tsx` is 450 lines.
+- The "Audio only" player is too narrow to seek comfortably. The `<audio>` in `frontend/src/components/video-player.tsx` sets no width, so Chrome draws its default width. Low priority, because the video player is the main view.
