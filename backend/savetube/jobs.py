@@ -32,6 +32,7 @@ from savetube.db.models import (
     Video,
     VideoState,
 )
+from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, NO_MEMBER, SHUTDOWN_LOG, STALLED_LOG
 from savetube.layout import VideoType
 from savetube.limits import (
     TIMEZONE,
@@ -86,16 +87,12 @@ Stalled = Callable[[], Awaitable[list[tuple[int, int]]]]
 # Ends a queue job as failed, so no worker takes it again.
 Finish = Callable[[int], Awaitable[None]]
 
-STALLED_LOG = "worker stopped during the download"
-SHUTDOWN_LOG = "worker shut down during the download"
 # yt-dlp's text when a pinned format is no longer offered.
 FORMAT_GONE = "Requested format is not available"
 # A partial directory no queued or running job wants is deleted after this.
 ORPHAN_DAYS = 7
-BLOCKED_LOG = "blocked by YouTube"
-# The `log_tail` prefix of a run a network error interrupted, and of one that
-# added no bytes before it.
-NETWORK_LOG = "network error"
+# The `log_tail` prefix of a run a network error interrupted that added no bytes
+# before it. NETWORK_LOG is the prefix of any network interruption.
 NETWORK_STALL_LOG = "network error, no progress"
 # Network interruptions in a row that added no bytes. A run that adds bytes
 # resets the count, so a download that moves on is retried until it ends.
@@ -107,7 +104,6 @@ PAUSED_LOG = "paused by user"
 MAX_FORMAT_FALLBACKS = 3
 # A running archive download reads the user's pause this often.
 PAUSE_POLL_SECONDS = 5
-NO_MEMBER = "no cookie profile is a confirmed member of the channel"
 
 
 class DownloadFailed(Exception):
