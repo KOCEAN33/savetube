@@ -405,6 +405,8 @@ export const api = {
   videos: (query: {
     // The uploader.
     channel_id?: string
+    // Uploaders by name: a group's member channels share it under their own ids.
+    channel_name?: string
     // The uploader, or a channel whose sources list the video.
     listed_by?: string
     // Videos the source lists. A `playlists` parent lists through its children.
