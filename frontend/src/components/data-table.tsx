@@ -22,6 +22,7 @@ import {
   ChevronsRightIcon,
   Columns3Icon,
 } from "lucide-react"
+import { Link, useNavigate } from "react-router"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -58,6 +59,8 @@ export interface BreakdownRow {
   bytes: number
   count: number
   share: number
+  // The channel page, or the videos page filtered to the type.
+  href: string
 }
 
 const features = tableFeatures({
@@ -73,7 +76,11 @@ const columnHelper = createColumnHelper<typeof features, BreakdownRow>()
 const columns = columnHelper.columns([
   columnHelper.accessor("name", {
     header: "Name",
-    cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+    cell: ({ row }) => (
+      <Link className="font-medium hover:underline" to={row.original.href}>
+        {row.original.name}
+      </Link>
+    ),
     enableHiding: false,
   }),
   columnHelper.accessor("bytes", {
@@ -95,6 +102,7 @@ const columns = columnHelper.columns([
 ])
 
 function BreakdownTable({ data }: { data: BreakdownRow[] }) {
+  const navigate = useNavigate()
   const [columnVisibility, setColumnVisibility] =
     React.useState<ColumnVisibilityState>({})
   const [sorting, setSorting] = React.useState<SortingState>([
@@ -175,7 +183,15 @@ function BreakdownTable({ data }: { data: BreakdownRow[] }) {
           <TableBody>
             {table.getRowModel().rows.length ? (
               table.getRowModel().rows.map((row) => (
-                <TableRow key={row.id}>
+                <TableRow
+                  key={row.id}
+                  className="cursor-pointer"
+                  onClick={(e) => {
+                    // The name link navigates on its own.
+                    if ((e.target as HTMLElement).closest("a")) return
+                    navigate(row.original.href)
+                  }}
+                >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>
                       <FlexRender cell={cell} />
@@ -283,6 +299,7 @@ export function DataTable({ summary }: { summary: StatsSummary }) {
     summary.by_channel.map((c) => ({
       key: c.channel_id,
       name: c.name,
+      href: `/channels/${encodeURIComponent(c.channel_id)}`,
       bytes: c.bytes,
       count: c.count,
     })),
@@ -292,6 +309,7 @@ export function DataTable({ summary }: { summary: StatsSummary }) {
     summary.by_type.map((t) => ({
       key: t.type,
       name: t.type,
+      href: `/videos?type=${encodeURIComponent(t.type)}`,
       bytes: t.bytes,
       count: t.count,
     })),

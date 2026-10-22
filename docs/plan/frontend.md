@@ -12,17 +12,19 @@
 - Settings holds the download limits, the general cookie profile, and the global title words. The window has an on/off checkbox beside its times, which stay editable while it is off. The daily limit field shows "n / limit today" from `downloaded_today`. The profile select offers "None (cookie-free)" and each present profile from `GET /api/cookie-profiles`.
 - Settings also holds the default subtitle language: Off, ja, en, ko, zh-Hans, zh-Hant, or another code typed in. It applies at once and lives in the browser's `localStorage` (`savetube.subtitle-lang`), not in the database, so each browser keeps its own.
 - The site header holds the pause switch for every archive download (archive.md, Pausing downloads), on every page. While paused it shows a "Downloads paused" badge and a Resume button. "Pause downloads" opens a confirmation modal first, because a pause stops the running downloads. Resume applies at once. The switch refetches the flag every 15 s, so a change from another tab shows. Settings shows the same switch above the download limits.
+- The sidebar user button opens a menu with only "Log out". The app has one account, so the menu repeats no name or email.
 - Every create and edit form opens in a large modal in the middle of the screen, never a side sheet.
 
 ## Home
 
-- A "Sources waiting" card sits above the Downloads card while at least one source has no channel. A source gets its channel on its first successful poll, so the card lists sources before that poll and sources whose first poll failed, with the shortened `last_error` and a "Poll now" button. A disabled source shows "Disabled, not polled" and no button, because the scheduler skips it. The card refetches every 15 s and refreshes the sidebar channel list when a source leaves it.
+- A "Sources waiting" card sits at the top while at least one source has no channel. A source gets its channel on its first successful poll, so the card lists sources before that poll and sources whose first poll failed, with the shortened `last_error` and a "Poll now" button. A disabled source shows "Disabled, not polled" and no button, because the scheduler skips it. The card refetches every 15 s and refreshes the sidebar channel list when a source leaves it.
 - A "Downloads" card shows archive downloads across every channel. Production holds many channels, so one channel's page cannot show them all.
 - The card's header counts the running and the queued jobs from `GET /api/jobs/counts`. While videos wait on staging, a second line gives their count and size from `GET /api/staging` (storage.md, Staging), with a Move now button. After a press the line says the move starts within a minute, and the button stays disabled until the scheduler takes the request. Each running job shows its uploader channel, the video title linked to the video page, and the progress the channel page shows.
 - "Recently failed and interrupted" lists the latest 10 `failed` and `interrupted` archive runs, and "Show more" adds 10. Each shows the channel, the title, the finish time and the job's `reason`. Opening the reason shows the full `log_tail`.
 - The card refetches every 3 s while a download runs, and every 15 s otherwise.
-- The statistics cards, the chart and the per-channel table follow the card.
+- The order is the statistics cards, the chart, the Downloads card, then the per-channel table. Downloads still shows while the statistics load or fail.
 - The per-channel table lists tracked channels only and counts a channel's videos by the channel page's rule (Channel page). A video two tracked channels claim counts under both, so the shares can sum past 100%.
+- A row of the per-channel table opens the channel page. A row of the per-type table opens the Videos page filtered to that type.
 
 ## Adding a channel
 
