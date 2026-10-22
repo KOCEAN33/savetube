@@ -23,6 +23,11 @@ export const MEMBERS_ALL_LABEL = "Download every members-only video"
 export const MEMBERS_ALL_HINT =
   "Title words do not apply to members-only videos. They download only while a cookie profile is a confirmed member of this channel."
 
+export const KEEP_ALL_LABEL = "Download every video, ignoring title words"
+
+export const KEEP_ALL_HINT =
+  "No title words apply to this channel's tabs and playlists, global words included. The date cutoff and the members-only check still apply."
+
 export const PLAYLISTS_PASS_HINT =
   "Title words then only exclude in playlists. A video passes when its title passes the words or a chosen playlist lists it."
 

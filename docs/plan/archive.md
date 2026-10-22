@@ -37,10 +37,11 @@
 - Example: global include `歌枠` keeps `歌枠` titles on every channel. A channel that also wants covers adds `Cover` to its own include list. A source with no words at any level keeps every title.
 - A members-only entry of a channel with `members_all` on passes the words whatever its title.
 - `channel.playlists_pass`, default off, drops the include list for the channel's `playlist` sources, children of a `playlists` source included. A title then passes unless an effective exclude word is in it. The source's channel decides, not the uploader, because the playlist belongs to the source's channel. Tab sources still apply the include list.
+- `channel.keep_all`, default off, drops every title word for every source of the channel: tab sources, `playlist` sources, and children of a `playlists` source. Global, channel, parent, and source lists, include and exclude, all drop. The source's channel decides, as for `playlists_pass`. The unfinished live skip, the member profile check, `other_channels`, and `date_after` still apply. A global include word then cannot shrink a channel the user backs up whole.
 - The archive poll and live detection both apply the effective lists. A detected live queues a `record` job only when its title passes the effective lists of at least one watching source: an enabled tab source of a channel with watch lives on. When such a source exists on the `streams` tab, only `streams` sources count.
 - Live detection caches each probe's result per process and applies the words on every tick, so a word change takes effect without a restart.
 - A poll cancels a queued archive job, and its procrastinate job, for a listed video that no longer passes. A running job continues.
-- The job stays when another source that lists the video still passes it: an enabled source, with its parent enabled, with `archiving` on, judged by its own filters on this listing's entry. `members_all` and `playlists_pass` count in that judgement, so a members-only video or a playlist entry it keeps is not cancelled for words. A lost membership still cancels it.
+- The job stays when another source that lists the video still passes it: an enabled source, with its parent enabled, with `archiving` on, judged by its own filters on this listing's entry. `members_all`, `playlists_pass`, and `keep_all` count in that judgement, so a members-only video or a playlist entry it keeps is not cancelled for words. A lost membership still cancels it.
 - A list holds at most 200 words of up to 100 characters each.
 - The global lists live in the single-row table `global_words`. The channel lists are columns on `channel`.
 - The poll replaces the source's `listing_entry` rows with the full listing before any filtering, so suggestions and the preview see titles the words skip.
@@ -56,11 +57,11 @@
 | `GET /api/sources` | | each source also carries `include_words`, `exclude_words`, `other_channels`, `parent_id`, `title` |
 | `POST /api/channel-playlists` | `{url}`, a channel URL | `[{id, title, url, source_id}]`, `source_id` null for a playlist that is not a source yet. Lists live through yt-dlp, at most two at a time, 502 on a yt-dlp error, 504 after 120 s |
 | `GET /api/channels/{id}/words` | | `[{word, count}]`, best first |
-| `POST /api/sources/{id}/title-preview` | `{include_words, exclude_words}`, the source's own lists being edited | `{total, kept, titles: [{video_id, title, kept}]}` from the source's `listing_entry` rows, matched with the stored global and channel lists merged in. A `playlist` source of a channel with `playlists_pass` on matches with the exclude list only |
+| `POST /api/sources/{id}/title-preview` | `{include_words, exclude_words}`, the source's own lists being edited | `{total, kept, titles: [{video_id, title, kept}]}` from the source's `listing_entry` rows, matched with the stored global and channel lists merged in. A `playlist` source of a channel with `playlists_pass` on matches with the exclude list only. Every title is kept for a source of a channel with `keep_all` on |
 | `GET /api/words` | | the global `{include_words, exclude_words}` |
 | `PUT /api/words` | `{include_words, exclude_words}` | the global lists |
-| `GET /api/channels` | | every stored channel, uploader-only ones included. Each also carries `include_words`, `exclude_words`, `date_after`, `format`, `watch_lives`, `members_all`, `playlists_pass`, `tracked`, true when at least one source names the channel, and `memberships: [{profile, is_member, checked_at}]`, by profile name |
-| `PATCH /api/channels/{id}` | `{include_words?, exclude_words?, date_after?, format?, watch_lives?, members_all?, playlists_pass?}` | the channel |
+| `GET /api/channels` | | every stored channel, uploader-only ones included. Each also carries `include_words`, `exclude_words`, `date_after`, `format`, `watch_lives`, `members_all`, `playlists_pass`, `keep_all`, `tracked`, true when at least one source names the channel, and `memberships: [{profile, is_member, checked_at}]`, by profile name |
+| `PATCH /api/channels/{id}` | `{include_words?, exclude_words?, date_after?, format?, watch_lives?, members_all?, playlists_pass?, keep_all?}` | the channel |
 
 - Word lists are trimmed, empty strings dropped, and duplicates removed after casefolding, keeping the first form.
 

@@ -2,7 +2,13 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { type ChannelScan, type VideoTab } from "@/lib/api"
-import { OTHER_CHANNELS_HINT, OTHER_CHANNELS_LABEL, VIDEO_TABS } from "@/lib/channel"
+import {
+  KEEP_ALL_HINT,
+  KEEP_ALL_LABEL,
+  OTHER_CHANNELS_HINT,
+  OTHER_CHANNELS_LABEL,
+  VIDEO_TABS,
+} from "@/lib/channel"
 
 type PlaylistMode = "none" | "all" | "some"
 
@@ -12,6 +18,8 @@ export interface Choice {
   picked: string[]
   otherChannels: boolean
   watchLives: boolean
+  // The channel's `keep_all`. When on, the dialog skips the title words step.
+  keepAll: boolean
 }
 
 export function ChooseStep({
@@ -53,6 +61,19 @@ export function ChooseStep({
           })}
           <p className="text-xs text-muted-foreground">
             A chosen tab archives everything on it, back to the date cutoff.
+          </p>
+        </fieldset>
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-2 text-sm font-medium">Title words</legend>
+          <Label className="font-normal">
+            <Checkbox
+              checked={choice.keepAll}
+              onCheckedChange={(on) => onChange({ ...choice, keepAll: on === true })}
+            />
+            {KEEP_ALL_LABEL}
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            {KEEP_ALL_HINT} When checked, the next step skips title words.
           </p>
         </fieldset>
         <fieldset className="flex flex-col gap-2">

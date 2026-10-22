@@ -48,6 +48,7 @@ class ChannelOut(_Out):
     watch_lives: bool
     members_all: bool
     playlists_pass: bool
+    keep_all: bool
     avatar_url: str | None
     video_count: int
     bytes: int
@@ -66,6 +67,7 @@ class ChannelPatch(BaseModel):
     watch_lives: bool | None = None
     members_all: bool | None = None
     playlists_pass: bool | None = None
+    keep_all: bool | None = None
 
 
 def _channels_query():
@@ -82,6 +84,7 @@ def _channels_query():
             Channel.watch_lives,
             Channel.members_all,
             Channel.playlists_pass,
+            Channel.keep_all,
             Channel.avatar_url,
             func.count(Video.id).label("video_count"),
             _size.label("bytes"),
@@ -161,6 +164,7 @@ class ChannelIn(WordsIn):
     watch_lives: bool = False
     members_all: bool = False
     playlists_pass: bool = False
+    keep_all: bool = False
     date_after: date | None = None
     format: Annotated[str, Field(min_length=1)] = DEFAULT_FORMAT
     poll_interval_minutes: Annotated[int, Field(ge=10, le=7 * 24 * 60)] = 360
@@ -207,6 +211,7 @@ async def create_channel(session: Session, body: ChannelIn) -> ChannelWithSource
     channel.watch_lives = body.watch_lives
     channel.members_all = body.members_all
     channel.playlists_pass = body.playlists_pass
+    channel.keep_all = body.keep_all
     channel.avatar_url = body.avatar_url or channel.avatar_url
     # No relationship() orders inserts, so the FK target is flushed first.
     await session.flush()
