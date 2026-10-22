@@ -260,6 +260,7 @@ export interface ChannelIn extends TitleWords, ChannelSettings {
   playlists_pass: boolean
 }
 
+  members_all: boolean
 export type ChannelPatch = Partial<
   TitleWords & ChannelSettings & Pick<Channel, "members_all" | "playlists_pass">
 >

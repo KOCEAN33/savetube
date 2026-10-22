@@ -18,6 +18,11 @@ export const OTHER_CHANNELS_LABEL =
 export const OTHER_CHANNELS_HINT =
   "A video downloads once. It is stored under its uploader's channel folder and shows on this channel's page."
 
+export const MEMBERS_ALL_LABEL = "Download every members-only video"
+
+export const MEMBERS_ALL_HINT =
+  "Title words do not apply to members-only videos. They download only while a cookie profile is a confirmed member of this channel."
+
 export const PLAYLISTS_PASS_HINT =
   "Title words then only exclude in playlists. A video passes when its title passes the words or a chosen playlist lists it."
 

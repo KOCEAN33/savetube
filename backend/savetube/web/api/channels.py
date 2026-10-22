@@ -159,6 +159,7 @@ class ChannelIn(WordsIn):
     # Applies to the playlist sources only. A tab keeps what its channel tab lists.
     other_channels: bool = True
     watch_lives: bool = False
+    members_all: bool = False
     playlists_pass: bool = False
     date_after: date | None = None
     format: Annotated[str, Field(min_length=1)] = DEFAULT_FORMAT
@@ -204,6 +205,7 @@ async def create_channel(session: Session, body: ChannelIn) -> ChannelWithSource
     channel.include_words, channel.exclude_words = body.include_words, body.exclude_words
     channel.date_after, channel.format = body.date_after, body.format
     channel.watch_lives = body.watch_lives
+    channel.members_all = body.members_all
     channel.playlists_pass = body.playlists_pass
     channel.avatar_url = body.avatar_url or channel.avatar_url
     # No relationship() orders inserts, so the FK target is flushed first.
