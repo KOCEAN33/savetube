@@ -85,6 +85,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
     watchLives: false,
   })
   const [words, setWords] = useState<TitleWords>({ include_words: [], exclude_words: [] })
+  const [playlistsPass, setPlaylistsPass] = useState(false)
   const [dateAfter, setDateAfter] = useState<string | null>(null)
   const [format, setFormat] = useState(DEFAULT_FORMAT)
   const save = useMutation({
@@ -108,10 +109,9 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
     })
   }
 
-  const chosen =
-    choice.tabs.length > 0 ||
-    choice.playlists === "all" ||
-    (choice.playlists === "some" && choice.picked.length > 0)
+  const playlistsChosen =
+    choice.playlists === "all" || (choice.playlists === "some" && choice.picked.length > 0)
+  const chosen = choice.tabs.length > 0 || playlistsChosen
   const canNext = [scan !== null, chosen, true, false][step]
 
   function submit() {
@@ -130,6 +130,7 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
           : [],
       other_channels: choice.otherChannels,
       watch_lives: choice.watchLives,
+      playlists_pass: playlistsChosen && playlistsPass,
       ...words,
       date_after: dateAfter,
       format,
@@ -160,7 +161,14 @@ function AddChannelSteps({ onDone }: { onDone: () => void }) {
         )}
         {step === 1 && scan && <ChooseStep scan={scan} choice={choice} onChange={setChoice} />}
         {step === 2 && scan && (
-          <WordsStep scan={scan} tabs={choice.tabs} words={words} onChange={setWords} />
+          <WordsStep
+            scan={scan}
+            tabs={choice.tabs}
+            words={words}
+            onChange={setWords}
+            playlistsPass={playlistsChosen ? playlistsPass : null}
+            onPlaylistsPassChange={setPlaylistsPass}
+          />
         )}
         {step === 3 && scan && (
           <div className="flex max-w-xl flex-col gap-6">

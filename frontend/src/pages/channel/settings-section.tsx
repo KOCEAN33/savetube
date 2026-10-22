@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { mutations, type Channel, type ChannelSettings, type Membership } from "@/lib/api"
+import { PLAYLISTS_PASS_HINT } from "@/lib/channel"
 import { formatDateTime } from "@/lib/format"
 import { useInvalidate } from "@/pages/channel/use-invalidate"
 
@@ -44,11 +45,12 @@ function MembershipList({ memberships }: { memberships: Membership[] }) {
 export function SettingsSection({ channel }: { channel: Channel }) {
   const invalidate = useInvalidate()
   const [form, setForm] = useState<
-    Omit<ChannelSettings, "watch_lives"> & Pick<Channel, "members_all">
+    Omit<ChannelSettings, "watch_lives"> & Pick<Channel, "members_all" | "playlists_pass">
   >({
     date_after: channel.date_after,
     format: channel.format,
     members_all: channel.members_all,
+    playlists_pass: channel.playlists_pass,
   })
   const save = useMutation({
     mutationFn: () => mutations.updateChannel(channel.id, form),
@@ -84,6 +86,16 @@ export function SettingsSection({ channel }: { channel: Channel }) {
           Title words do not apply to members-only videos. They download only while a cookie
           profile is a confirmed member of this channel.
         </p>
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label className="font-normal">
+          <Checkbox
+            checked={form.playlists_pass}
+            onCheckedChange={(on) => setForm({ ...form, playlists_pass: on === true })}
+          />
+          Keep every video in the chosen playlists
+        </Label>
+        <p className="text-xs text-muted-foreground">{PLAYLISTS_PASS_HINT}</p>
       </div>
       <MembershipList memberships={channel.memberships} />
       {save.isError && <ErrorBox error={save.error} />}

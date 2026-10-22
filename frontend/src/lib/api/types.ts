@@ -48,6 +48,8 @@ export interface Channel {
   watch_lives: boolean
   // Members-only videos skip the title words. A confirmed member profile is still needed.
   members_all: boolean
+  // A playlist source of the channel keeps every entry the exclude words allow.
+  playlists_pass: boolean
   // The profile picture YouTube serves. Null until a scan or a tab poll finds it.
   avatar_url: string | null
   // False for a channel known only as the uploader of a video a source lists.
@@ -255,9 +257,12 @@ export interface ChannelIn extends TitleWords, ChannelSettings {
   all_playlists: boolean
   playlists: { url: string; title: string }[]
   other_channels: boolean
+  playlists_pass: boolean
 }
 
-export type ChannelPatch = Partial<TitleWords & ChannelSettings & Pick<Channel, "members_all">>
+export type ChannelPatch = Partial<
+  TitleWords & ChannelSettings & Pick<Channel, "members_all" | "playlists_pass">
+>
 
 export interface DownloadSettingsIn {
   max_concurrent: number

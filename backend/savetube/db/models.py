@@ -99,6 +99,9 @@ class Channel(Base):
     watch_lives: Mapped[bool] = mapped_column(default=False, server_default=false())
     # Members-only videos skip the title words. The membership check still applies.
     members_all: Mapped[bool] = mapped_column(default=False, server_default=false())
+    # Entries of the channel's playlist sources skip the include words. The
+    # exclude words still apply.
+    playlists_pass: Mapped[bool] = mapped_column(default=False, server_default=false())
     # The profile picture YouTube serves, from a tab listing. Null until a scan or
     # a tab poll finds it.
     avatar_url: Mapped[str | None] = mapped_column(Text)
