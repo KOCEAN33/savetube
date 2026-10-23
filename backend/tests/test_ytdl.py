@@ -23,6 +23,24 @@ def test_live_params_record_from_start_without_pre_download_sleep(tmp_path):
     assert p["sleep_interval_requests"] == 0.75
 
 
+def _requested_subtitles(params):
+    from yt_dlp import YoutubeDL
+
+    subs = {
+        "ja": [{"ext": "vtt", "url": "https://example.test/ja.vtt"}],
+        "live_chat": [{"ext": "json", "url": "https://example.test/chat", "protocol": "x"}],
+    }
+    with YoutubeDL({**params, "quiet": True}) as ydl:
+        return set(ydl.process_subtitles("v1", subs, {}) or {})
+
+
+def test_a_recording_skips_the_live_chat_an_archive_keeps(tmp_path):
+    """yt-dlp writes subtitles before the media, and the chat of a running live
+    downloads until the stream ends."""
+    assert _requested_subtitles(build_params(tmp_path, live=True)) == {"ja"}
+    assert _requested_subtitles(build_params(tmp_path)) == {"ja", "live_chat"}
+
+
 def test_a_dropped_connection_resumes_inside_one_download(tmp_path):
     """yt-dlp as a library retries nothing unless `retries` is set, so one
     dropped connection ended the whole run."""
