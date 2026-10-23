@@ -23,8 +23,10 @@ from savetube.storage import disk_usage
 
 log = logging.getLogger(__name__)
 
-# The staged bytes that move at once, even while a download runs.
-MOVE_BATCH_BYTES = 20 * 1024**3
+# The staged bytes that move at once, even while a download runs. Sized for the
+# 100Gi production volume, so tank's disks wake rarely. A smaller volume reaches
+# MIN_FREE_BYTES first.
+MOVE_BATCH_BYTES = 80 * 1024**3
 # Below this much free space on staging, everything waiting moves. The largest
 # stored video, 7 GB, holds about twice its size on disk while yt-dlp merges.
 MIN_FREE_BYTES = 15 * 1024**3
