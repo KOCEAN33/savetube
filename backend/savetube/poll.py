@@ -250,8 +250,8 @@ async def sync(
     wanted = list(entries)
     active = set(
         await session.scalars(
-            # A record job does not count: until a recorder exists, the VOD is
-            # the only copy of a detected live.
+            # A record job does not count: a recording can have gaps, so the VOD
+            # stays wanted beside it (docs/plan/live.md).
             select(Job.video_id).where(
                 Job.video_id.in_(wanted),
                 Job.kind == JobKind.ARCHIVE,

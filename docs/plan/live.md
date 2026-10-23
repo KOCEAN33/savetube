@@ -14,11 +14,15 @@
 - No Data API key is used. The probe reads the scheduled start that `videos.list` would.
 - A detection is a queued `record` job. `scheduled_at` comes from `release_timestamp` for an upcoming stream and is null for a stream found live. The record job keeps a video to one detection across scheduler restarts.
 - The first check of a channel probes up to 15 feed ids and takes about a minute. Later checks take seconds.
-- A queued record job does not stop the archive poll from queuing the VOD. Until a recorder exists, the VOD is the only copy of a detected live.
+- A queued record job does not stop the archive poll from queuing the VOD. The poll skips a live until it ends, so the VOD is queued only when the recording has not stored the video.
 - WebSub push needs a public HTTPS callback, which the tailnet-only cluster lacks. Not used.
 
 ## Recording and the VOD
 
-- An upcoming stream gets a recorder Job a few minutes before `scheduled_at`, running with `--wait-for-video` and `--live-from-start`. Not built.
+- Every 15 s the scheduler starts a recorder Job for each queued record job due within 5 minutes: `scheduled_at` within 5 minutes, already past, or null for a stream found live. The recorder runs `savetube record --job-id <id>` with `wait_for_video` and `live_from_start` (`backend/savetube/recorders.py`).
+- The scheduler lists Jobs by the `savetube.io/job-id` label, so a job with a Job, finished or not, never gets a second. A recorder Job that spent its `backoffLimit` while its row is still queued or running marks the row `missed` with `recorder_failed` and the video `failed`.
+- The loop runs only inside a cluster, where `KUBERNETES_SERVICE_HOST` is set. The compose scheduler makes no recorder Jobs.
+- A recording skips the `live_chat` track. yt-dlp writes subtitles before the media, and a running live's chat downloads until the stream ends. The VOD's archive keeps the chat replay.
+- A finished recording moves straight into the tree under the video's `lives` or `members` directory and marks the video complete.
 - A live recording can have gaps or buffering, so when both a recording and the VOD exist, the two are compared. How to compare and which to keep is open.
 - Some streams get no VOD after they end. For those, the recording is the only copy and stays.

@@ -1,11 +1,10 @@
 """The single-replica loop: source polls, archive dispatch, live detection, recorder
 Jobs, storage samples.
-
-Recorder Jobs are not built yet (docs/plan/README.md, Build order step 3).
 """
 
 import asyncio
 import logging
+import os
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
@@ -16,7 +15,7 @@ from pathlib import Path
 from procrastinate.jobs import Status
 from sqlalchemy import func, select
 
-from savetube import cookies
+from savetube import cookies, k8s
 from savetube.cleanup import clean_database
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
@@ -26,6 +25,7 @@ from savetube.live import Seen, check_logged, watched_channels
 from savetube.logs import emit, human_bytes
 from savetube.poll import due_sources, poll_source
 from savetube.queue import ARCHIVE_QUEUE, app, enqueue
+from savetube.recorders import start_recorders
 from savetube.staging import move_staged
 from savetube.storage import disk_usage
 from savetube.tz import TIMEZONE
@@ -49,6 +49,8 @@ SAMPLE_EVERY = timedelta(hours=1)
 SUMMARY_SECONDS = 600
 # Partial directories and finished rows age in days, so an hourly look is enough.
 CLEANUP_SECONDS = 3600
+# A stream found live waits up to this long for its recorder.
+RECORDER_SECONDS = 15
 
 
 async def sample_storage(settings: Settings) -> None:
@@ -247,6 +249,15 @@ async def detect_lives(settings: Settings, seen: Seen) -> None:
             )
 
 
+async def recorders(settings: Settings) -> None:
+    await start_recorders(
+        default_sessionmaker(),
+        datetime.now(UTC),
+        recorders=lambda: k8s.list_recorder_jobs(settings.namespace),
+        create=partial(k8s.create_recorder_job, settings.namespace, settings.recorder_cronjob),
+    )
+
+
 async def _every(
     name: str, step: Callable[[], Awaitable[None]], seconds: float = TICK_SECONDS
 ) -> None:
@@ -300,3 +311,9 @@ async def run(settings: Settings) -> None:
             )
             seen: Seen = {}
             tg.create_task(_every("live detection", lambda: detect_lives(settings, seen)))
+            # Kubernetes sets this in every pod. A scheduler outside a cluster,
+            # as in compose.yaml, has no API to make recorder Jobs with.
+            if os.environ.get("KUBERNETES_SERVICE_HOST"):
+                tg.create_task(
+                    _every("recorder start", lambda: recorders(settings), RECORDER_SECONDS)
+                )

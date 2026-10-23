@@ -9,7 +9,7 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 
 ## Needs the user
 
-- Live recording: review it with the user before building the recorder path. The user requires a monitoring view with it: which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
+- Recorder monitoring view: the user requires one. It shows which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
 - Log format: the user wants to review it. Logs are logfmt by the decision in `docs/plan/operations.md` Logging. A switch to JSON changes that section, `backend/savetube/logs.py`, and any Loki query that uses `| logfmt`.
 - Smaller image: ffmpeg is about 180-210 MB of it. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
 - Safari playback: out of scope until the user asks. The plan then is a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
@@ -17,6 +17,8 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 
 ## Bugs and gaps
 
+- A recorder whose stream stays upcoming past `scheduled_at`, such as a cancelled waiting room, waits with `wait_for_video` until someone deletes its Job.
+- When the poll queues the VOD while a recording still merges, both target one tree directory, and the second `finalize` fails with `FileExistsError`.
 - A failed audio extraction after a download is not retried. Only a rerun of `savetube extract-audio` through `kubectl exec` fills it, with `print` output invisible in Loki and tied to the caller's connection.
 - The channel page hides "Show more" once all 500 listed queued jobs show, even when more wait.
 - `GET /api/sources` sends `last_error` raw. The Home card cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
