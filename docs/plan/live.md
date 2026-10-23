@@ -23,6 +23,7 @@
 - The scheduler lists Jobs by the `savetube.io/job-id` label, so a job with a Job, finished or not, never gets a second. A recorder Job that spent its `backoffLimit` while its row is still queued or running marks the row `missed` with `recorder_failed` and the video `failed`.
 - The loop runs only inside a cluster, where `KUBERNETES_SERVICE_HOST` is set. The compose scheduler makes no recorder Jobs.
 - A recording skips the `live_chat` track. yt-dlp writes subtitles before the media, and a running live's chat downloads until the stream ends. The VOD's archive keeps the chat replay.
+- A recording writes its progress to `job.progress` every 5 s, as an archive download does, through the same pump on a thread instead of a child process. The video and audio streams download at once, so `done` and `speed` sum over the streams. A live has no total, so `pct` and `total` stay null. The recorder sends no format pin and no stream sizes: those serve the archive resume and its checks, and a VOD queued later must not take a live format.
 - A finished recording moves straight into the tree under the video's `lives` or `members` directory and marks the video complete.
 - A live recording can have gaps or buffering, so when both a recording and the VOD exist, the two are compared. How to compare and which to keep is open.
 - Some streams get no VOD after they end. For those, the recording is the only copy and stays.

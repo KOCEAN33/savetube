@@ -55,6 +55,7 @@ from savetube.storage import dir_size
 from savetube.ytdl import (
     DEFAULT_FORMAT,
     build_params,
+    members_only,
     network_error,
     video_url,
     youtube_block,
@@ -407,15 +408,64 @@ async def _download(
     tools: integrity.Tools | None,
 ) -> tuple[dict[str, Any], list[str] | None]:
     """Download into the working directory. An archive download is also
-    verified and gets its audio copy, and returns the checks that passed."""
+    verified and gets its audio copy, and returns the checks that passed.
+
+    A members-only refusal of the general profile marks the video
+    members-only, and the download runs once more with the channel's member
+    profile, if one exists."""
     if r.live:
         prepare_incoming(settings.incoming_root, r.job_id)
+    if begun.members and begun.profile is None:
+        # A poll passed the video while a member profile existed.
+        raise DownloadFailed(NO_MEMBER)
+    download = partial(_download_as, r, begun, settings, runner, tools)
+    try:
+        info, checks = await download(begun.profile)
+    except DownloadFailed as e:
+        if begun.members or not members_only(str(e)):
+            raise
+        profile = await _mark_members(r.sessionmaker, r.video_id, settings)
+        if profile is None:
+            raise
+        emit(log, logging.INFO, "job.member_retry", job=r.job_id, video=r.video_id, cookies=profile)
+        info, checks = await download(profile)
+        # The general profile's refusal proves the video members-only.
+        info = {**info, "availability": "subscriber_only"}
+    if not r.live:
+        await r.step("audio")
+        await audio.add(_media_path(info), tools or integrity.Tools())
+    return info, checks
+
+
+async def _mark_members(
+    sessionmaker: async_sessionmaker, video_id: str, settings: Settings
+) -> str | None:
+    """Mark the video members-only. Returns its channel's member profile."""
+    async with sessionmaker() as session:
+        video = await session.get(Video, video_id)
+        if video is None:
+            return None
+        video.type = VideoType.MEMBERS
+        video.availability = "subscriber_only"
+        profile = await cookies.member_profile(
+            session, video.channel_id, cookies.profiles(settings)
+        )
+        await session.commit()
+    return profile
+
+
+async def _download_as(
+    r: _Run,
+    begun: _Begun,
+    settings: Settings,
+    runner: Runner,
+    tools: integrity.Tools | None,
+    profile: str | None,
+) -> tuple[dict[str, Any], list[str] | None]:
+    """One download with `profile`'s cookies, verified for an archive job."""
     # Outside the working directory, so the cookie jar never moves into the tree.
     with tempfile.TemporaryDirectory(prefix="savetube-") as private:
-        if begun.members and begun.profile is None:
-            # A poll passed the video while a member profile existed.
-            raise DownloadFailed(NO_MEMBER)
-        cookiefile = cookies.cookiefile(settings, begun.profile, Path(private))
+        cookiefile = cookies.cookiefile(settings, profile, Path(private))
         params = partial(
             _params,
             r.workdir,
@@ -424,31 +474,26 @@ async def _download(
             ratelimit=begun.ratelimit,
             video_id=r.video_id,
         )
-        checks = None
         if r.live:
-            info = await runner(video_url(r.video_id), params(begun.fmt), r.report)
-        else:
-            info, checks = await _unless_paused(
+            return await runner(video_url(r.video_id), params(begun.fmt), r.report), None
+        return await _unless_paused(
+            r.sessionmaker,
+            r.job_id,
+            r.run_started,
+            _archive(
                 r.sessionmaker,
-                r.job_id,
-                r.run_started,
-                _archive(
-                    r.sessionmaker,
-                    r.video_id,
-                    r.workdir,
-                    runner=runner,
-                    params=params,
-                    fmt=begun.fmt,
-                    pinned=begun.pinned,
-                    report=r.report,
-                    step=r.step,
-                    streams=r.streams,
-                    tools=tools or integrity.Tools(),
-                ),
-            )
-            await r.step("audio")
-            await audio.add(_media_path(info), tools or integrity.Tools())
-    return info, checks
+                r.video_id,
+                r.workdir,
+                runner=runner,
+                params=params,
+                fmt=begun.fmt,
+                pinned=begun.pinned,
+                report=r.report,
+                step=r.step,
+                streams=r.streams,
+                tools=tools or integrity.Tools(),
+            ),
+        )
 
 
 async def _finish(

@@ -133,7 +133,7 @@ def test_only_the_yt_dlp_pods_mount_the_cookie_profiles():
 
 
 # Anchor 3: least privilege and a single migrator.
-def test_only_the_scheduler_talks_to_the_api_server():
+def test_only_the_scheduler_writes_to_the_api_server():
     docs = render()
     role = one(docs, "Role", "savetube-scheduler")
     assert role["rules"] == [
@@ -155,8 +155,34 @@ def test_only_the_scheduler_talks_to_the_api_server():
         }
     ]
     w = workloads(docs)
-    for role_name in ("web", "worker", "recorder"):
+    for role_name in ("worker", "recorder"):
         assert pod_spec(w[role_name])["automountServiceAccountToken"] is False, role_name
+
+
+def test_web_reads_pods_and_jobs_only():
+    docs = render()
+    role = one(docs, "Role", "savetube-web")
+    assert role["rules"] == [
+        {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]},
+        {"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["get", "list"]},
+    ]
+    binding = one(docs, "RoleBinding", "savetube-web")
+    assert binding["roleRef"] == {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "savetube-web",
+    }
+    spec = pod_spec(one(docs, "Deployment", "savetube-web"))
+    assert binding["subjects"] == [
+        {"kind": "ServiceAccount", "name": spec["serviceAccountName"], "namespace": "savetube-prod"}
+    ]
+    one(docs, "ServiceAccount", spec["serviceAccountName"])
+    assert spec.get("automountServiceAccountToken", True) is True
+    (web,) = spec["containers"]
+    env = {e["name"]: e for e in web["env"]}
+    assert env["SAVETUBE_NAMESPACE"]["valueFrom"] == {
+        "fieldRef": {"fieldPath": "metadata.namespace"}
+    }
 
 
 def test_scheduler_is_a_single_migrating_replica():

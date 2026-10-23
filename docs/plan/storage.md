@@ -67,7 +67,7 @@ The archive's disks are loud while a download writes to them for hours. With `SA
 - The download, the integrity checks and the audio copy all run on staging. A passed download is renamed into `ready/` and its video becomes `staged`. Its job succeeds, and `dir_path` already names its place in the tree.
 - A `staged` video is hidden like any video that is not `complete`: no list shows it and nothing plays it. The poll counts it as stored and queues no job for it.
 - The scheduler checks every 60 s whether the staged videos move (`savetube.staging`). They move when at least one of these holds:
-  - The staged videos hold 20 GiB or more (`MOVE_BATCH_BYTES`), even while a download runs.
+  - The staged videos hold 80 GiB or more (`MOVE_BATCH_BYTES`), even while a download runs. On a volume smaller than about 95 GiB, the free-space rule fires first.
   - Staging has less than 15 GiB free (`MIN_FREE_BYTES`). The largest stored video is 7 GB, and yt-dlp holds about twice that while it merges.
   - No archive download runs, and the newest staged video has waited 1 hour (`MOVE_IDLE`).
   - The user pressed Move now on the Downloads card. `POST /api/staging/move` sets `download_settings.move_requested_at`, because the web pod mounts neither staging nor a writable archive. The scheduler clears it after the move, and clears it at once when nothing is staged. A request made during a move stays for the next check.
@@ -76,5 +76,5 @@ The archive's disks are loud while a download writes to them for hours. With `SA
 - A staged video whose files are in neither place goes back to `pending`, and the next poll downloads it. It logs `staging.missing` at WARNING.
 - A missing staging root moves nothing and logs `staging.unmounted` at ERROR, so a lost mount never reads every staged video as gone.
 - Recordings do not use staging.
-- In production, staging is the 40Gi PVC `savetube-staging` of StorageClass `nvme`, on the `rpool` NVMe mirror. The worker and the scheduler mount it at `/staging`. A new volume's root belongs to root, so an init container running as root with only `CHOWN` gives it to uid 1000. A pod-level `fsGroup` would also chown the archive's local PV recursively.
+- In production, staging is the 100Gi PVC `savetube-staging` of StorageClass `nvme`, on the `rpool` NVMe mirror. The worker and the scheduler mount it at `/staging`. A new volume's root belongs to root, so an init container running as root with only `CHOWN` gives it to uid 1000. A pod-level `fsGroup` would also chown the archive's local PV recursively.
 - Switching staging on leaves the parts already in the archive's `.incoming/`. Their videos download again from zero on staging, and the hourly cleanup deletes the old parts after 7 days.

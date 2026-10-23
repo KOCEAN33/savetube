@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router"
 
 import { JobStateCounts, JobsTable } from "@/components/jobs-table"
 import { Page, PageSection, QueryState } from "@/components/query-state"
+import { PodsSection, RecordingNowSection, ScheduledSection } from "@/components/recorders"
 import { Badge } from "@/components/ui/badge"
 import {
   Select,
@@ -49,6 +50,9 @@ export function LivePage() {
           </Badge>
         ))}
       </div>
+      <RecordingNowSection />
+      <ScheduledSection />
+      <PodsSection />
       <PageSection
         title="Detected, upcoming and recorded streams"
         actions={

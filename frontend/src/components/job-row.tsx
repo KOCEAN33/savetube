@@ -1,13 +1,9 @@
 import { Link } from "react-router"
 
-import { type Job, type JobStep } from "@/lib/api"
+import { type Job } from "@/lib/api"
+import { STEP_LABELS } from "@/lib/channel"
 import { formatBytes, formatDateTime, formatDuration } from "@/lib/format"
 
-const STEP_LABELS: Record<JobStep["step"], string> = {
-  merging: "Merging the video and audio streams.",
-  verifying: "Checking the file.",
-  audio: "Writing the audio copy.",
-}
 
 function ProgressLine({ job }: { job: Job }) {
   const p = job.progress

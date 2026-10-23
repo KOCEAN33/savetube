@@ -9,7 +9,6 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 
 ## Needs the user
 
-- Recorder monitoring view: the user requires one. It shows which live each recorder job records now, which lives are scheduled to record, and the state of the recorder and worker pods.
 - Log format: the user wants to review it. Logs are logfmt by the decision in `docs/plan/operations.md` Logging. A switch to JSON changes that section, `backend/savetube/logs.py`, and any Loki query that uses `| logfmt`.
 - Smaller image: ffmpeg is about 180-210 MB of it. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
 - Safari playback: out of scope until the user asks. The plan then is a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.

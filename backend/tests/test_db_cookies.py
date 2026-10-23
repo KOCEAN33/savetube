@@ -11,12 +11,15 @@ from conftest import (
     _api,
     _cancel,
     _fields,
+    _finished,
     _job_rows,
     _no_probe,
     _poll,
     _run,
+    _run_steps,
     _Runner,
     _sql,
+    _Steps,
 )
 
 from savetube.db import make_engine, make_sessionmaker
@@ -26,8 +29,10 @@ from savetube.db.models import (
     JobState,
     ListingEntry,
     Source,
+    Video,
     VideoSource,
 )
+from savetube.layout import VideoType
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
 
@@ -537,4 +542,116 @@ async def test_a_members_only_download_takes_a_member_profile_and_no_other(setti
     async with sessionmaker() as session:
         job = await session.get(Job, 2)
         assert (job.state, job.attempts, job.log_tail) == (JobState.FAILED, 2, NO_MEMBER)
+    await engine.dispose()
+
+
+def _cookie_step(cookies, then):
+    """A runner step that records the call's cookie profile, then runs `then`."""
+
+    async def step(params, report):
+        text = await asyncio.to_thread(Path(params["cookiefile"]).read_text)
+        cookies.append(text.removeprefix("# ").strip())
+        return await then(params, report)
+
+    return step
+
+
+def _refuse(message):
+    async def step(params, report):
+        from savetube.jobs import DownloadFailed
+
+        raise DownloadFailed(message)
+
+    return step
+
+
+def _short_job_rows(settings, *, member):
+    _job_rows(
+        settings,
+        "UPDATE video SET type = 'shorts' WHERE id = 'v1'",
+        "UPDATE download_settings SET cookie_profile = 'general'",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        f" ('UC1', 'main', {str(member).lower()}, now(), 'other')",
+    )
+    return _profiles(settings, "general", "main")
+
+
+@pytest.mark.anyio
+async def test_a_members_only_refusal_retries_once_with_the_member_profile(settings):
+    settings = _short_job_rows(settings, member=True)
+    cookies = []
+    runner = _Steps(
+        _cookie_step(cookies, _refuse(MEMBERS_ONLY_ERROR)),
+        _cookie_step(cookies, _finished()),
+    )
+    jobs, video = await _run_steps(settings, runner)
+    assert cookies == ["general", "main"]
+    assert jobs[1].state is JobState.SUCCEEDED
+    assert (video.type, video.availability) == (VideoType.MEMBERS, "subscriber_only")
+    assert video.dir_path.split("/")[1] == "members"
+
+
+@pytest.mark.anyio
+async def test_a_members_only_refusal_without_a_member_profile_fails_once(settings):
+    settings = _short_job_rows(settings, member=False)
+    cookies = []
+    runner = _Steps(_cookie_step(cookies, _refuse(MEMBERS_ONLY_ERROR)))
+    jobs, video = await _run_steps(settings, runner)
+    assert cookies == ["general"]
+    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, MEMBERS_ONLY_ERROR)
+    assert (video.type, video.availability) == (VideoType.MEMBERS, "subscriber_only")
+
+
+@pytest.mark.anyio
+async def test_another_refusal_takes_no_member_profile(settings):
+    settings = _short_job_rows(settings, member=True)
+    cookies = []
+    runner = _Steps(_cookie_step(cookies, _refuse("ERROR: [youtube] v1: Video unavailable")))
+    jobs, video = await _run_steps(settings, runner)
+    assert cookies == ["general"]
+    assert jobs[1].state is JobState.FAILED
+    assert (video.type, video.availability) == (VideoType.SHORTS, None)
+
+
+@pytest.mark.anyio
+async def test_a_stored_members_short_needs_a_member_on_the_next_poll(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/shorts', 'tab', '{VESP}', true, 360)",
+        "INSERT INTO video (id, channel_id, type, title, state, availability) VALUES"
+        f" ('short', '{VESP}', 'members', 's', 'failed', 'subscriber_only')",
+    )
+    settings = _profiles(settings, "main")
+    # The Shorts tab lists no availability.
+    listing = {
+        "channel_id": VESP,
+        "channel": "VESPERBELL",
+        "entries": [{"id": "short", "title": "s"}, {"id": "public", "title": "p"}],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    probed = []
+
+    def prober(video_id, cookiefile):
+        probed.append(video_id)
+        return {"id": video_id, "formats": [{"format_id": "251"}]}
+
+    async def queued():
+        async with sessionmaker() as session:
+            return sorted(
+                await session.scalars(sa.select(Job.video_id).where(Job.state == JobState.QUEUED))
+            )
+
+    # No result yet: the stored members-only short is skipped, and the poll
+    # checks the profile with it.
+    await _poll(sessionmaker, settings, 1, listing, prober=prober)
+    assert await queued() == ["public"]
+    assert probed == ["short"]
+    await _poll(sessionmaker, settings, 1, listing, prober=prober)
+    assert await queued() == ["public", "short"]
+    async with sessionmaker() as session:
+        assert (await session.get(Video, "short")).type is VideoType.MEMBERS
     await engine.dispose()

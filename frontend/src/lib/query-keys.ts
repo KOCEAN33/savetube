@@ -49,4 +49,7 @@ export const queryKeys = {
   allRecentJobs: (filter: { state: JobState | undefined; unresolved: boolean; limit: number }) =>
     ["jobs", "archive", "all", "recent", filter] as const,
   recordJobs: (state: JobState | undefined) => ["jobs", "record", state] as const,
+  recordingNow: () => ["jobs", "record", "now"] as const,
+  scheduledRecords: () => ["jobs", "record", "scheduled"] as const,
+  pods: () => ["pods"] as const,
 }

@@ -4,6 +4,7 @@ import { lazy, Suspense, type ReactNode } from "react"
 import { DataTable } from "@/components/data-table"
 import { DownloadsCard } from "@/components/downloads-card"
 import { ErrorBox } from "@/components/query-state"
+import { RecordingCard } from "@/components/recorders"
 import { SectionCards } from "@/components/section-cards"
 import { SourcesWaitingCard } from "@/components/sources-waiting-card"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
@@ -81,6 +82,10 @@ export function DashboardPage() {
       {/* Empty while no source waits, so its gap goes too. */}
       <div className="px-4 empty:hidden lg:px-6">
         <SourcesWaitingCard />
+      </div>
+      {/* Empty while nothing records, so its gap goes too. */}
+      <div className="px-4 empty:hidden lg:px-6">
+        <RecordingCard />
       </div>
       <Statistics
         downloads={

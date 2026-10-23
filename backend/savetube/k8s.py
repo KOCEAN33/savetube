@@ -2,18 +2,23 @@
 
 The CronJob is the template: image, sidecar, volumes and resources stay in the
 manifests, where Kustomize's image and patch transformers reach them.
+The web role reads the recorder Jobs and the worker pods for the Live page.
 """
 
 import copy
+from typing import Any
 
 from lightkube import ApiError, AsyncClient
 from lightkube.models.meta_v1 import ObjectMeta, OwnerReference
 from lightkube.operators import exists
 from lightkube.resources.batch_v1 import CronJob, Job
+from lightkube.resources.core_v1 import Pod
 
 RECORDER_CONTAINER = "recorder"
 JOB_ID_LABEL = "savetube.io/job-id"
 VIDEO_ID_ANNOTATION = "savetube.io/video-id"
+# Every worker pod carries it. One release per namespace, so no instance label.
+WORKER_LABELS = {"app.kubernetes.io/component": "worker"}
 
 
 def recorder_job(cronjob: CronJob, job_id: int, video_id: str) -> Job:
@@ -79,3 +84,68 @@ async def create_recorder_job(namespace: str, cronjob_name: str, job_id: int, vi
             if e.status.code != 409:
                 raise
         return job.metadata.name
+
+
+def _job_status(job: Job) -> str:
+    status = job.status
+    conditions = {c.type for c in (status.conditions or []) if c.status == "True"}
+    if "Complete" in conditions:
+        return "succeeded"
+    if "Failed" in conditions:
+        return "failed"
+    return "running" if status.active else "pending"
+
+
+def recorder_summaries(jobs: list[Job], pods: list[Pod]) -> list[dict[str, Any]]:
+    """Each recorder Job, newest job id first, with the phase of its newest pod.
+    `restarts` counts its failed pods: with restartPolicy Never, a retry is a
+    new pod."""
+    newest: dict[str, Pod] = {}
+    for pod in sorted(pods, key=lambda p: p.metadata.creationTimestamp):
+        newest[pod.metadata.labels[JOB_ID_LABEL]] = pod
+    rows = []
+    for job in jobs:
+        job_id = job.metadata.labels[JOB_ID_LABEL]
+        pod = newest.get(job_id)
+        rows.append(
+            {
+                "job_id": int(job_id),
+                "video_id": (job.metadata.annotations or {}).get(VIDEO_ID_ANNOTATION),
+                "name": job.metadata.name,
+                "status": _job_status(job),
+                "pod_phase": pod.status.phase if pod else None,
+                "restarts": job.status.failed or 0,
+                "started_at": job.status.startTime,
+            }
+        )
+    return sorted(rows, key=lambda r: r["job_id"], reverse=True)
+
+
+def worker_summaries(pods: list[Pod]) -> list[dict[str, Any]]:
+    rows = []
+    for pod in pods:
+        status = pod.status
+        ready = any(c.type == "Ready" and c.status == "True" for c in status.conditions or [])
+        containers = [*(status.initContainerStatuses or []), *(status.containerStatuses or [])]
+        rows.append(
+            {
+                "name": pod.metadata.name,
+                "phase": status.phase,
+                "ready": ready,
+                "restarts": sum(c.restartCount for c in containers),
+                "started_at": status.startTime,
+            }
+        )
+    return sorted(rows, key=lambda r: r["name"])
+
+
+async def cluster_pods(namespace: str) -> dict[str, list[dict[str, Any]]]:
+    """The recorder Jobs and the worker pods, read with get/list only."""
+    async with AsyncClient(namespace=namespace) as client:
+        jobs = [j async for j in client.list(Job, labels={JOB_ID_LABEL: exists()})]
+        recorder_pods = [p async for p in client.list(Pod, labels={JOB_ID_LABEL: exists()})]
+        workers = [p async for p in client.list(Pod, labels=WORKER_LABELS)]
+    return {
+        "recorders": recorder_summaries(jobs, recorder_pods),
+        "workers": worker_summaries(workers),
+    }

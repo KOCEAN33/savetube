@@ -1,4 +1,4 @@
-import type { JobState, Source, VideoTab } from "@/lib/api"
+import type { JobState, JobStep, Source, VideoTab } from "@/lib/api"
 
 export const DEFAULT_FORMAT = "bv*+ba/b"
 
@@ -30,6 +30,12 @@ export const KEEP_ALL_HINT =
 
 export const PLAYLISTS_PASS_HINT =
   "Title words then only exclude in playlists. A video passes when its title passes the words or a chosen playlist lists it."
+
+export const STEP_LABELS: Record<JobStep["step"], string> = {
+  merging: "Merging the video and audio streams.",
+  verifying: "Checking the file.",
+  audio: "Writing the audio copy.",
+}
 
 export const JOB_STATES: JobState[] = [
   "queued",

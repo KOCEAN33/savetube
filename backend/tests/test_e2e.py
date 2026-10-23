@@ -665,6 +665,12 @@ def test_staging_move_request(server):
     assert r.status_code == 200 and r.json()["move_requested"] is True
 
 
+def test_pods_are_unavailable_outside_a_cluster(server):
+    r = server.get("/api/pods")
+    assert r.status_code == 200
+    assert r.json() == {"available": False, "recorders": [], "workers": []}
+
+
 def test_every_api_route_is_covered():
     """A new route fails here until a test above calls it."""
     from savetube.web.app import create_app

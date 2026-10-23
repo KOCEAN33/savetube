@@ -180,6 +180,13 @@ async def sync(
     await _replace_listing(session, source.id, listed)
     ids = list(listed)
     videos = {v.id: v for v in await session.scalars(select(Video).where(Video.id.in_(ids)))}
+    # The Shorts tab lists a members-only short without its availability. A
+    # download the general profile was refused stored it as members-only.
+    for vid, v in videos.items():
+        if v.type is VideoType.MEMBERS:
+            listed[vid]["availability"] = "subscriber_only"
+            if listed[vid]["channel_id"]:
+                result.members_only.setdefault(listed[vid]["channel_id"], vid)
 
     if source.kind is SourceKind.PLAYLIST and not source.other_channels and not source.channel_id:
         source.last_error = NO_OWNER
