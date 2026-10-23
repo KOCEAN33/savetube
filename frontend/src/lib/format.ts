@@ -36,6 +36,20 @@ export function formatDateTime(iso: string | null | undefined): string {
   return new Date(iso).toLocaleString()
 }
 
+/** A time in Korea, where the streams the user watches are announced: "10/24/2026, 21:00 KST". */
+export function formatKst(iso: string): string {
+  const text = new Date(iso).toLocaleString(undefined, {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  })
+  return `${text} KST`
+}
+
 /** Local time of day, with the date when it is not today: "02:00" or "10/23/2026, 02:00". */
 export function formatClock(iso: string): string {
   const d = new Date(iso)

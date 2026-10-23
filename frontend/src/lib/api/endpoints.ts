@@ -13,6 +13,7 @@ import type {
   JobKind,
   JobState,
   Me,
+  Pods,
   Source,
   SourceIn,
   SourcePatch,
@@ -79,6 +80,7 @@ export const api = {
   // Every state is present, zero when no job holds it.
   jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),
+  pods: () => get<Pods>("/api/pods"),
   // The videos waiting on staging for the move into the tree.
   staging: () => get<Staging>("/api/staging"),
   videos: (query: {

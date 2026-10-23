@@ -1,4 +1,42 @@
 {{- $name := printf "%s-web" (include "savetube.fullname" .) -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+---
+# Read-only: the Live page shows the recorder Jobs and the worker pods
+# (backend/savetube/k8s.py, cluster_pods).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,7 +57,7 @@ spec:
         {{- include "savetube.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: web
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: {{ $name }}
       {{- include "savetube.podCommon" . | nindent 6 }}
       containers:
         - name: web
@@ -34,6 +72,10 @@ spec:
           env:
             {{- include "savetube.dbEnv" . | nindent 12 }}
             {{- include "savetube.archiveRootEnv" . | nindent 12 }}
+            - name: SAVETUBE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: SAVETUBE_PUBLIC_URL
               value: {{ required "publicUrl is required" .Values.publicUrl | quote }}
             - name: SAVETUBE_OIDC_ISSUER

@@ -118,6 +118,35 @@ export interface Job {
   progress: JobProgress | JobStep | null
 }
 
+// GET /api/pods: the recorder Jobs and the worker pods from the Kubernetes API.
+export interface Pods {
+  // False outside a cluster, where the lists are empty.
+  available: boolean
+  recorders: RecorderJob[]
+  workers: WorkerPod[]
+}
+
+export interface RecorderJob {
+  job_id: number
+  video_id: string | null
+  name: string
+  // "running" while a pod is active.
+  status: "succeeded" | "failed" | "running" | "pending"
+  // The newest pod's phase. Null before the pod exists or after the TTL removed it.
+  pod_phase: string | null
+  // Failed pods, one per retry.
+  restarts: number
+  started_at: string | null
+}
+
+export interface WorkerPod {
+  name: string
+  phase: string | null
+  ready: boolean
+  restarts: number
+  started_at: string | null
+}
+
 export interface Staging {
   count: number
   bytes: number
