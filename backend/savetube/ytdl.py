@@ -149,6 +149,9 @@ def build_params(
         params["wait_for_video"] = WAIT_FOR_VIDEO
         # A sleep before a DVR-off stream is footage lost.
         del params["sleep_interval"], params["max_sleep_interval"]
+        # yt-dlp writes subtitles before the media, and a running live's chat
+        # downloads until the stream ends. The VOD's archive keeps the replay.
+        params["subtitleslangs"] = ["all", "-live_chat"]
     if cookiefile is not None:
         params["cookiefile"] = str(cookiefile)
     if ratelimit is not None:

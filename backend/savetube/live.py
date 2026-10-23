@@ -2,7 +2,7 @@
 video ids, and the channel's `/live` page finds a stream with no waiting room.
 
 A detection is a queued `record` job, made only for a title that passes the
-words of a source watching the channel. Nothing starts a recorder yet.
+words of a source watching the channel. savetube.recorders starts its recorder.
 """
 
 import asyncio

@@ -6,8 +6,9 @@ manifests, where Kustomize's image and patch transformers reach them.
 
 import copy
 
-from lightkube import AsyncClient
+from lightkube import ApiError, AsyncClient
 from lightkube.models.meta_v1 import ObjectMeta, OwnerReference
+from lightkube.operators import exists
 from lightkube.resources.batch_v1 import CronJob, Job
 
 RECORDER_CONTAINER = "recorder"
@@ -51,8 +52,30 @@ def recorder_job(cronjob: CronJob, job_id: int, video_id: str) -> Job:
     )
 
 
+def recorder_states(jobs: list[Job]) -> dict[int, bool]:
+    """Each recorder Job's job id, and whether the Job failed every retry."""
+    states = {}
+    for job in jobs:
+        conditions = (job.status.conditions if job.status else None) or []
+        failed = any(c.type == "Failed" and c.status == "True" for c in conditions)
+        states[int(job.metadata.labels[JOB_ID_LABEL])] = failed
+    return states
+
+
+async def list_recorder_jobs(namespace: str) -> dict[int, bool]:
+    async with AsyncClient(namespace=namespace) as client:
+        jobs = [j async for j in client.list(Job, labels={JOB_ID_LABEL: exists()})]
+    return recorder_states(jobs)
+
+
 async def create_recorder_job(namespace: str, cronjob_name: str, job_id: int, video_id: str) -> str:
     async with AsyncClient(namespace=namespace) as client:
         cronjob = await client.get(CronJob, cronjob_name)
-        job = await client.create(recorder_job(cronjob, job_id, video_id))
+        job = recorder_job(cronjob, job_id, video_id)
+        try:
+            await client.create(job)
+        except ApiError as e:
+            # A Job the list missed: the name holds the job id, so it is this job's.
+            if e.status.code != 409:
+                raise
         return job.metadata.name

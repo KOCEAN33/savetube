@@ -1,7 +1,7 @@
 import pytest
-from lightkube.resources.batch_v1 import CronJob
+from lightkube.resources.batch_v1 import CronJob, Job
 
-from savetube.k8s import recorder_job
+from savetube.k8s import recorder_job, recorder_states
 
 
 def _cronjob(container_name: str = "recorder") -> CronJob:
@@ -74,3 +74,30 @@ def test_recorder_job_copies_template_and_sets_args():
 def test_recorder_job_needs_the_recorder_container():
     with pytest.raises(ValueError):
         recorder_job(_cronjob("other"), 1, "x")
+
+
+def _job(job_id, *conditions):
+    return Job.from_dict(
+        {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": f"savetube-recorder-{job_id}",
+                "labels": {"savetube.io/job-id": str(job_id)},
+            },
+            "status": {
+                "conditions": [{"type": t, "status": s} for t, s in conditions],
+            },
+        }
+    )
+
+
+def test_recorder_states_reads_a_failed_job_by_its_condition():
+    jobs = [
+        # The controller sets FailureTarget, then Failed, once backoffLimit is spent.
+        _job(7, ("FailureTarget", "True"), ("Failed", "True")),
+        _job(8, ("SuccessCriteriaMet", "True"), ("Complete", "True")),
+        _job(9),
+        _job(10, ("Failed", "False")),
+    ]
+    assert recorder_states(jobs) == {7: True, 8: False, 9: False, 10: False}

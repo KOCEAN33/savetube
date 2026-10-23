@@ -1,6 +1,6 @@
 # savetube plan
 
-Draft for archiving chosen YouTube channels and playlists, recording lives from their first second, and managing both from one web UI. Built: web with login, source polling, live detection, the archive worker, the storage pipeline, the image. Live recording is not built.
+Draft for archiving chosen YouTube channels and playlists, recording lives from their first second, and managing both from one web UI. Built: web with login, source polling, live detection, live recording through recorder Jobs, the archive worker, the storage pipeline, the image. No UI shows recorders yet.
 
 ## Files
 
