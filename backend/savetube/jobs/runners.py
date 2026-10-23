@@ -226,6 +226,49 @@ async def in_child(url: str, params: dict[str, Any], report: Report) -> dict[str
         return result["info"]
 
 
+def _live_progress(send: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any]], None]:
+    """`send` for a recording. A live from start downloads its video and audio
+    streams at once, each with its own count, so `done` and `speed` become
+    sums over the streams. Events stay out: the format pin is the archive
+    resume's, which a VOD queued later must not inherit, and the stream sizes
+    feed only the archive checks."""
+    done: dict[str | None, int] = {}
+    speed: dict[str | None, float] = {}
+
+    def forward(message: dict[str, Any]) -> None:
+        if "event" in message:
+            return
+        if "done" in message:
+            fmt = message["format"]
+            done[fmt] = message["done"] or 0
+            speed[fmt] = message["speed"] or 0
+            message = {
+                **message,
+                "format": "+".join(sorted(f for f in done if f)) or None,
+                "done": sum(done.values()),
+                "speed": sum(speed.values()) or None,
+            }
+        send(message)
+
+    return forward
+
+
 async def in_process(url: str, params: dict[str, Any], report: Report) -> dict[str, Any]:
-    """A recorder's download. Its pod is the process, so progress only logs."""
-    return await asyncio.to_thread(logged_download, url, params)
+    """A recorder's download, on a thread: its pod is the process. Progress
+    reaches the job row through the pump an archive child uses."""
+    receive, send = multiprocessing.Pipe(duplex=False)
+
+    def run() -> dict[str, Any]:
+        try:
+            return logged_download(url, params, _live_progress(send.send))
+        finally:
+            # The pump ends when the write end closes.
+            send.close()
+
+    pump = asyncio.create_task(pump_progress(receive, report))
+    try:
+        return await asyncio.to_thread(run)
+    finally:
+        with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(pump, PUMP_DRAIN_SECONDS)
+        receive.close()

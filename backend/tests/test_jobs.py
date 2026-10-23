@@ -194,3 +194,39 @@ def test_the_child_sends_the_merge_step_when_the_merger_starts(monkeypatch):
     sent = []
     jobs.logged_download("u", {}, sent.append)
     assert sent == [{"step": "merging"}]
+
+
+def _hook_dict(format_id, done):
+    return {
+        "status": "downloading",
+        "downloaded_bytes": done,
+        "info_dict": {"format_id": format_id},
+    }
+
+
+@pytest.mark.anyio
+async def test_a_recording_reports_the_bytes_of_every_stream_and_no_events(monkeypatch):
+    # A live from start downloads its video and audio streams at once, so
+    # their progress interleaves in one hook.
+    def download(url, params, on_format):
+        on_format({"format_id": "299+140"})
+        [hook] = params["progress_hooks"]
+        hook(_hook_dict("299", 100))
+        hook(_hook_dict("140", 10))
+        hook(_hook_dict("299", 300))
+        hook({**_hook_dict("299", 300), "status": "finished", "filename": __file__})
+        return {"id": "v1"}
+
+    monkeypatch.setattr(runners, "download", download)
+    monkeypatch.setattr(runners, "PROGRESS_SEND_SECONDS", 0)
+    written = []
+
+    async def report(message):
+        written.append(message)
+
+    info = await asyncio.wait_for(runners.in_process("u", {}, report), 5)
+    assert info == {"id": "v1"}
+    # The format pin and the stream sizes serve an archive download only.
+    assert all("event" not in m for m in written)
+    assert written[-1]["done"] == 310
+    assert written[-1]["total"] is None
