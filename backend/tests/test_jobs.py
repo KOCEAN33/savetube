@@ -205,7 +205,7 @@ def _hook_dict(format_id, done):
 
 
 @pytest.mark.anyio
-async def test_a_recording_reports_the_bytes_of_every_stream_and_no_events(monkeypatch):
+async def test_a_recording_reports_the_bytes_and_sizes_of_every_stream(monkeypatch, tmp_path):
     # A live from start downloads its video and audio streams at once, so
     # their progress interleaves in one hook.
     def download(url, params, on_format):
@@ -214,7 +214,9 @@ async def test_a_recording_reports_the_bytes_of_every_stream_and_no_events(monke
         hook(_hook_dict("299", 100))
         hook(_hook_dict("140", 10))
         hook(_hook_dict("299", 300))
-        hook({**_hook_dict("299", 300), "status": "finished", "filename": __file__})
+        stream = tmp_path / "v1.f299"
+        stream.write_bytes(b"12345")
+        hook({**_hook_dict("299", 300), "status": "finished", "filename": str(stream)})
         return {"id": "v1"}
 
     monkeypatch.setattr(runners, "download", download)
@@ -226,7 +228,8 @@ async def test_a_recording_reports_the_bytes_of_every_stream_and_no_events(monke
 
     info = await asyncio.wait_for(runners.in_process("u", {}, report), 5)
     assert info == {"id": "v1"}
-    # The format pin and the stream sizes serve an archive download only.
-    assert all("event" not in m for m in written)
+    # The format pin serves an archive download only.
+    events = [m for m in written if "event" in m]
+    assert events == [{"event": "stream", "format_id": "299", "size": 5, "expected": None}]
     assert written[-1]["done"] == 310
     assert written[-1]["total"] is None

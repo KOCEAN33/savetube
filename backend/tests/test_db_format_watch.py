@@ -446,6 +446,126 @@ async def test_a_finished_recording_starts_a_watch(settings):
 
 
 @pytest.mark.anyio
+async def test_a_recording_stores_the_measured_size_of_each_stream(settings, monkeypatch):
+    from savetube.jobs import run, runners
+
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v1', 'UC1', 'lives', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts)"
+        " VALUES (1, 'record', 'queued', 'v1', 0)",
+    )
+
+    def download(url, params, on_format):
+        home = Path(params["paths"]["home"])
+        [hook] = params["progress_hooks"]
+        on_format({"format_id": "299+140"})
+        for format_id, data in (("299", b"video stream"), ("140", b"audio")):
+            stream = home / f"v1.f{format_id}"
+            stream.write_bytes(data)
+            hook({"status": "finished", "filename": str(stream),
+                  "info_dict": {"format_id": format_id}})  # fmt: skip
+        media = home / "v1.mkv"
+        media.write_bytes(b"merged")
+        return {"id": "v1", "title": "t", "channel_id": "UC1", "live_status": "is_live",
+                "ext": "mkv", "format_id": "299+140",
+                "requested_formats": [
+                    {"format_id": "299", "vcodec": "avc1", "acodec": "none", "tbr": 4600.0},
+                    {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128.0},
+                ],
+                "requested_downloads": [{"filepath": str(media)}]}  # fmt: skip
+
+    monkeypatch.setattr(runners, "download", download)
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await run(1, settings, live=True, runner=runners.in_process, sessionmaker=sessionmaker)
+    async with sessionmaker() as session:
+        video = await session.get(Video, "v1")
+    await engine.dispose()
+
+    assert video.state.value == "complete"
+    assert [(f["format_id"], f.get("filesize")) for f in video.info["requested_formats"]] == [
+        ("299", len(b"video stream")),
+        ("140", len(b"audio")),
+    ]
+
+
+async def _record_media(settings, write, caplog=None):
+    """Record v1 with a runner that writes the recording with `write`."""
+    from savetube.jobs import run
+
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v1', 'UC1', 'lives', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts)"
+        " VALUES (1, 'record', 'queued', 'v1', 0)",
+    )
+
+    async def record(params, report):
+        media = Path(params["paths"]["home"]) / "v1.mkv"
+        write(media)
+        return {"id": "v1", "title": "t", "channel_id": "UC1", "live_status": "is_live",
+                "ext": "mkv", "vcodec": "mpeg4", "acodec": "opus",
+                "requested_downloads": [{"filepath": str(media)}]}  # fmt: skip
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await run(1, settings, live=True, runner=_Steps(record), sessionmaker=sessionmaker)
+    async with sessionmaker() as session:
+        video = await session.get(Video, "v1")
+        job = await session.get(Job, 1)
+    await engine.dispose()
+    return video, job
+
+
+@needs_ffmpeg
+@pytest.mark.anyio
+async def test_a_finished_recording_is_verified_and_gets_its_audio_copy(settings):
+    from test_audio import make_media
+
+    video, job = await _record_media(settings, make_media)
+
+    assert job.state is JobState.SUCCEEDED
+    assert video.verified_at is not None
+    assert video.verified_checks == ["probe", "packets"]
+    directory = settings.archive_root / video.dir_path
+    assert sorted(p.name for p in directory.iterdir()) == ["v1.mkv", "v1.opus"]
+    assert video.size_bytes == sum(p.stat().st_size for p in directory.iterdir())
+
+
+@needs_ffmpeg
+@pytest.mark.anyio
+async def test_a_recording_that_fails_its_checks_is_stored_unverified(settings, caplog):
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        video, job = await _record_media(settings, lambda p: p.write_bytes(b"recording"))
+
+    assert job.state is JobState.SUCCEEDED
+    assert video.state.value == "complete" and video.verified_at is None
+    media = settings.archive_root / video.dir_path / "v1.mkv"
+    assert media.read_bytes() == b"recording"
+    assert [_fields(r)["check"] for r in _events(caplog, "record.integrity_failed")] == ["probe"]
+
+
+@pytest.mark.anyio
+async def test_a_recording_whose_check_errors_is_stored_unverified(settings, monkeypatch):
+    from savetube import integrity
+
+    def broken(media, info, tools):
+        raise OSError("ffprobe crashed")
+
+    monkeypatch.setattr(integrity, "verify_recording", broken)
+
+    video, job = await _record_media(settings, lambda p: p.write_bytes(b"recording"))
+
+    assert job.state is JobState.SUCCEEDED and video.verified_at is None
+    assert (settings.archive_root / video.dir_path / "v1.mkv").read_bytes() == b"recording"
+
+
+@pytest.mark.anyio
 async def test_an_archive_download_that_is_no_live_starts_no_watch(settings):
     from conftest import _finished, _job_rows, _run_steps
 
@@ -666,10 +786,10 @@ async def test_the_dispatcher_sends_a_queued_replace(settings):
 # The API ------------------------------------------------------------------
 
 
-def _watched_with_formats(settings, *, stored_duration=8312.0):
+def _watched_with_formats(settings, *, stored_duration=8312.0, info=None):
     from savetube.formats import counted
 
-    _stored_live(settings)
+    _stored_live(settings, info=info)
     vod = _vod("WBJeEquyZ2s")
     _sql(
         settings,
@@ -736,6 +856,114 @@ def test_api_pick_of_a_held_video_needs_a_confirm(settings):
 
     assert refused.status_code == 409 and "12.0 s" in refused.json()["detail"]
     assert confirmed.status_code == 200 and confirmed.json()["held"] is True
+
+
+def test_api_stored_rows_without_a_size_estimate_it_from_bitrate_and_duration(settings):
+    # WBJ_RECORDING's streams carry no size, as a recording made before the
+    # recorder measured its streams. Stored for 8312 s.
+    _watched_with_formats(settings)
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    sizes = {r["format_id"]: (r["size"], r["size_estimated"]) for r in body["stored"]}
+    # 1100 kbps × 8312 s / 8 and 128 kbps × 8312 s / 8.
+    assert sizes == {"137": (1_142_900_000, True), "140": (132_992_000, True)}
+    assert all(r["size_estimated"] is False for r in body["formats"])
+
+
+def test_api_stored_rows_show_the_size_the_info_dict_holds(settings):
+    info = {
+        "format_id": "137+140",
+        "requested_formats": [
+            {**WBJ_RECORDING["requested_formats"][0], "filesize": 1_234_567},
+            {**WBJ_RECORDING["requested_formats"][1], "filesize_approx": 98_765},
+        ],
+    }
+    _stored_live(settings, info=info, watch_sql="UPDATE format_watch SET stored_duration = 8312")
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    sizes = {r["format_id"]: (r["size"], r["size_estimated"]) for r in body["stored"]}
+    assert sizes == {"137": (1_234_567, False), "140": (98_765, False)}
+
+
+def test_api_stored_row_without_a_duration_has_no_size(settings):
+    _stored_live(settings)
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    assert [(r["size"], r["size_estimated"]) for r in body["stored"]] == [(None, False)] * 2
+
+
+@pytest.mark.parametrize(
+    ("format_ids", "queued"),
+    [(["137"], "137"), (["140", "137"], "140+137")],
+    ids=["video", "video-and-audio"],
+)
+def test_api_pick_of_the_stored_format_id_queues_a_manual_replace(settings, format_ids, queued):
+    # A live recording and its VOD share an itag but are different encodes.
+    _watched_with_formats(settings)
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": format_ids})
+
+    assert r.status_code == 200, r.text
+    assert _sql_rows(settings, "SELECT format_id, manual FROM job") == [(queued, True)]
+
+
+def _stored_with(video, audio):
+    """Stored streams 137 and 140 of WBJ_RECORDING with these extra keys."""
+    v, a = WBJ_RECORDING["requested_formats"]
+    return {"format_id": f"{video.get('format_id', '137')}+140",
+            "requested_formats": [{**v, **video}, {**a, **audio}]}  # fmt: skip
+
+
+def _rows(body):
+    return (
+        [(r["format_id"], r["recorded"]) for r in body["stored"]],
+        [(r["format_id"], r["recommended"]) for r in body["formats"] if r["is_stored"]],
+    )
+
+
+def test_api_a_stored_youtube_stream_has_no_stored_row_but_its_youtube_row(settings):
+    https = {"protocol": "https"}
+    _watched_with_formats(settings, info=_stored_with(https, https))
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+        pick = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["137"]})
+
+    # 137 is the recommendation: the stored H.264 is this format. 251 beats 140.
+    assert _rows(body) == ([], [("137", True), ("140", False)])
+    [video] = [r for r in body["formats"] if r["format_id"] == "137"]
+    assert video["reason"] == "the stored H.264 is this format"
+    # Picking it would download the stored stream again.
+    assert pick.status_code == 422
+    assert _sql_rows(settings, "SELECT id FROM job") == []
+
+
+def test_api_a_recorded_stream_keeps_its_stored_row_beside_its_youtube_row(settings):
+    dash = {"protocol": "http_dash_segments_generator"}
+    _watched_with_formats(settings, info=_stored_with(dash, dash))
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    assert _rows(body) == ([("137", True), ("140", True)], [])
+    assert {"137", "140"} <= {r["format_id"] for r in body["formats"]}
+
+
+def test_api_a_stored_youtube_stream_the_probe_does_not_list_keeps_its_stored_row(settings):
+    https = {"protocol": "https"}
+    _watched_with_formats(settings, info=_stored_with({**https, "format_id": "999"}, https))
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    assert _rows(body) == ([("999", False)], [("140", False)])
 
 
 def test_api_pick_refuses_a_format_the_vod_does_not_offer(settings):
@@ -831,8 +1059,8 @@ def test_api_pick_refuses_while_a_replace_runs_or_a_pick_waits(
 
 @pytest.mark.parametrize(
     "format_ids",
-    [["243", "136"], ["137"], ["243", "140"], ["251", "251"], [], ["243", "251", "250"]],
-    ids=["two-video", "stored-video", "stored-audio", "same-twice", "none", "three"],
+    [["243", "136"], ["251", "251"], [], ["243", "251", "250"]],
+    ids=["two-video", "same-twice", "none", "three"],
 )
 def test_api_pick_refuses_a_bad_set_of_formats(settings, format_ids):
     _watched_with_formats(settings)
@@ -1037,6 +1265,12 @@ async def test_a_replace_swaps_the_audio_and_keeps_the_recording_aside(settings,
     assert watch.original_until is None
     assert sorted(p.name for p in directory.iterdir()) == ["v1.info.json", "v1.mkv", "v1.opus"]
     assert video.format_id == "137+251"
+    # The kept stream as stored, the downloaded one with its measured size.
+    assert video.info["requested_formats"] == [
+        WBJ_RECORDING["requested_formats"][0],
+        {"format_id": "251", "format": "251 - audio only (medium)", "vcodec": "none",
+         "acodec": "opus", "abr": 129.5, "filesize": opus.stat().st_size},
+    ]  # fmt: skip
     assert json.loads((directory / "v1.info.json").read_text())["format_id"] == "137+251"
     assert video.size_bytes == sum(p.stat().st_size for p in directory.iterdir())
 

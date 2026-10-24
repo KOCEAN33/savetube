@@ -396,8 +396,6 @@ async def test_a_word_change_reaches_a_cached_detection_without_a_new_probe(sett
         probed.append(video_id)
         return UPCOMING
 
-    seen = {}
-
     async def tick():
         await check_channel(
             sessionmaker,
@@ -406,7 +404,6 @@ async def test_a_word_change_reaches_a_cached_detection_without_a_new_probe(sett
             probe=probe,
             probe_live=_not_live,
             list_streams=_no_streams,
-            seen=seen,
         )
 
     await tick()
@@ -446,7 +443,6 @@ async def test_the_streams_tab_decides_live_words_when_it_watches(settings):
             probe=lambda v: pytest.fail("nothing to probe"),
             probe_live=lambda c: LIVE_NOW,
             list_streams=_no_streams,
-            seen={},
         )
 
     # The /videos source would pass the ISS stream, but /streams decides.

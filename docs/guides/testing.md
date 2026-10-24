@@ -37,6 +37,6 @@ docker run --rm --entrypoint sh -v <empty dir>:/out savetube:after -c "cd /out &
 kubectl --context homelab-tailnet -n postgres exec postgres-2 -c postgres -- psql -d savetube -c "set default_transaction_read_only=on;" -c "<one query>"
 ```
 
-`kubectl exec deploy/savetube-worker -c worker -- <cmd>` runs commands such as `find /archive` and `savetube extract-audio`.
+`kubectl exec deploy/savetube-worker -c worker -- <cmd>` runs commands such as `find /archive`, `savetube extract-audio` and `savetube verify-recordings`.
 
 `psql` 18 comes from Homebrew `libpq`.

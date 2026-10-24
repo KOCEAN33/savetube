@@ -10,15 +10,25 @@ import logging
 import urllib.error
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from yt_dlp.utils import DownloadError
 
 from savetube import cookies, logs, words
-from savetube.db.models import Channel, Job, JobKind, Source, SourceKind, Video, VideoState
+from savetube.db.models import (
+    Channel,
+    Job,
+    JobKind,
+    LiveSeen,
+    Source,
+    SourceKind,
+    Video,
+    VideoState,
+)
 from savetube.layout import VideoType, classify
 from savetube.logs import emit
 from savetube.pipeline import get_or_create_channel
@@ -31,14 +41,16 @@ FetchFeed = Callable[[str], str]
 Probe = Callable[[str], dict[str, Any]]
 # Probes a video id with the named cookie profile.
 MemberProbe = Callable[[str, str], dict[str, Any]]
-# Per scheduler process: a probed id and what the probe found, None when it
-# failed. The words are applied on every tick, so a word change needs no probe.
+# A probed id and what the probe found, None when it failed (`live_seen`).
 Seen = dict[str, dict[str, Any] | None]
 
 _YT = "{http://www.youtube.com/xml/schemas/2015}"
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _DETECTED = frozenset({"is_upcoming", "is_live"})
 _NOT_LIVE = "is not currently live"
+# An unreadable video is probed again this long after its last probe: a member
+# profile or a membership may have appeared.
+RETRY_UNREADABLE = timedelta(hours=24)
 # Videos whose title the words skip, logged once per process.
 _skip_logged: set[str] = set()
 # What `_record` and the words read. A full info dict holds every format.
@@ -146,7 +158,6 @@ async def check_channel(
     probe: Probe,
     probe_live: Probe,
     list_streams: Probe,
-    seen: Seen,
     member_probe: MemberProbe | None = None,
     profiles: list[str] | None = None,
 ) -> list[int]:
@@ -157,8 +168,10 @@ async def check_channel(
     once more through `member_probe` with the channel's member profile among
     the present `profiles`, if one exists.
 
-    `seen` lives in the scheduler process, so a restart probes each feed's
-    ids once more. The record job, not `seen`, keeps detections unique.
+    A probed id is a `live_seen` row, so no later check probes it again,
+    across scheduler restarts too. An unreadable one is probed again after
+    RETRY_UNREADABLE. The words are applied on every check, so a
+    word change needs no probe. The record job keeps detections unique.
     """
     name = await _channel_name(sessionmaker, channel_id)
     candidates = parse_feed(await asyncio.to_thread(fetch_feed, channel_id))
@@ -168,9 +181,24 @@ async def check_channel(
     candidates += [
         e["id"] for e in streams.get("entries") or [] if e.get("live_status") in _DETECTED
     ]
-    found: list[dict[str, Any]] = []
-    for video_id in dict.fromkeys(candidates):
-        if video_id not in seen:
+    ids = list(dict.fromkeys(candidates))
+    now = datetime.now(UTC)
+    async with sessionmaker() as session:
+        rows = await session.execute(
+            select(LiveSeen.video_id, LiveSeen.info, LiveSeen.probed_at).where(
+                LiveSeen.video_id.in_(ids),
+                or_(LiveSeen.info.is_not(None), LiveSeen.probed_at > now - RETRY_UNREADABLE),
+            )
+        )
+        seen: Seen = {}
+        probed: dict[str, datetime] = {}
+        for video_id, info, probed_at in rows:
+            seen[video_id] = info
+            probed[video_id] = probed_at
+    try:
+        for video_id in ids:
+            if video_id in seen:
+                continue
             try:
                 try:
                     info = await asyncio.to_thread(probe, video_id)
@@ -188,8 +216,8 @@ async def check_channel(
                     info = {**info, "availability": "subscriber_only"}
                 seen[video_id] = {k: info.get(k) for k in _KEPT}
             except DownloadError as e:
-                # A members-only or private video stays unreadable, so it is not
-                # probed again until the scheduler restarts.
+                # A members-only or private video stays unreadable, so it waits
+                # RETRY_UNREADABLE for its next probe.
                 emit(
                     log,
                     logging.WARNING,
@@ -199,8 +227,10 @@ async def check_channel(
                     reason=logs.cut(str(e)),
                 )
                 seen[video_id] = None
-        if seen[video_id] is not None:
-            found.append(seen[video_id])
+    finally:
+        # A check cut off by a failing probe keeps the probes made before it.
+        await _remember(sessionmaker, seen, probed, now)
+    found = [info for video_id in ids if (info := seen.get(video_id)) is not None]
     try:
         found.append(await asyncio.to_thread(probe_live, channel_id))
     except DownloadError as e:
@@ -250,6 +280,34 @@ async def check_channel(
         new=len(created),
     )
     return created
+
+
+async def _remember(
+    sessionmaker: async_sessionmaker, seen: Seen, probed: dict[str, datetime], now: datetime
+) -> None:
+    """Store every id of `seen` as listed `now`. An id missing from `probed`
+    was probed in this check, at `now`."""
+    if not seen:
+        return
+    stmt = insert(LiveSeen).values(
+        [
+            {"video_id": v, "info": info, "probed_at": probed.get(v, now), "listed_at": now}
+            for v, info in seen.items()
+        ]
+    )
+    excluded = stmt.excluded
+    async with sessionmaker() as session:
+        await session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[LiveSeen.video_id],
+                set_={
+                    "info": excluded.info,
+                    "probed_at": excluded.probed_at,
+                    "listed_at": excluded.listed_at,
+                },
+            )
+        )
+        await session.commit()
 
 
 async def _channel_name(sessionmaker: async_sessionmaker, channel_id: str) -> str:

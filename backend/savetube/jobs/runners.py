@@ -229,14 +229,14 @@ async def in_child(url: str, params: dict[str, Any], report: Report) -> dict[str
 def _live_progress(send: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any]], None]:
     """`send` for a recording. A live from start downloads its video and audio
     streams at once, each with its own count, so `done` and `speed` become
-    sums over the streams. Events stay out: the format pin is the archive
-    resume's, which a VOD queued later must not inherit, and the stream sizes
-    feed only the archive checks."""
+    sums over the streams. The format pin stays out: it is the archive
+    resume's, which a VOD queued later must not inherit. The stream sizes go
+    into the stored info dict."""
     done: dict[str | None, int] = {}
     speed: dict[str | None, float] = {}
 
     def forward(message: dict[str, Any]) -> None:
-        if "event" in message:
+        if "event" in message and message["event"] != "stream":
             return
         if "done" in message:
             fmt = message["format"]

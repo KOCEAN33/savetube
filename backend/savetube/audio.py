@@ -6,13 +6,14 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from savetube.db.models import Job, JobKind, JobState, Video, VideoState
-from savetube.integrity import IntegrityFailed, Tools
+from savetube.integrity import IntegrityFailed, Tools, verify_recording
 from savetube.logs import emit, human_bytes
 from savetube.storage import dir_size
 
@@ -107,6 +108,36 @@ async def add(media: Path, tools: Tools) -> None:
         emit(log, logging.INFO, "audio.extracted", file=path.name, size=size)
 
 
+def _recorded():
+    """Whether a record job stored the video."""
+    return (
+        select(Job.id)
+        .where(
+            Job.video_id == Video.id,
+            Job.kind == JobKind.RECORD,
+            Job.state == JobState.SUCCEEDED,
+        )
+        .exists()
+    )
+
+
+def _media(archive_root: Path, video: Video) -> Path:
+    # Files in a video directory are named `<video id>.<ext>` (layout.OUTTMPL).
+    ext = (video.info or {}).get("ext")
+    media = archive_root / video.dir_path / f"{video.id}.{ext}"
+    if not ext or not media.is_file():
+        raise AudioFailed("video file not found")
+    return media
+
+
+def _present(media: Path) -> Path | None:
+    """The audio copy beside `media`, if one exists."""
+    return next(
+        (p for p in (media.with_suffix(s) for s in SUFFIXES) if p != media and p.is_file()),
+        None,
+    )
+
+
 async def backfill(
     sessionmaker: async_sessionmaker,
     archive_root: Path,
@@ -116,16 +147,9 @@ async def backfill(
     out: Callable[[str], None] = print,
 ) -> dict[str, int]:
     """Write the missing audio copy of every stored video, one line each, and
-    a summary line. A live recording is left alone. Returns the counts."""
-    recorded = (
-        select(Job.id)
-        .where(
-            Job.video_id == Video.id,
-            Job.kind == JobKind.RECORD,
-            Job.state == JobState.SUCCEEDED,
-        )
-        .exists()
-    )
+    a summary line. A live recording is left to verify_recordings. Returns
+    the counts."""
+    recorded = _recorded()
     async with sessionmaker() as session:
         videos = (
             await session.scalars(
@@ -138,17 +162,11 @@ async def backfill(
     counts = {"extracted": 0, "skipped": 0, "failed": 0}
     for video in videos:
         directory = archive_root / video.dir_path
-        # Files in a video directory are named `<video id>.<ext>` (layout.OUTTMPL).
-        ext = (video.info or {}).get("ext")
-        media = directory / f"{video.id}.{ext}"
         try:
-            if not ext or not media.is_file():
-                raise AudioFailed("video file not found")
-            present = [
-                p for p in (media.with_suffix(s) for s in SUFFIXES) if p != media and p.is_file()
-            ]
-            if present:
-                raise Skipped(f"has {present[0].name}")
+            media = _media(archive_root, video)
+            present = _present(media)
+            if present is not None:
+                raise Skipped(f"has {present.name}")
             if dry_run:
                 path = await asyncio.to_thread(target, media, tools)
             else:
@@ -168,4 +186,60 @@ async def backfill(
             counts["extracted"] += 1
             out(f"{video.id} {verb} {path.relative_to(archive_root)}")
     out(f"{verb} {counts['extracted']}, skipped {counts['skipped']}, failed {counts['failed']}")
+    return counts
+
+
+async def verify_recordings(
+    sessionmaker: async_sessionmaker,
+    archive_root: Path,
+    *,
+    tools: Tools,
+    dry_run: bool = False,
+    out: Callable[[str], None] = print,
+) -> dict[str, int]:
+    """Verify every stored recording without `verified_at`, one at a time,
+    write its missing audio copy, and set `verified_at`. One line each and a
+    summary line. A failed recording stays unverified, so a later run tries
+    it again. Returns the counts."""
+    async with sessionmaker() as session:
+        videos = (
+            await session.scalars(
+                select(Video)
+                .where(
+                    Video.state == VideoState.COMPLETE,
+                    Video.dir_path.is_not(None),
+                    Video.verified_at.is_(None),
+                    _recorded(),
+                )
+                .order_by(Video.id)
+            )
+        ).all()
+    verb = "would verify" if dry_run else "verified"
+    counts = {"verified": 0, "failed": 0}
+    for video in videos:
+        try:
+            media = _media(archive_root, video)
+            if dry_run:
+                done = str(media.relative_to(archive_root))
+            else:
+                checks = await asyncio.to_thread(verify_recording, media, video.info or {}, tools)
+                if _present(media) is None:
+                    try:
+                        await asyncio.to_thread(extract, media, tools)
+                    except Skipped:
+                        pass
+                async with sessionmaker() as session:
+                    row = await session.get(Video, video.id)
+                    row.verified_at = datetime.now(UTC)
+                    row.verified_checks = checks
+                    row.size_bytes = dir_size(media.parent)
+                    await session.commit()
+                done = ",".join(checks) or "no checks"
+        except Exception as e:
+            counts["failed"] += 1
+            out(f"{video.id} failed: {e}")
+        else:
+            counts["verified"] += 1
+            out(f"{video.id} {verb} {done}")
+    out(f"{verb} {counts['verified']}, failed {counts['failed']}")
     return counts

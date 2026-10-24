@@ -121,6 +121,28 @@ def _extract_audio(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def _verify_recordings(args: argparse.Namespace) -> None:
+    # Lazy: audio loads yt-dlp, which migrate does not need.
+    from savetube import audio
+
+    settings = get_settings()
+
+    async def main() -> dict[str, int]:
+        engine = make_engine(settings.sqlalchemy_url)
+        try:
+            return await audio.verify_recordings(
+                make_sessionmaker(engine),
+                settings.archive_root,
+                tools=Tools(),
+                dry_run=args.dry_run,
+            )
+        finally:
+            await engine.dispose()
+
+    if asyncio.run(main())["failed"]:
+        raise SystemExit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="savetube")
     sub = parser.add_subparsers(required=True)
@@ -148,6 +170,13 @@ def main() -> None:
     p = sub.add_parser("extract-audio", help="write the missing audio copy of every stored video")
     p.add_argument("--dry-run", action="store_true", help="list what would be written")
     p.set_defaults(func=_extract_audio)
+
+    p = sub.add_parser(
+        "verify-recordings",
+        help="verify every stored recording not verified yet, and write its audio copy",
+    )
+    p.add_argument("--dry-run", action="store_true", help="list what would be verified")
+    p.set_defaults(func=_verify_recordings)
 
     args = parser.parse_args()
     logs.configure(get_settings().log_level)

@@ -23,7 +23,7 @@ from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
 from savetube.integrity import Tools
 from savetube.jobs import Dispatched, clean_incoming, dispatch, reclaim_stalled
-from savetube.live import Seen, check_logged, watched_channels
+from savetube.live import check_logged, watched_channels
 from savetube.logs import emit, human_bytes
 from savetube.poll import due_sources, poll_source
 from savetube.queue import ARCHIVE_QUEUE, app, enqueue
@@ -244,7 +244,7 @@ async def read_accounts(settings: Settings) -> None:
     await cookies.read_accounts(default_sessionmaker(), settings, reader=read_account)
 
 
-async def detect_lives(settings: Settings, seen: Seen) -> None:
+async def detect_lives(settings: Settings) -> None:
     sessionmaker = default_sessionmaker()
     async with sessionmaker() as session:
         channels = await watched_channels(session)
@@ -270,7 +270,6 @@ async def detect_lives(settings: Settings, seen: Seen) -> None:
                 probe=partial(probe_video, cookiefile=cookiefile),
                 probe_live=partial(probe_live, cookiefile=cookiefile),
                 list_streams=partial(list_streams, cookiefile=cookiefile),
-                seen=seen,
                 member_probe=member_probe,
                 profiles=cookies.profiles(settings),
             )
@@ -384,8 +383,7 @@ async def run(settings: Settings) -> None:
             )
             tg.create_task(_every("format watch", lambda: format_watch(settings, probes)))
             tg.create_task(scheduler_api.serve(api, settings.scheduler_api_port))
-            seen: Seen = {}
-            tg.create_task(_every("live detection", lambda: detect_lives(settings, seen)))
+            tg.create_task(_every("live detection", lambda: detect_lives(settings)))
             # Kubernetes sets this in every pod. A scheduler outside a cluster,
             # as in compose.yaml, has no API to make recorder Jobs with.
             if os.environ.get("KUBERNETES_SERVICE_HOST"):

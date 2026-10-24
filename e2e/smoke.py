@@ -244,6 +244,20 @@ def check_formats(page: Page) -> str:
     # The upgrade starts selected, the kept video keeps its stored row.
     expect(audio.get_by_role("radio", name="Select format 251")).to_be_checked()
     expect(video.get_by_role("radio", name="Keep stored video")).to_be_checked()
+    # The VOD's 137 is another encode of the stored id, so it is selectable.
+    expect(video.get_by_role("radio", name="Select format 137")).to_be_enabled()
+    # The seed's stored streams carry no size: 1100 kbps over 2 s.
+    stored_row = video.locator("tbody tr").filter(
+        has=page.get_by_role("radio", name="Keep stored video")
+    )
+    expect(stored_row).to_contain_text("≈ 269 KiB")
+    # The stored 140 came from YouTube, so its listed row stands for it.
+    kept_audio = audio.locator("tbody tr").filter(
+        has=page.get_by_role("radio", name="Keep stored audio")
+    )
+    expect(kept_audio).to_have_count(1)
+    expect(kept_audio).to_contain_text("YouTube, stored")
+    expect(kept_audio).to_contain_text("140")
     expect(card.get_by_role("button", name="Replace with 251")).to_be_enabled()
     settle(page)
     rows = video.locator("tbody tr").count() + audio.locator("tbody tr").count()

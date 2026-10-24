@@ -35,10 +35,19 @@ class FormatRow(BaseModel):
     fps: float | None
     # kbps: tbr for video, abr for audio.
     bitrate: float | None
-    # The exact size, else yt-dlp's estimate. Null for the stored streams.
+    # The exact size, else yt-dlp's estimate. A stored stream without either
+    # gets bitrate × stored duration, null without those.
     size: int | None
-    # One of the stored file's streams.
+    # `size` is that bitrate × duration estimate.
+    size_estimated: bool
+    # A row of `stored`: a stored stream without its own row in `formats`.
     stored: bool
+    # On a `stored` row: the stream is no YouTube `https` format, such as a
+    # live recording's DASH stream. A VOD with that id is another encode.
+    recorded: bool
+    # On a `formats` row: the stored stream is this YouTube format, so it has
+    # no `stored` row. Picking it keeps the stored stream.
+    is_stored: bool
     # The pick of its kind when it ranks above the stored stream, else the
     # stored stream of that kind.
     recommended: bool
@@ -89,8 +98,21 @@ class PickIn(BaseModel):
 
 
 def _row(
-    f: dict[str, Any], k: formats.Kind, *, stored: bool, recommended: dict[str, str], key: str
+    f: dict[str, Any],
+    k: formats.Kind,
+    *,
+    stored: bool,
+    recommended: dict[str, str],
+    key: str,
+    duration: float | None = None,
+    is_stored: bool = False,
 ) -> FormatRow:
+    bitrate = f.get("tbr") if k == "video" else f.get("abr")
+    size = f.get("filesize") or f.get("filesize_approx")
+    # A recording made before the recorder measured its streams has no size.
+    estimated = stored and size is None and bitrate is not None and duration is not None
+    if estimated:
+        size = round(bitrate * 1000 / 8 * duration)
     return FormatRow(
         format_id=str(f.get("format_id")),
         kind=k,
@@ -98,9 +120,12 @@ def _row(
         width=f.get("width") if k == "video" else None,
         height=f.get("height") if k == "video" else None,
         fps=f.get("fps") if k == "video" else None,
-        bitrate=f.get("tbr") if k == "video" else f.get("abr"),
-        size=None if stored else f.get("filesize") or f.get("filesize_approx"),
+        bitrate=bitrate,
+        size=size,
+        size_estimated=estimated,
         stored=stored,
+        recorded=stored and formats.recorded(f),
+        is_stored=is_stored,
         recommended=key in recommended,
         reason=recommended.get(key),
     )
@@ -116,11 +141,19 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
     listed = watch.formats or []
     info = video.info or {}
     stored = formats.stored_streams(info)
-    # Row keys: `stored:<kind>` for a stored stream, the format id otherwise.
+    # The stored YouTube streams the last probe lists: their listed row stands
+    # for them.
+    merged = _merged(stored, listed)
+    # Row keys: `stored:<kind>` for a stored row, the format id otherwise.
     recommended: dict[str, str] = {}
     if listed:
         for kind, pick in formats.picks(listed, info).items():
-            key = pick.format["format_id"] if pick.above else f"stored:{kind}"
+            if pick.above:
+                key = pick.format["format_id"]
+            elif kind in merged:
+                key = merged[kind]
+            else:
+                key = f"stored:{kind}"
             recommended[key] = pick.reason
     job = await session.scalar(
         select(Job)
@@ -145,12 +178,26 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
         original_kept=watch.original_path is not None,
         original_until=watch.original_until,
         stored=[
-            _row(stored[k], k, stored=True, recommended=recommended, key=f"stored:{k}")
+            _row(
+                stored[k],
+                k,
+                stored=True,
+                recommended=recommended,
+                key=f"stored:{k}",
+                duration=watch.stored_duration,
+            )
             for k in ("video", "audio")
-            if k in stored
+            if k in stored and k not in merged
         ],
         formats=[
-            _row(f, formats.kind(f), stored=False, recommended=recommended, key=str(f["format_id"]))
+            _row(
+                f,
+                formats.kind(f),
+                stored=False,
+                recommended=recommended,
+                key=str(f["format_id"]),
+                is_stored=merged.get(formats.kind(f)) == str(f["format_id"]),
+            )
             for f in formats.best_first(listed)
         ],
         replace=None
@@ -165,6 +212,19 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
             finished_at=job.finished_at,
         ),
     )
+
+
+def _merged(
+    stored: dict[formats.Kind, dict[str, Any]], listed: list[dict[str, Any]]
+) -> dict[formats.Kind, str]:
+    """The format id of each stored stream that is a YouTube format the
+    last probe lists, by kind."""
+    ids = {str(f.get("format_id")) for f in listed}
+    return {
+        k: str(f.get("format_id"))
+        for k, f in stored.items()
+        if not formats.recorded(f) and str(f.get("format_id")) in ids
+    }
 
 
 async def _watched(session: AsyncSession, video_id: str) -> tuple[FormatWatch, Video] | None:
@@ -223,13 +283,15 @@ async def pick_format(session: Session, video_id: str, body: PickIn) -> FormatWa
     missing = [i for i in body.format_ids if i not in listed]
     if missing:
         raise HTTPException(status_code=404, detail=f"the VOD does not offer {', '.join(missing)}")
-    stored = formats.stored_streams(video.info or {})
+    # A recorded stream's id may be picked: a live recording and its VOD share
+    # an itag but are different encodes.
+    merged = _merged(formats.stored_streams(video.info or {}), list(listed.values()))
     chosen: dict[formats.Kind, str] = {}
     for format_id in body.format_ids:
         k = formats.kind(listed[format_id])
         if k in chosen:
             raise HTTPException(status_code=422, detail=f"pick one {k} format at most")
-        if (stored.get(k) or {}).get("format_id") == format_id:
+        if merged.get(k) == format_id:
             raise HTTPException(
                 status_code=422, detail=f"the stored file already has {k} format {format_id}"
             )

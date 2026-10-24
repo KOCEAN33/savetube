@@ -250,7 +250,7 @@ async def _replace(
         old_info = video.info or {}
     if stored is None or not stored.is_file():
         raise ReplaceFailed("stored file not found")
-    new = formats.stored_streams(info)
+    new = formats.stored_streams(formats.with_sizes(info, streams))
     # The output is on the archive's filesystem, so it renames into the tree.
     out = outdir / f"{begun.video_id}.mkv"
     await _step(sessionmaker, job_id, begun, "merging")

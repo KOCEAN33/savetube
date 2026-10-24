@@ -208,7 +208,9 @@ def seed(session: Session, archive_root: Path) -> dict:
         "requested_formats": [
             {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none",
              "height": 1080, "fps": 30, "tbr": 1100.0},
-            {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128.0},
+            # A VOD download's stream: the listed 140 stands for it.
+            {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128.0,
+             "protocol": "https"},
         ],
     }
     playable_dir = video_dir(main_dir, VideoType.VIDEOS, info)
