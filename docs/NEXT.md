@@ -24,3 +24,7 @@ Confirm `v0.13.0` in production: the Downloads page, the `members_all` and `play
     - Probe now on the Formats card answers within 120 s and logs `watch.probed` in the scheduler.
     - A Use pick makes a replace job with `job.manual` true. The worker starts it ahead of the queued archive jobs.
     - The swap sets `format_watch.original_until` to 7 days after the swap.
+11. `895a3f5` and `37dc2b3`, the slimmer Live page and the one short time form, are on develop only and ship with the next release. After that deploy, check on the Live page while a live records:
+    - The Recording now card shows no pod badge for a healthy recorder, and the Streams row shows the recorder Job number in the Recorder column.
+    - The Streams table fits the screen without sideways scrolling, and no page shows a time with seconds.
+    - `GET /api/pods` answers `{available, recorders}` with no `workers`.
