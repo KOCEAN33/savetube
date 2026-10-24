@@ -9,6 +9,7 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 
 ## Needs the user
 
+- Format watch video pick: the codec rule ranks AV1 `399` above the premium VP9 `616`, which has a higher bitrate. A live stored as `616` would be replaced by `399`. Whether `616` wins needs the user's call.
 - Log format: the user wants to review it. Logs are logfmt by the decision in `docs/plan/operations.md` Logging. A switch to JSON changes that section, `backend/savetube/logs.py`, and any Loki query that uses `| logfmt`.
 - Smaller image: ffmpeg is about 180-210 MB of it. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
 - Safari playback: out of scope until the user asks. The plan then is a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
@@ -16,6 +17,7 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 
 ## Bugs and gaps
 
+- `jobs/replace.py` `_begin` runs a replace job whatever its row state, so a cancelled job whose procrastinate row is still `todo` runs. Migration 0021 deleted those rows once. It could refuse a row that is not `queued`.
 - A recorder whose stream stays upcoming past `scheduled_at`, such as a cancelled waiting room, waits with `wait_for_video` until someone deletes its Job.
 - When the poll queues the VOD while a recording still merges, both target one tree directory, and the second `finalize` fails with `FileExistsError`.
 - A failed audio extraction after a download is not retried. Only a rerun of `savetube extract-audio` through `kubectl exec` fills it, with `print` output invisible in Loki and tied to the caller's connection.
