@@ -230,13 +230,21 @@ def check_formats(page: Page) -> str:
     ) as formats:
         page.goto(f"{BASE}/videos/{video_id}")
     assert formats.value.ok, f"formats answered {formats.value.status}"
-    table = page.locator("#format-watch").get_by_role("table", name="Formats")
-    expect(table).to_be_visible()
-    # One badge for the offered audio, one for the kept video.
-    expect(table.locator("[data-slot=badge]")).to_have_count(2)
-    expect(table.get_by_role("button", name="Use format 251")).to_be_enabled()
+    card = page.locator("#format-watch")
+    expect(card.get_by_role("button", name="Probe now")).to_be_enabled()
+    # Collapsed until the title opens it.
+    expect(card.get_by_role("table")).to_have_count(0)
+    card.get_by_role("button", name="Formats").click()
+    video = card.get_by_role("table", name="Video formats")
+    audio = card.get_by_role("table", name="Audio formats")
+    expect(video).to_be_visible()
+    # The kept video and the offered audio carry the badges.
+    expect(video.locator("[data-slot=badge]")).to_have_count(1)
+    expect(audio.locator("[data-slot=badge]")).to_have_count(1)
+    expect(audio.get_by_role("button", name="Use format 251")).to_be_enabled()
     settle(page)
-    return f"{table.locator('tbody tr').count()} rows"
+    rows = video.locator("tbody tr").count() + audio.locator("tbody tr").count()
+    return f"{rows} rows"
 
 
 CHECKS = [

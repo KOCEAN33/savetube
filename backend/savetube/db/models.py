@@ -354,21 +354,27 @@ class Job(Base):
     progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     # The format ids a replace job downloads, `+`-joined. Null for other kinds.
     format_id: Mapped[str | None] = mapped_column(Text)
+    # A replace the user picked on the video page. It dispatches before
+    # waiting archive jobs (savetube.jobs.dispatch).
+    manual: Mapped[bool] = mapped_column(default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class FormatWatch(Base):
-    """The format watch of a stored live (docs/plan/live.md, Format watch)."""
+    """The format watch of a stored live, or the formats a user's probe found
+    for any complete video (docs/plan/live.md, Format watch)."""
 
     __tablename__ = "format_watch"
 
     video_id: Mapped[str] = mapped_column(
         ForeignKey("video.id", ondelete="CASCADE"), primary_key=True
     )
-    # When the live aired (savetube.watch.aired_at). The watch runs WATCH_DAYS from here.
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # When the live aired (savetube.watch.aired_at). The automatic watch runs
+    # WATCH_DAYS from here. Null for a row a user's probe made: no automatic
+    # probe or replace ever touches it.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The last probe, failed or not. Null before the first.
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # The counted formats of the last probe that succeeded (savetube.formats.counted).
@@ -380,10 +386,13 @@ class FormatWatch(Base):
     probe_error: Mapped[str | None] = mapped_column(Text)
     # A user's pick from the video page ends the automatic replaces.
     manual: Mapped[bool] = mapped_column(default=False, server_default=false())
-    # The first stored file, moved aside by the first replace. Relative to the
-    # archive root. Null until a replace happens.
+    # The stored file a replace moved aside, while it is kept. Relative to the
+    # archive root. Null before a replace and after the original is deleted.
     original_path: Mapped[str | None] = mapped_column(Text)
-    # When the watch ended and the original was deleted.
+    # When the scheduler deletes the original of a swap outside an open watch.
+    # Null while an open watch keeps it until its end.
+    original_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the automatic watch ended.
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

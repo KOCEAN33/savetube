@@ -86,6 +86,8 @@ spec:
               containerPort: 9090
             - name: health
               containerPort: 8081
+            - name: api
+              containerPort: 8082
           {{- include "savetube.livenessProbe" . | nindent 10 }}
           env:
             {{- include "savetube.archiveEnv" . | nindent 12 }}
@@ -106,3 +108,22 @@ spec:
       volumes:
         {{- include "savetube.archiveVolumes" . | nindent 8 }}
         {{- include "savetube.stagingVolume" . | nindent 8 }}
+---
+# The scheduler's internal API (backend/savetube/scheduler_api.py). Only the
+# web calls it. It has no auth, so it stays a ClusterIP Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "savetube.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "savetube.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler
+  ports:
+    - name: api
+      port: 8082
+      targetPort: api

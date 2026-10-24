@@ -210,10 +210,12 @@ export interface FormatRow {
   reason: string | null
 }
 
-// The format watch of a stored live (docs/plan/live.md, Format watch).
+// The format watch of a stored live, or a user's probe of any complete video
+// (docs/plan/live.md, Format watch).
 export interface FormatWatch {
-  started_at: string
-  ends_at: string
+  // Null for a row a user's probe made: no automatic watch.
+  started_at: string | null
+  ends_at: string | null
   ended_at: string | null
   checked_at: string | null
   probe_error: string | null
@@ -226,6 +228,8 @@ export interface FormatWatch {
   // VOD minus stored, in seconds.
   duration_diff: number | null
   original_kept: boolean
+  // When the original of a swap outside an open watch is deleted.
+  original_until: string | null
   stored: FormatRow[]
   formats: FormatRow[]
   replace: {

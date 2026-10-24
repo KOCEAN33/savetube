@@ -1,5 +1,6 @@
 """The format watch of stored lives (docs/plan/live.md, Format watch)."""
 
+import asyncio
 import json
 import logging
 import shutil
@@ -7,6 +8,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import httpx2
 import pytest
 import sqlalchemy as sa
 from conftest import ADMIN_URL, _api, _events, _queue_row, _sql, _sql_rows, _Steps
@@ -26,8 +28,11 @@ DIR = "A [UC1]/lives/2026-10-24 t [v1]"
 NOW = datetime(2026, 10, 24, 12, tzinfo=UTC)
 
 
-def _stored_live(settings, *, info=None, video_type="lives", watch_sql="", media=b"recording"):
-    """Live v1 stored complete in the tree with its recording, and its watch."""
+def _stored_live(
+    settings, *, info=None, video_type="lives", watch_sql="", media=b"recording", watched=True
+):
+    """Live v1 stored complete in the tree with its recording, and its watch
+    unless not `watched`."""
     info = {"id": "v1", "ext": "mkv", "live_status": "is_live", **(info or WBJ_RECORDING)}
     directory = settings.archive_root / DIR
     directory.mkdir(parents=True)
@@ -41,7 +46,11 @@ def _stored_live(settings, *, info=None, video_type="lives", watch_sql="", media
         f" '{DIR}', now(), :fmt, CAST(:info AS jsonb))".replace(":type", f"'{video_type}'")
         .replace(":fmt", f"'{info['format_id']}'")
         .replace(":info", "'" + json.dumps(info).replace("'", "''") + "'"),
-        "INSERT INTO format_watch (video_id, started_at) VALUES ('v1', now())",
+        *(
+            ["INSERT INTO format_watch (video_id, started_at) VALUES ('v1', now())"]
+            if watched
+            else []
+        ),
         *([watch_sql] if watch_sql else []),
     )
     return directory
@@ -192,6 +201,7 @@ async def test_only_due_watches_are_probed(settings):
         settings,
         probe=_probe_vod(calls=calls),
         tools=_Tools(8312.0),
+        lock=asyncio.Lock(),
         now=NOW,
     )
     await engine.dispose()
@@ -253,6 +263,153 @@ async def test_a_watch_waits_for_its_running_replace_before_it_ends(settings):
 
     [(ended,)] = _sql_rows(settings, "SELECT ended_at IS NOT NULL FROM format_watch")
     assert not ended
+
+
+# Manual probes ----------------------------------------------------------------
+
+
+def _never_probe(video_id, cookiefile):
+    pytest.fail(f"no probe of {video_id} expected")
+
+
+async def _probe_now(settings, probe, now=NOW):
+    from savetube.watch import probe_now
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    try:
+        await probe_now(
+            sessionmaker,
+            settings,
+            "v1",
+            probe=probe,
+            tools=_Tools(8312.0),
+            lock=asyncio.Lock(),
+            now=now,
+        )
+        async with sessionmaker() as session:
+            watch = await session.get(FormatWatch, "v1")
+            jobs = list(await session.scalars(sa.select(Job).order_by(Job.id)))
+    finally:
+        await engine.dispose()
+    return watch, jobs
+
+
+async def _watch_loop(settings, now, probe=_never_probe):
+    from savetube.watch import watch_formats
+
+    engine = make_engine(settings.sqlalchemy_url)
+    await watch_formats(
+        make_sessionmaker(engine),
+        settings,
+        probe=probe,
+        tools=_Tools(8312.0),
+        lock=asyncio.Lock(),
+        now=now,
+    )
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_manual_probe_makes_a_row_the_watch_loop_never_probes_or_replaces(settings):
+    # The stored AAC has an Opus upgrade, which an open watch queues.
+    _stored_live(settings, video_type="videos", watched=False)
+
+    watch, jobs = await _probe_now(settings, _probe_vod())
+
+    assert watch.started_at is None and watch.checked_at == NOW
+    assert "251" in {f["format_id"] for f in watch.formats}
+    assert jobs == []
+
+    # 7 hours on, a watch would be due for its next probe.
+    await _watch_loop(settings, NOW + timedelta(hours=7))
+
+    rows = _sql_rows(settings, f"SELECT ended_at, checked_at = '{NOW}' FROM format_watch")
+    assert rows == [(None, True)]
+    assert _sql_rows(settings, "SELECT id FROM job") == []
+
+
+@pytest.mark.anyio
+async def test_a_manual_probe_of_an_open_watch_counts_as_its_probe(settings):
+    _stored_live(settings)
+
+    watch, jobs = await _probe_now(settings, _probe_vod())
+
+    assert watch.checked_at == NOW
+    assert [(j.format_id, j.manual) for j in jobs] == [("251", False)]
+
+
+@pytest.mark.anyio
+async def test_a_manual_probe_of_an_ended_watch_refreshes_the_formats_only(settings):
+    ended = NOW - timedelta(days=1)
+    _stored_live(
+        settings,
+        watch_sql=f"UPDATE format_watch SET started_at = '{NOW - timedelta(days=9)}',"
+        f" ended_at = '{ended}'",
+    )
+
+    watch, jobs = await _probe_now(settings, _probe_vod())
+
+    assert watch.formats and watch.checked_at == NOW and watch.ended_at == ended
+    assert jobs == []
+
+
+@pytest.mark.anyio
+async def test_a_manual_probe_refuses_a_video_not_complete(settings):
+    from savetube.watch import NotComplete
+
+    _stored_live(settings, watched=False)
+    _sql(settings, "UPDATE video SET state = 'staged'")
+
+    with pytest.raises(NotComplete):
+        await _probe_now(settings, _never_probe)
+
+    assert _sql_rows(settings, "SELECT video_id FROM format_watch") == []
+
+
+def _kept_original(settings, *, watch_sql):
+    directory = _stored_live(settings, media=b"replaced", watch_sql=watch_sql)
+    aside = settings.archive_root / ".originals" / "v1" / "v1.mkv"
+    aside.parent.mkdir(parents=True)
+    aside.write_bytes(b"recording")
+    return directory, aside
+
+
+@pytest.mark.anyio
+async def test_the_original_of_a_manual_swap_goes_7_days_after_the_swap(settings):
+    until = NOW + timedelta(days=7)
+    directory, aside = _kept_original(
+        settings,
+        watch_sql="UPDATE format_watch SET started_at = NULL,"
+        f" original_path = '.originals/v1/v1.mkv', original_until = '{until}'",
+    )
+
+    await _watch_loop(settings, until - timedelta(minutes=1))
+    assert aside.read_bytes() == b"recording"
+
+    await _watch_loop(settings, until + timedelta(minutes=1))
+    assert not aside.parent.exists()
+    assert (directory / "v1.mkv").read_bytes() == b"replaced"
+    assert _sql_rows(settings, "SELECT original_path, original_until FROM format_watch") == [
+        (None, None)
+    ]
+
+
+@pytest.mark.anyio
+async def test_the_end_of_a_watch_keeps_an_original_with_its_own_7_days(settings):
+    # A pick that ran after the watch's 7 days swapped with a keep of its own.
+    until = datetime.now(UTC) + timedelta(days=6)
+    _, aside = _kept_original(
+        settings,
+        watch_sql="UPDATE format_watch SET original_path = '.originals/v1/v1.mkv',"
+        f" original_until = '{until}'",
+    )
+
+    await _end(settings, datetime.now(UTC) + timedelta(days=7, minutes=1))
+
+    assert aside.read_bytes() == b"recording"
+    [(ended,)] = _sql_rows(settings, "SELECT ended_at IS NOT NULL FROM format_watch")
+    assert ended
 
 
 @pytest.mark.anyio
@@ -592,6 +749,116 @@ def test_api_pick_refuses_a_format_the_vod_does_not_offer(settings):
     assert _sql_rows(settings, "SELECT id FROM job") == []
 
 
+def test_api_pick_after_the_watch_ended_queues_a_manual_replace(settings):
+    _watched_with_formats(settings)
+    _sql(
+        settings,
+        "UPDATE format_watch SET started_at = now() - interval '9 days',"
+        " ended_at = now() - interval '2 days'",
+    )
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/pick", json={"format_id": "251"})
+
+    assert r.status_code == 200 and r.json()["ended_at"] is not None
+    assert _sql_rows(settings, "SELECT format_id, manual FROM job") == [("251", True)]
+
+
+class _Scheduler:
+    """The scheduler's API behind the web's outbound httpx2 calls."""
+
+    def __init__(self, settings, probe):
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        from savetube.db import PSYCOPG_CONNECT_ARGS
+        from savetube.scheduler_api import create_app
+
+        # NullPool: the web app's loop runs these calls, so no connection
+        # outlives it.
+        engine = create_async_engine(
+            settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
+        )
+        self.app = create_app(
+            settings,
+            make_sessionmaker(engine),
+            probes=asyncio.Lock(),
+            probe=probe,
+            tools=_Tools(8312.0),
+        )
+        self.urls = []
+
+    async def handle(self, request):
+        self.urls.append(str(request.url))
+        return await httpx2.ASGITransport(app=self.app).handle_async_request(request)
+
+
+def test_api_probe_then_pick_on_a_video_without_a_watch(settings, monkeypatch):
+    _stored_live(settings, video_type="videos", watched=False)
+    scheduler = _Scheduler(settings, _probe_vod())
+    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
+
+    with _api(settings) as api:
+        assert api.get("/api/videos/v1/formats").json() is None
+        probed = api.post("/api/videos/v1/formats/probe")
+        picked = api.post("/api/videos/v1/formats/pick", json={"format_id": "251"})
+
+    assert scheduler.urls == [f"{settings.scheduler_url}/probe/v1"]
+    assert probed.status_code == 200, probed.text
+    body = probed.json()
+    assert body["started_at"] is None and body["ends_at"] is None
+    assert body["checked_at"] is not None and body["replace"] is None
+    assert [r["format_id"] for r in body["formats"] if r["recommended"]] == ["251"]
+    assert picked.status_code == 200
+    assert _sql_rows(settings, "SELECT format_id, manual FROM job") == [("251", True)]
+
+
+def test_api_probe_refuses_a_video_not_complete_without_calling_the_scheduler(
+    settings, monkeypatch
+):
+    _stored_live(settings, watched=False)
+    _sql(settings, "UPDATE video SET state = 'downloading'")
+    scheduler = _Scheduler(settings, _never_probe)
+    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/probe")
+
+    assert r.status_code == 409 and scheduler.urls == []
+
+
+def test_api_probe_answers_504_when_the_scheduler_times_out(settings, monkeypatch):
+    _stored_live(settings, watched=False)
+
+    async def slow(self, request):
+        raise httpx2.ReadTimeout("timed out", request=request)
+
+    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", slow)
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/probe")
+
+    assert r.status_code == 504 and "120 s" in r.json()["detail"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("manual", "first"), [(True, 20), (False, 12)])
+async def test_a_manual_replace_dispatches_before_waiting_archives(settings, manual, first):
+    from conftest import _dispatch, _waiting_rows
+
+    # One archive runs, so max_concurrent 2 leaves one slot.
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 2",
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts, manual) VALUES"
+        f" (20, 'replace', 'queued', 'c', '251', 0, {manual})",
+    )
+
+    enqueued, _ = await _dispatch(settings)
+
+    assert enqueued == [first]
+
+
 # The replace job ------------------------------------------------------------
 
 
@@ -669,6 +936,8 @@ async def test_a_replace_swaps_the_audio_and_keeps_the_recording_aside(settings,
     aside = settings.archive_root / ".originals" / "v1" / "v1.mkv"
     assert aside.read_bytes() == recording.read_bytes()
     assert watch.original_path == ".originals/v1/v1.mkv"
+    # The open watch keeps it until its end.
+    assert watch.original_until is None
     assert sorted(p.name for p in directory.iterdir()) == ["v1.info.json", "v1.mkv", "v1.opus"]
     assert video.format_id == "137+251"
     assert json.loads((directory / "v1.info.json").read_text())["format_id"] == "137+251"
@@ -680,6 +949,29 @@ async def test_a_replace_swaps_the_audio_and_keeps_the_recording_aside(settings,
     assert job.state is JobState.SUCCEEDED, job.log_tail
     assert aside.read_bytes() == recording.read_bytes()
     assert sorted(p.name for p in aside.parent.iterdir()) == ["v1.mkv"]
+
+
+@needs_ffmpeg
+@pytest.mark.anyio
+async def test_a_manual_swap_without_a_watch_keeps_the_original_7_days(settings, tmp_path):
+    from test_audio import make_media
+
+    recording = make_media(tmp_path / "recording.mkv", audio="aac")
+    opus = make_media(tmp_path / "opus.webm", audio="libopus", video=False)
+    _stored_live(settings, video_type="videos", media=recording.read_bytes(), watched=False)
+    _sql(
+        settings,
+        "INSERT INTO format_watch (video_id, started_at, vod_duration) VALUES ('v1', NULL, 1)",
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts, manual)"
+        " VALUES (1, 'replace', 'queued', 'v1', '251', 0, true)",
+    )
+
+    job, _, watch = await _replace(settings, 1, _Steps(_opus_download(opus)))
+
+    assert job.state is JobState.SUCCEEDED, job.log_tail
+    aside = settings.archive_root / ".originals" / "v1" / "v1.mkv"
+    assert aside.read_bytes() == recording.read_bytes()
+    assert watch.original_until == job.finished_at + timedelta(days=7)
 
 
 @needs_ffmpeg

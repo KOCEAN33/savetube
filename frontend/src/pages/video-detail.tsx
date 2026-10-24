@@ -100,7 +100,7 @@ export function VideoDetailPage() {
           )
         }}
       </QueryState>
-      <FormatWatchCard videoId={id} />
+      {video.data?.state === "complete" && <FormatWatchCard videoId={id} />}
     </Page>
   )
 }

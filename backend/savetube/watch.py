@@ -3,7 +3,10 @@
 YouTube adds better formats to a live's VOD hours or days after the stream.
 For WATCH_DAYS after a stored live aired, the scheduler probes its
 formats every PROBE_EVERY and queues a replace job for a stream that a better
-one can take the place of (savetube.jobs.replace)."""
+one can take the place of (savetube.jobs.replace).
+
+A user's probe from the video page lists the formats of any complete video
+now. A video without a watch gets a row no automatic probe or replace touches."""
 
 import asyncio
 import logging
@@ -32,6 +35,8 @@ PROBE_EVERY = timedelta(hours=6)
 # Where a replace moves the first stored file, on the archive's filesystem,
 # so the move is a hard link.
 ORIGINALS_DIR = ".originals"
+# How long the original of a swap outside an open watch stays.
+ORIGINAL_KEPT = timedelta(days=7)
 
 # Reads a video id's info dict, formats included, with an optional cookie file.
 Probe = Callable[[str, Path | None], dict[str, Any]]
@@ -95,8 +100,57 @@ async def replace_active(session: AsyncSession, video_id: str) -> Job | None:
     )
 
 
-def ends_at(watch: FormatWatch) -> datetime:
-    return watch.started_at + WATCH_DAYS
+def ends_at(watch: FormatWatch) -> datetime | None:
+    """None for a row without an automatic watch."""
+    return None if watch.started_at is None else watch.started_at + WATCH_DAYS
+
+
+def is_open(watch: FormatWatch, now: datetime) -> bool:
+    """The automatic watch runs: it probes and queues replaces."""
+    end = ends_at(watch)
+    return end is not None and watch.ended_at is None and now < end
+
+
+class NotComplete(Exception):
+    pass
+
+
+async def probe_now(
+    sessionmaker: async_sessionmaker,
+    settings: Settings,
+    video_id: str,
+    *,
+    probe: Probe,
+    tools: Tools,
+    lock: asyncio.Lock,
+    now: datetime | None = None,
+) -> None:
+    """The user's probe of a complete video. It counts as the probe of an
+    open watch, and on any other row only stores the formats. A video without
+    a row gets one without an automatic watch. Raises LookupError for an
+    unknown video, NotComplete for one not stored complete."""
+    async with sessionmaker() as session:
+        video = await session.get(Video, video_id)
+        if video is None:
+            raise LookupError(video_id)
+        if video.state is not VideoState.COMPLETE:
+            raise NotComplete(video_id)
+        await session.execute(
+            insert(FormatWatch)
+            .values(video_id=video_id, started_at=None)
+            .on_conflict_do_nothing(index_elements=["video_id"])
+        )
+        await session.commit()
+    emit(log, logging.INFO, "watch.probe_requested", video=video_id)
+    async with lock:
+        await check(
+            sessionmaker,
+            settings,
+            video_id,
+            probe=probe,
+            tools=tools,
+            now=now or datetime.now(UTC),
+        )
 
 
 async def watch_formats(
@@ -105,11 +159,15 @@ async def watch_formats(
     *,
     probe: Probe,
     tools: Tools,
+    lock: asyncio.Lock,
     now: datetime | None = None,
 ) -> None:
-    """End the watches past WATCH_DAYS, then probe each watch that is due."""
+    """End the watches past WATCH_DAYS, delete the originals past their
+    keep, then probe each watch that is due. `lock` keeps the probes one at a
+    time with the user's (probe_now)."""
     now = now or datetime.now(UTC)
     await end_watches(sessionmaker, settings, now)
+    await drop_originals(sessionmaker, settings, now)
     async with sessionmaker() as session:
         due = list(
             await session.scalars(
@@ -129,7 +187,8 @@ async def watch_formats(
     for video_id in due:
         with logs.context(video=video_id):
             try:
-                await check(sessionmaker, settings, video_id, probe=probe, tools=tools, now=now)
+                async with lock:
+                    await check(sessionmaker, settings, video_id, probe=probe, tools=tools, now=now)
             except Exception as e:
                 emit(
                     log,
@@ -150,8 +209,8 @@ async def check(
     tools: Tools,
     now: datetime,
 ) -> Job | None:
-    """Probe one watched video and store what it found. Returns the replace
-    job it queued, if any."""
+    """Probe one video with a row and store what it found. Only an open
+    watch queues a replace. Returns the replace job it queued, if any."""
     async with sessionmaker() as session:
         video = await session.get(Video, video_id)
         if video.type is VideoType.MEMBERS:
@@ -185,7 +244,7 @@ async def check(
         watch.probe_error = None
         watch.formats = formats.counted(info.get("formats") or [])
         watch.vod_duration = float(info["duration"]) if info.get("duration") else None
-        job = await _queue(session, watch, video)
+        job = await _queue(session, watch, video) if is_open(watch, now) else None
         await session.commit()
     picked = formats.picks(watch.formats, video.info or {})
     emit(
@@ -241,7 +300,8 @@ async def _queue(session: AsyncSession, watch: FormatWatch, video: Video) -> Job
 
 async def end_watches(sessionmaker: async_sessionmaker, settings: Settings, now: datetime) -> None:
     """End every watch past WATCH_DAYS with no replace queued or running, and
-    delete the original a replace moved aside."""
+    delete the original a replace in the watch moved aside. An original with
+    its own keep (drop_originals) stays."""
     async with sessionmaker() as session:
         over = list(
             await session.scalars(
@@ -253,18 +313,40 @@ async def end_watches(sessionmaker: async_sessionmaker, settings: Settings, now:
         for watch in over:
             if await replace_active(session, watch.video_id) is not None:
                 continue
-            if watch.original_path is not None:
+            original = "none"
+            if watch.original_path is not None and watch.original_until is None:
                 shutil.rmtree(
                     originals_dir(settings.archive_root, watch.video_id), ignore_errors=True
                 )
+                watch.original_path = None
+                original = "deleted"
+            elif watch.original_path is not None:
+                original = "kept"
             watch.ended_at = now
-            emit(
-                log,
-                logging.INFO,
-                "watch.ended",
-                video=watch.video_id,
-                original="deleted" if watch.original_path else "none",
+            emit(log, logging.INFO, "watch.ended", video=watch.video_id, original=original)
+        await session.commit()
+
+
+async def drop_originals(
+    sessionmaker: async_sessionmaker, settings: Settings, now: datetime
+) -> None:
+    """Delete each original past its `original_until` with no replace queued
+    or running. The tree keeps the replaced file."""
+    async with sessionmaker() as session:
+        due = list(
+            await session.scalars(
+                select(FormatWatch).where(
+                    FormatWatch.original_path.is_not(None), FormatWatch.original_until <= now
+                )
             )
+        )
+        for watch in due:
+            if await replace_active(session, watch.video_id) is not None:
+                continue
+            shutil.rmtree(originals_dir(settings.archive_root, watch.video_id), ignore_errors=True)
+            watch.original_path = None
+            watch.original_until = None
+            emit(log, logging.INFO, "watch.original_deleted", video=watch.video_id)
         await session.commit()
 
 

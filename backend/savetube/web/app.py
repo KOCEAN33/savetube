@@ -28,6 +28,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.state.archive_root = settings.archive_root
     app.state.namespace = settings.namespace
+    app.state.scheduler_url = settings.scheduler_url
     app.include_router(api.router)
     auth.install(app, settings)
     if settings.static_dir:

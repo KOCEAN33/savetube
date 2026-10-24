@@ -7,7 +7,7 @@ One image, three roles, plus a recorder Job per live.
 | Role | Kind | Does |
 | --- | --- | --- |
 | `web` | Deployment | API and the built frontend |
-| `scheduler` | Deployment, 1 replica | polls sources on their schedules, detects lives, creates recorder Jobs |
+| `scheduler` | Deployment, 1 replica | polls sources on their schedules, detects lives, creates recorder Jobs, serves the internal API |
 | `worker` | Deployment | archive downloads from the Postgres queue |
 | recorder | Job per live | `--live-from-start` on one video, then post-processing |
 
@@ -20,6 +20,18 @@ One image, three roles, plus a recorder Job per live.
 - Queue: `procrastinate`, a Python job queue on Postgres. No Redis.
 - The database address is PgBouncer in transaction mode. psycopg never prepares statements (`prepare_threshold=None`), and the worker polls every 5 s with `listen_notify` off, because a LISTEN does not survive the pooler.
 - Every role serves Prometheus metrics on port 9090, apart from the HTTP port.
+
+## Scheduler API
+
+- A user action that asks the scheduler to act now goes over HTTP, never through a DB flag the scheduler loop picks up.
+- The scheduler serves a FastAPI app (`savetube.scheduler_api`) on port 8082 (`SAVETUBE_SCHEDULER_API_PORT`) through uvicorn's `Server.serve()`, one task of the scheduler's asyncio TaskGroup. `GET /healthz` stays on the hand-written server on 8081, which the worker shares.
+- The chart's ClusterIP Service `savetube-scheduler` exposes port 8082. The web calls it at `SAVETUBE_SCHEDULER_URL`, `http://savetube-scheduler:8082` in the chart and `http://scheduler:8082` in `compose.yaml`. The scheduler runs one replica with `Recreate`, so the Service reaches one pod.
+- No auth: the API is cluster-internal and only the web calls it. The chart has no NetworkPolicy yet, so any pod in the cluster can reach it.
+- On SIGTERM uvicorn closes the server, waiting up to 5 s for a running request, then raises the signal again, so the process stops as it did without the server.
+
+| Route | Does |
+| --- | --- |
+| `POST /probe/{video_id}` | probes a `complete` video's formats now and stores them in `format_watch` (live.md, Format watch). It waits for the format watch's probe in progress. 204 when stored, a failed probe included, 404 for an unknown video, 409 for one not `complete` |
 
 ## Embedding yt-dlp
 

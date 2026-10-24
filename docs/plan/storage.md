@@ -12,13 +12,14 @@
 | `listing_entry` | every video a source's last listings showed: source, video id, channel, title. Title word suggestions read it |
 | `video` | video id, channel, type, title, upload date, duration, live status, availability, format ids, file paths, `size_bytes`, `completed_at`, state, the pinned format of a partial download, the integrity checks it passed and when, and the stored streams' quality generated from `info` |
 | `video_source` | which sources reference a video, so a playlist never copies a file |
-| `job` | kind (archive, record, replace), state, attempts, miss reason, log tail, the running download's progress, the format ids a replace downloads, timestamps |
-| `format_watch` | per stored live: the live's air time as `started_at`, when the watch ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside |
+| `job` | kind (archive, record, replace), state, attempts, miss reason, log tail, the running download's progress, the format ids a replace downloads, `manual` for a replace the user picked, timestamps |
+| `format_watch` | per stored live, or per video a user's probe listed: the live's air time as `started_at`, null for a row without an automatic watch, when the watch ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside while it is kept, and `original_until`, when an original kept outside an open watch is deleted |
 | `storage_sample` | hourly free and used bytes of the dataset |
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
 - `video.video_codec`, `audio_codec`, `video_width`, `video_height`, `video_fps`, `video_kbps` and `premium` are stored generated columns over `info`. They read the stored streams the way `savetube.formats.stored_streams` does: the first requested format with that stream, else the info dict itself. A replace keeps the top-level `format_note` of the first download, so `premium` reads the video stream's note. `video_kbps` is `vbr`, else `tbr`. The Videos page filters on them, because reading the TOASTed `info` took about 2 s per query on 5,000 videos and the columns take about 1 ms.
+- Migration `0023` makes `format_watch.started_at` nullable and adds `format_watch.original_until` and `job.manual`. It clears `original_path` of every ended watch, whose end deleted the original, and marks the queued or running replace of a picked watch `manual`. Its downgrade deletes the rows without `started_at`.
 - Migration `0022` adds those generated columns. It rewrites the `video` table under an exclusive lock, about 40 s on 5,000 videos with 150 KB info dicts. Its downgrade drops them.
 - Migration `0021` sets each watch's `started_at` to its live's air time (live.md, Format watch). It cancels every queued replace job of an old watch, one whose live aired 7 or more days ago or has no air time, and every queued replace job of a recent watch without a manual pick, so the next probe queues again what still ranks above. A queued job whose procrastinate job a worker already took stays. It ends every open old watch, unless a replace job is still queued or running or an original sits in `.originals/`. The scheduler ends the latter and deletes the original, so the migration deletes no file. Its downgrade does nothing.
 - Migration `0020` adds `format_watch`, `job.format_id` and the job kind `replace`. It starts a watch for every `complete` live video whose `completed_at` is within 7 days, from its `completed_at`. Its downgrade deletes every replace job and drops both. Files a replace moved aside stay in `.originals/`.
@@ -49,7 +50,7 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
   members/ <YYYY-MM-DD> <title> [<video id>]/
 .incoming/<video id>/   archive downloads without staging
 .incoming/<job id>/     recordings, and replace jobs' remux output
-.originals/<video id>/  the first stored file of a live a replace changed, until its format watch ends
+.originals/<video id>/  the file a replace moved aside, until the open watch ends, or 7 days after a swap outside one
 ```
 
 - Each video directory holds the media, its audio-only copy (archive.md, Audio copy), `.info.json`, the thumbnail, subtitles, and the chat replay when YouTube offers one.

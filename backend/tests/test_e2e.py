@@ -286,6 +286,8 @@ def app_env(dsn, archive_root, media, tmp_path_factory) -> dict[str, str]:
         SAVETUBE_OIDC_CLIENT_ID="e2e",
         SAVETUBE_OIDC_ISSUER="https://issuer.test",
         SAVETUBE_PUBLIC_URL="http://127.0.0.1",
+        # A free port: nothing answers there.
+        SAVETUBE_SCHEDULER_URL=f"http://127.0.0.1:{_free_port()}",
         SAVETUBE_E2E_INFO=json.dumps(INFO),
         SAVETUBE_E2E_MEDIA=str(media),
         SAVETUBE_E2E_VIDEO=VIDEO_ID,
@@ -437,6 +439,9 @@ def test_a_video_that_is_no_live_has_no_format_watch(server, downloaded):
         f"/api/videos/{VIDEO_ID}/formats/pick", json={"format_id": "251"}, headers=WRITE
     )
     assert r.status_code == 404
+    # No scheduler runs here, so the probe cannot reach it.
+    r = server.post(f"/api/videos/{VIDEO_ID}/formats/probe", headers=WRITE)
+    assert r.status_code == 502 and "unreachable" in r.json()["detail"]
 
 
 def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):

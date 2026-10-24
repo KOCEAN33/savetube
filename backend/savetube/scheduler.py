@@ -1,5 +1,5 @@
 """The single-replica loop: source polls, archive dispatch, live detection, recorder
-Jobs, the format watch, storage samples.
+Jobs, the format watch, storage samples, and the internal HTTP API.
 """
 
 import asyncio
@@ -15,7 +15,7 @@ from pathlib import Path
 from procrastinate.jobs import Status
 from sqlalchemy import func, select
 
-from savetube import cookies, k8s
+from savetube import cookies, k8s, scheduler_api
 from savetube.cleanup import clean_database
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
@@ -261,8 +261,10 @@ async def recorders(settings: Settings) -> None:
     )
 
 
-async def format_watch(settings: Settings) -> None:
-    await watch_formats(default_sessionmaker(), settings, probe=probe_formats, tools=Tools())
+async def format_watch(settings: Settings, probes: asyncio.Lock) -> None:
+    await watch_formats(
+        default_sessionmaker(), settings, probe=probe_formats, tools=Tools(), lock=probes
+    )
 
 
 async def _every(
@@ -283,6 +285,13 @@ async def run(settings: Settings) -> None:
         "scheduler.start",
         tick=f"{TICK_SECONDS}s",
         dispatch=f"{DISPATCH_SECONDS}s",
+        api=settings.scheduler_api_port,
+    )
+    # The format watch and the user's probes take turns: every listing counts
+    # against YouTube's request limits.
+    probes = asyncio.Lock()
+    api = scheduler_api.create_app(
+        settings, default_sessionmaker(), probes=probes, probe=probe_formats, tools=Tools()
     )
     async with app.open_async():
         # Separate loops, so a long first listing of a big channel never delays
@@ -316,7 +325,8 @@ async def run(settings: Settings) -> None:
                     CLEANUP_SECONDS,
                 )
             )
-            tg.create_task(_every("format watch", lambda: format_watch(settings)))
+            tg.create_task(_every("format watch", lambda: format_watch(settings, probes)))
+            tg.create_task(scheduler_api.serve(api, settings.scheduler_api_port))
             seen: Seen = {}
             tg.create_task(_every("live detection", lambda: detect_lives(settings, seen)))
             # Kubernetes sets this in every pod. A scheduler outside a cluster,

@@ -64,8 +64,9 @@ class Dispatched:
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
-    """Put waiting archive jobs, oldest first, then waiting replace jobs on the
-    queue, one per free slot, and only inside the download window, outside a
+    """Put waiting jobs on the queue, oldest first within each group: replace
+    jobs the user picked, then archive jobs, then automatic replace jobs. One
+    per free slot, and only inside the download window, outside a
     block pause, under the daily cap, and while the user has not paused
     downloads. Commits.
 
@@ -111,8 +112,9 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         waiting = await session.scalars(
             select(Job.id)
             .where(queued, Job.queue_job_id.is_(None))
-            # New downloads first: a replace only improves a video already stored.
-            .order_by(Job.kind == JobKind.REPLACE, Job.id)
+            # A pick is the user waiting on the video page. Otherwise new
+            # downloads first: a replace only improves a video already stored.
+            .order_by(Job.manual.desc(), Job.kind == JobKind.REPLACE, Job.id)
             .limit(max(free, 0))
         )
         for job_id in list(waiting):
