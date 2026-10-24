@@ -122,7 +122,8 @@ class Pick:
 
 
 def pick_audio(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> Pick:
-    """Opus over AAC, then the higher `abr`."""
+    """Opus over AAC, then the higher `abr`. The stored format id never
+    ranks above itself: clients list different bitrates for one stream."""
     candidates = [f for f in formats if kind(f) == "audio"]
     if not candidates:
         return Pick("audio", None, False, "no audio format offered")
@@ -131,6 +132,8 @@ def pick_audio(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> 
     if stored is None:
         return Pick("audio", best, True, f"{name} where the stored file has no audio")
     s_rank, s_name = audio_codec(stored.get("acodec"))
+    if best.get("format_id") == stored.get("format_id"):
+        return Pick("audio", best, False, f"the stored {s_name} is this format")
     if rank > s_rank:
         return Pick("audio", best, True, f"{name} over the stored {s_name}")
     if rank < s_rank:
@@ -144,7 +147,8 @@ def pick_audio(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> 
 def pick_video(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> Pick:
     """Among formats with height and fps at least the stored stream's, AV1
     over VP9 over H.264, then the higher `tbr` within one codec. Bitrates of
-    different codecs are not compared."""
+    different codecs are not compared. The stored format id never ranks
+    above itself: clients list different bitrates for one stream."""
     s_height = (stored or {}).get("height")
     s_fps = (stored or {}).get("fps")
     candidates = [
@@ -161,6 +165,8 @@ def pick_video(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> 
     if stored is None:
         return Pick("video", best, True, f"{name} where the stored file has no video")
     s_rank, s_name = video_codec(stored.get("vcodec"))
+    if best.get("format_id") == stored.get("format_id"):
+        return Pick("video", best, False, f"the stored {s_name} is this format")
     if rank > s_rank:
         return Pick("video", best, True, f"{name} over the stored {s_name}")
     if rank < s_rank:

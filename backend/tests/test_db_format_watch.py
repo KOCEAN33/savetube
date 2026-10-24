@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
-from conftest import ADMIN_URL, _api, _events, _sql, _sql_rows, _Steps
+from conftest import ADMIN_URL, _api, _events, _queue_row, _sql, _sql_rows, _Steps
 from test_formats import HU7_RECORDING, WBJ_RECORDING, _vod
 
 from savetube.db import make_engine, make_sessionmaker
@@ -430,12 +430,25 @@ def test_migration_0021_ends_the_watches_of_lives_aired_over_7_days_ago(settings
         f" ('busy', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
         f"  {_info(timestamp=old)}),"
         f" ('kept', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
-        f"  {_info(timestamp=old)})",
-        "INSERT INTO format_watch (video_id, started_at, original_path) VALUES"
-        " ('recent', now(), NULL), ('old', now(), NULL), ('dated', now(), NULL),"
-        " ('busy', now(), NULL), ('kept', now(), '.originals/kept/kept.mkv')",
-        "INSERT INTO job (kind, state, video_id, attempts)"
-        " VALUES ('replace', 'running', 'busy', 0)",
+        f"  {_info(timestamp=old)}),"
+        f" ('stale', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
+        f"  {_info(timestamp=old)}),"
+        f" ('picked', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
+        f"  {_info(timestamp=recent)})",
+        "INSERT INTO format_watch (video_id, started_at, original_path, manual) VALUES"
+        " ('recent', now(), NULL, false), ('old', now(), NULL, false),"
+        " ('dated', now(), NULL, false), ('busy', now(), NULL, false),"
+        " ('kept', now(), '.originals/kept/kept.mkv', false), ('stale', now(), NULL, true),"
+        " ('picked', now(), NULL, true)",
+    )
+    dispatched = _queue_row(settings)
+    _sql(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id) VALUES"
+        " (1, 'replace', 'running', 'busy', 1, NULL),"
+        " (2, 'replace', 'queued', 'stale', 0, NULL),"
+        f" (3, 'replace', 'queued', 'recent', 0, {dispatched}),"
+        " (4, 'replace', 'queued', 'picked', 0, NULL)",
     )
     originals = settings.archive_root / ".originals" / "kept"
     originals.mkdir(parents=True)
@@ -454,9 +467,21 @@ def test_migration_0021_ends_the_watches_of_lives_aired_over_7_days_ago(settings
         ("dated", jan_2, True),
         ("kept", old, False),
         ("old", old, True),
+        ("picked", recent, False),
         ("recent", recent, False),
+        ("stale", old, True),
     ]
     assert (originals / "kept.mkv").read_bytes() == b"recording"
+    jobs = _sql_rows(settings, "SELECT id, state, finished_at IS NOT NULL FROM job ORDER BY id")
+    # An old watch's queued replace and a recent automatic one are cancelled.
+    # A recent manual pick waits.
+    assert jobs == [
+        (1, "running", False),
+        (2, "cancelled", True),
+        (3, "cancelled", True),
+        (4, "queued", False),
+    ]
+    assert _sql_rows(settings, f"SELECT id FROM procrastinate_jobs WHERE id = {dispatched}") == []
 
 
 @pytest.mark.anyio
@@ -511,7 +536,7 @@ def test_api_marks_the_pick_and_the_kept_stream_recommended(settings):
         if r["recommended"]
     ]
     assert sorted(recommended) == [
-        ("137", True, "the stored H.264 1.1 Mbps is not below 476 kbps"),
+        ("137", True, "the stored H.264 is this format"),
         ("251", False, "Opus over the stored AAC"),
     ]
     assert body["held"] is False and body["duration_diff"] == 0.0

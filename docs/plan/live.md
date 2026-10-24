@@ -37,6 +37,7 @@ YouTube serves a live's VOD first in H.264 and AAC-or-Opus, and adds VP9 or AV1 
 - Only `https` formats count. HLS (`m3u8`) copies of the same stream are ignored. Audio formats with `-drc` in the id are ignored, because dynamic range compression flattens singing.
 - Audio pick: Opus over AAC, then the higher `abr`.
 - Video pick: among formats with height and fps at least the stored stream's, AV1 over VP9 over H.264, then the higher `tbr` within one codec. Bitrates of different codecs are not compared.
+- A format with the stored stream's format id never ranks above it, audio or video. One itag is one stream, and its listed bitrate differs between clients.
 - A pick that ranks above the stored stream queues a replace job. Audio and video are judged apart: a replace downloads only the stream that changes and remuxes it with the stored other stream through `ffmpeg -c copy`.
 - Before any replace, the VOD duration is compared with the stored file's `ffprobe` duration. A difference over 2 s holds the replace and the UI shows it with the difference in seconds. The 2 s is fixed, not the 1% of the download check.
 - A replace passes the same integrity checks as a download, then swaps the file in the tree and writes a new audio copy.
