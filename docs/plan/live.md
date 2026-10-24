@@ -25,5 +25,21 @@
 - A recording skips the `live_chat` track. yt-dlp writes subtitles before the media, and a running live's chat downloads until the stream ends. The VOD's archive keeps the chat replay.
 - A recording writes its progress to `job.progress` every 5 s, as an archive download does, through the same pump on a thread instead of a child process. The video and audio streams download at once, so `done` and `speed` sum over the streams. A live has no total, so `pct` and `total` stay null. The recorder sends no format pin and no stream sizes: those serve the archive resume and its checks, and a VOD queued later must not take a live format.
 - A finished recording moves straight into the tree under the video's `lives` or `members` directory and marks the video complete.
-- A live recording can have gaps or buffering, so when both a recording and the VOD exist, the two are compared. How to compare and which to keep is open.
 - Some streams get no VOD after they end. For those, the recording is the only copy and stays.
+
+## Format watch
+
+YouTube serves a live's VOD first in H.264 and AAC-or-Opus, and adds VP9 or AV1 at full resolution hours or days later, if ever. A live stream serves only AAC audio (`140`), while the VOD serves Opus (`251`) from the start. The user keeps lives mostly for the audio.
+
+- Every live video gets a format watch for 7 days from the moment it turns `complete`: a finished recording, or a VOD download of a live (`was_live`). Members-only lives are included.
+- Every 6 hours the scheduler probes each watched video's formats, with the general profile, or the member profile for type `members`. It stores the format list and the VOD duration.
+- Only `https` formats count. HLS (`m3u8`) copies of the same stream are ignored. Audio formats with `-drc` in the id are ignored, because dynamic range compression flattens singing.
+- Audio pick: Opus over AAC, then the higher `abr`.
+- Video pick: among formats with height and fps at least the stored stream's, AV1 over VP9 over H.264, then the higher `tbr` within one codec. Bitrates of different codecs are not compared.
+- A pick that ranks above the stored stream queues a replace job. Audio and video are judged apart: a replace downloads only the stream that changes and remuxes it with the stored other stream through `ffmpeg -c copy`.
+- Before any replace, the VOD duration is compared with the stored file's `ffprobe` duration. A difference over 2 s holds the replace and the UI shows it with the difference in seconds. The 2 s is fixed, not the 1% of the download check.
+- A replace passes the same integrity checks as a download, then swaps the file in the tree and writes a new audio copy.
+- The first stored file, the recording or the first VOD download, moves aside and stays until the watch ends, then is deleted. A file from an intermediate replace is deleted at the next replace.
+- The video page lists the stored file and every counted YouTube format: codec, resolution and fps, bitrate, size, duration, and the duration difference. The pick carries a `recommended` badge with a one-line reason.
+- The user can pick any listed format there, a held video included after a confirm. A manual pick ends the automatic replaces for that video.
+- A video with no VOD keeps its recording. The watch ends without a replace.
