@@ -241,7 +241,10 @@ def check_formats(page: Page) -> str:
     # The kept video and the offered audio carry the badges.
     expect(video.locator("[data-slot=badge]")).to_have_count(1)
     expect(audio.locator("[data-slot=badge]")).to_have_count(1)
-    expect(audio.get_by_role("button", name="Use format 251")).to_be_enabled()
+    # The upgrade starts selected, the kept video keeps its stored row.
+    expect(audio.get_by_role("radio", name="Select format 251")).to_be_checked()
+    expect(video.get_by_role("radio", name="Keep stored video")).to_be_checked()
+    expect(card.get_by_role("button", name="Replace with 251")).to_be_enabled()
     settle(page)
     rows = video.locator("tbody tr").count() + audio.locator("tbody tr").count()
     return f"{rows} rows"

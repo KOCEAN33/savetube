@@ -11,7 +11,7 @@ from pathlib import Path
 import httpx2
 import pytest
 import sqlalchemy as sa
-from conftest import ADMIN_URL, _api, _events, _queue_row, _sql, _sql_rows, _Steps
+from conftest import ADMIN_URL, _api, _events, _fields, _queue_row, _sql, _sql_rows, _Steps
 from test_formats import HU7_RECORDING, WBJ_RECORDING, _vod
 
 from savetube.db import make_engine, make_sessionmaker
@@ -716,8 +716,8 @@ def test_api_answers_null_for_a_video_without_a_watch(settings):
 def test_api_pick_queues_a_replace_and_ends_the_automatic_ones(settings):
     _watched_with_formats(settings)
     with _api(settings) as api:
-        r = api.post("/api/videos/v1/formats/pick", json={"format_id": "243"})
-        again = api.post("/api/videos/v1/formats/pick", json={"format_id": "251"})
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["243"]})
+        again = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["251"]})
 
     assert r.status_code == 200
     assert r.json()["manual"] is True and r.json()["replace"]["format_id"] == "243"
@@ -729,9 +729,9 @@ def test_api_pick_queues_a_replace_and_ends_the_automatic_ones(settings):
 def test_api_pick_of_a_held_video_needs_a_confirm(settings):
     _watched_with_formats(settings, stored_duration=8300.0)
     with _api(settings) as api:
-        refused = api.post("/api/videos/v1/formats/pick", json={"format_id": "251"})
+        refused = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["251"]})
         confirmed = api.post(
-            "/api/videos/v1/formats/pick", json={"format_id": "251", "confirm": True}
+            "/api/videos/v1/formats/pick", json={"format_ids": ["251"], "confirm": True}
         )
 
     assert refused.status_code == 409 and "12.0 s" in refused.json()["detail"]
@@ -742,7 +742,7 @@ def test_api_pick_refuses_a_format_the_vod_does_not_offer(settings):
     _watched_with_formats(settings)
 
     with _api(settings) as api:
-        r = api.post("/api/videos/v1/formats/pick", json={"format_id": "251-drc"})
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["251-drc"]})
 
     assert r.status_code == 404
     assert _sql_rows(settings, "SELECT id FROM job") == []
@@ -757,10 +757,107 @@ def test_api_pick_after_the_watch_ended_queues_a_manual_replace(settings):
     )
 
     with _api(settings) as api:
-        r = api.post("/api/videos/v1/formats/pick", json={"format_id": "251"})
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["251"]})
 
     assert r.status_code == 200 and r.json()["ended_at"] is not None
     assert _sql_rows(settings, "SELECT format_id, manual FROM job") == [("251", True)]
+
+
+def _replace_row(settings, *, state="queued", manual=False, queue_job_id=None):
+    queue = "NULL" if queue_job_id is None else str(queue_job_id)
+    _sql(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts, manual, queue_job_id)"
+        f" VALUES (40, 'replace', '{state}', 'v1', '251', 0, {manual}, {queue})",
+        # A later job gets a later id, as in production.
+        "SELECT setval(pg_get_serial_sequence('job', 'id'), 40)",
+    )
+
+
+def test_api_pick_of_video_and_audio_supersedes_a_queued_automatic_replace(settings, caplog):
+    _watched_with_formats(settings)
+    queue_job_id = _queue_row(settings)
+    _replace_row(settings, queue_job_id=queue_job_id)
+
+    with caplog.at_level(logging.INFO, logger="savetube"), _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["243", "251"]})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["replace"]["format_id"] == "251+243"
+    rows = _sql_rows(
+        settings,
+        "SELECT id, state, format_id, manual, finished_at IS NOT NULL FROM job ORDER BY id",
+    )
+    assert rows[0] == (40, "cancelled", "251", False, True)
+    assert rows[1][1:] == ("queued", "251+243", True, False)
+    assert _sql_rows(
+        settings, f"SELECT status::text FROM procrastinate_jobs WHERE id = {queue_job_id}"
+    ) == [("cancelled",)]
+    assert [_fields(r)["job"] for r in _events(caplog, "job.cancelled")] == [40]
+
+
+def test_api_pick_supersedes_a_queued_automatic_replace_the_dispatcher_has_not_sent(settings):
+    _watched_with_formats(settings)
+    _replace_row(settings)
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["251"]})
+
+    assert r.status_code == 200, r.text
+    assert _sql_rows(settings, "SELECT state, manual FROM job ORDER BY id") == [
+        ("cancelled", False),
+        ("queued", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("state", "manual", "queue_status"),
+    [("running", False, None), ("queued", True, None), ("queued", False, "doing")],
+    ids=["running", "queued-manual", "queued-automatic-taken-by-a-worker"],
+)
+def test_api_pick_refuses_while_a_replace_runs_or_a_pick_waits(
+    settings, state, manual, queue_status
+):
+    _watched_with_formats(settings)
+    queue_job_id = None if queue_status is None else _queue_row(settings, status=queue_status)
+    _replace_row(settings, state=state, manual=manual, queue_job_id=queue_job_id)
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["251"]})
+
+    assert r.status_code == 409
+    assert _sql_rows(settings, "SELECT id, state FROM job") == [(40, state)]
+
+
+@pytest.mark.parametrize(
+    "format_ids",
+    [["243", "136"], ["137"], ["243", "140"], ["251", "251"], [], ["243", "251", "250"]],
+    ids=["two-video", "stored-video", "stored-audio", "same-twice", "none", "three"],
+)
+def test_api_pick_refuses_a_bad_set_of_formats(settings, format_ids):
+    _watched_with_formats(settings)
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": format_ids})
+
+    assert r.status_code == 422
+    assert _sql_rows(settings, "SELECT id FROM job") == []
+
+
+def test_api_lists_the_formats_best_first(settings):
+    # The probe lists them as yt-dlp does, worst first.
+    _watched_with_formats(settings)
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    ids = {
+        k: [r["format_id"] for r in body["formats"] if r["kind"] == k] for k in ("video", "audio")
+    }
+    # Height, then fps, then AV1 > VP9 > H.264: the 360p VP9 above the 360p H.264.
+    assert ids["video"] == ["137", "136", "135", "243", "134", "133", "160"]
+    # Opus over AAC, then abr.
+    assert ids["audio"] == ["251", "250", "249", "140", "139"]
 
 
 class _Scheduler:
@@ -801,7 +898,7 @@ def test_api_probe_then_pick_on_a_video_without_a_watch(settings, monkeypatch):
     with _api(settings) as api:
         assert api.get("/api/videos/v1/formats").json() is None
         probed = api.post("/api/videos/v1/formats/probe")
-        picked = api.post("/api/videos/v1/formats/pick", json={"format_id": "251"})
+        picked = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["251"]})
 
     assert scheduler.urls == [f"{settings.scheduler_url}/probe/v1"]
     assert probed.status_code == 200, probed.text

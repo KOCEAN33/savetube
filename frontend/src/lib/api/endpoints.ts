@@ -47,9 +47,10 @@ export const mutations = {
   setDownloadsPaused: (paused: boolean) =>
     request<DownloadSettings>("PUT", "/api/download-settings/paused", { paused }),
   replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
-  // Queues a replace with the format and ends the automatic replaces. A held
-  // video needs `confirm`.
-  pickFormat: (videoId: string, body: { format_id: string; confirm: boolean }) =>
+  // Queues a replace with one video and one audio format at most, ends the
+  // automatic replaces, and cancels a queued automatic one. A held video needs
+  // `confirm`.
+  pickFormat: (videoId: string, body: { format_ids: string[]; confirm: boolean }) =>
     request<FormatWatch>(
       "POST",
       `/api/videos/${encodeURIComponent(videoId)}/formats/pick`,
