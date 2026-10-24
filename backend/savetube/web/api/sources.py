@@ -1,7 +1,8 @@
+import contextlib
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,12 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from savetube import words
 from savetube.db.models import Channel, ListingEntry, Source, SourceKind
 from savetube.logs import emit
+from savetube.poll import disabled
 from savetube.sources import InvalidSourceUrl, Tab
 from savetube.sources import parse as parse_source_url
-from savetube.web.api.deps import Session, _logged, _normalize, log
+from savetube.web.api.deps import Session, _logged, _normalize, call_scheduler, log
 from savetube.web.api.schemas import SourceOut, WordList, WordsIn, _Out
 
 router = APIRouter()
+
+# The scheduler only queues the poll, so it answers at once.
+POLL_TIMEOUT = 10
 
 
 @router.get("/sources")
@@ -119,15 +124,16 @@ async def create_sources(session: Session, body: SourceIn) -> list[SourceOut]:
 
 
 @router.patch("/sources/{source_id}")
-async def update_source(session: Session, source_id: int, body: SourcePatch) -> SourceOut:
+async def update_source(
+    session: Session, request: Request, source_id: int, body: SourcePatch
+) -> SourceOut:
+    """Turning archiving on of an enabled source also asks the scheduler to
+    poll it now."""
     source = await _source(session, source_id)
     _normalize(body)
     changes = body.model_dump(exclude_none=True)
     for field, value in changes.items():
         setattr(source, field, value)
-    if body.archiving:
-        # Polled on the next scheduler tick.
-        source.last_polled_at = None
     # Words are not copied: a child merges its parent's lists when it is matched.
     inherited = {k: v for k, v in changes.items() if k in _INHERITED}
     if inherited:
@@ -136,6 +142,11 @@ async def update_source(session: Session, source_id: int, body: SourcePatch) -> 
         )
     await session.commit()
     emit(log, logging.INFO, "source.update", source=source_id, url=source.url, **_logged(changes))
+    if body.archiving and not await disabled(session, source):
+        # The setting is saved, and without the request the source polls at
+        # its interval.
+        with contextlib.suppress(HTTPException):
+            await _ask_poll(request, source_id)
     return SourceOut.model_validate(source)
 
 
@@ -143,13 +154,28 @@ _INHERITED = frozenset({"poll_interval_minutes", "other_channels", "archiving"})
 
 
 @router.post("/sources/{source_id}/poll", status_code=202)
-async def poll_now(session: Session, source_id: int) -> SourceOut:
-    """The scheduler polls a never-polled source on its next tick."""
+async def poll_now(session: Session, request: Request, source_id: int) -> SourceOut:
+    """Ask the scheduler to poll the source now. It answers before the poll."""
     source = await _source(session, source_id)
-    source.last_polled_at = None
-    await session.commit()
+    if await disabled(session, source):
+        raise HTTPException(status_code=409, detail="the source is disabled")
+    await _ask_poll(request, source_id)
     emit(log, logging.INFO, "source.poll_now", source=source_id, url=source.url)
     return SourceOut.model_validate(source)
+
+
+async def _ask_poll(request: Request, source_id: int) -> None:
+    def failed(status: int, reason: str) -> None:
+        emit(
+            log,
+            logging.WARNING,
+            "source.poll_request_failed",
+            source=source_id,
+            status=status,
+            reason=reason,
+        )
+
+    await call_scheduler(request, f"/poll/{source_id}", seconds=POLL_TIMEOUT, failed=failed)
 
 
 @router.delete("/sources/{source_id}", status_code=204)
