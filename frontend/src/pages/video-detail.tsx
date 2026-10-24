@@ -1,10 +1,12 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link, useParams } from "react-router"
 
+import { FormatWatchCard } from "@/components/format-watch"
 import { Page, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { VideoPlayer } from "@/components/video-player"
+import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
 import { api, type VideoDetail } from "@/lib/api"
 import {
   formatBytes,
@@ -42,12 +44,12 @@ export function VideoDetailPage() {
       </Link>
       <QueryState query={video}>
         {(v) => {
-          const webpage = infoString(v.info, "webpage_url")
           const description = infoString(v.info, "description")
           return (
             <Card>
               <CardHeader>
                 <CardTitle className="text-xl">{v.title}</CardTitle>
+                <VideoYouTubeLink id={v.id} title={v.title} className="w-fit" />
               </CardHeader>
               <CardContent className="flex flex-col gap-6">
                 {v.state === "complete" && <VideoPlayer video={v} />}
@@ -55,7 +57,12 @@ export function VideoDetailPage() {
                   <Field label="ID">
                     <span className="font-mono">{v.id}</span>
                   </Field>
-                  <Field label="Channel">{infoString(v.info, "channel") ?? v.channel_id}</Field>
+                  <Field label="Channel">
+                    <span className="inline-flex items-center gap-1.5">
+                      {infoString(v.info, "channel") ?? v.channel_id}
+                      <ChannelYouTubeLink id={v.channel_id} name={infoString(v.info, "channel")} />
+                    </span>
+                  </Field>
                   <Field label="Type">{v.type}</Field>
                   <Field label="State">
                     <Badge variant="outline">{v.state}</Badge>
@@ -72,15 +79,6 @@ export function VideoDetailPage() {
                   <Field label="Views">{infoString(v.info, "view_count") ?? "-"}</Field>
                   <Field label="Resolution">{infoString(v.info, "resolution") ?? "-"}</Field>
                   <Field label="Format">{infoString(v.info, "format") ?? "-"}</Field>
-                  <Field label="Source">
-                    {webpage ? (
-                      <a className="hover:underline" href={webpage} target="_blank" rel="noreferrer">
-                        YouTube
-                      </a>
-                    ) : (
-                      "-"
-                    )}
-                  </Field>
                 </dl>
                 {description && (
                   <p className="max-h-48 overflow-auto text-sm whitespace-pre-wrap text-muted-foreground">
@@ -102,6 +100,7 @@ export function VideoDetailPage() {
           )
         }}
       </QueryState>
+      <FormatWatchCard videoId={id} />
     </Page>
   )
 }

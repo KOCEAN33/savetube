@@ -1,5 +1,5 @@
 """The single-replica loop: source polls, archive dispatch, live detection, recorder
-Jobs, storage samples.
+Jobs, the format watch, storage samples.
 """
 
 import asyncio
@@ -20,6 +20,7 @@ from savetube.cleanup import clean_database
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import StorageSample
+from savetube.integrity import Tools
 from savetube.jobs import Dispatched, clean_incoming, dispatch, reclaim_stalled
 from savetube.live import Seen, check_logged, watched_channels
 from savetube.logs import emit, human_bytes
@@ -29,10 +30,12 @@ from savetube.recorders import start_recorders
 from savetube.staging import move_staged
 from savetube.storage import disk_usage
 from savetube.tz import TIMEZONE
+from savetube.watch import watch_formats
 from savetube.ytdl import (
     fetch_feed,
     list_entries,
     list_streams,
+    probe_formats,
     probe_live,
     probe_member,
     probe_video,
@@ -258,6 +261,10 @@ async def recorders(settings: Settings) -> None:
     )
 
 
+async def format_watch(settings: Settings) -> None:
+    await watch_formats(default_sessionmaker(), settings, probe=probe_formats, tools=Tools())
+
+
 async def _every(
     name: str, step: Callable[[], Awaitable[None]], seconds: float = TICK_SECONDS
 ) -> None:
@@ -309,6 +316,7 @@ async def run(settings: Settings) -> None:
                     CLEANUP_SECONDS,
                 )
             )
+            tg.create_task(_every("format watch", lambda: format_watch(settings)))
             seen: Seen = {}
             tg.create_task(_every("live detection", lambda: detect_lives(settings, seen)))
             # Kubernetes sets this in every pod. A scheduler outside a cluster,

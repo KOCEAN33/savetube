@@ -25,6 +25,7 @@ from savetube.db.migrate import migrate
 from savetube.db.models import (
     Channel,
     DownloadSettings,
+    FormatWatch,
     Job,
     JobKind,
     JobState,
@@ -203,6 +204,12 @@ def seed(session: Session, archive_root: Path) -> dict:
         "duration": 2,
         "webpage_url": f"https://www.youtube.com/watch?v={PLAYABLE}",
         "subtitles": {"en": [{"ext": "vtt", "name": "English"}]},
+        "format_id": "137+140",
+        "requested_formats": [
+            {"format_id": "137", "vcodec": "avc1.640028", "acodec": "none",
+             "height": 1080, "fps": 30, "tbr": 1100.0},
+            {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "abr": 128.0},
+        ],
     }
     playable_dir = video_dir(main_dir, VideoType.VIDEOS, info)
     media = make_media(archive_root / playable_dir, PLAYABLE)
@@ -378,6 +385,26 @@ def seed(session: Session, archive_root: Path) -> dict:
                 finished_at=NOW - timedelta(days=20),
             ),
         ]
+    )
+    # The format watch only reads the row, so the playable video carries one for
+    # the video page's format table: AAC stored, Opus offered.
+    session.add(
+        FormatWatch(
+            video_id=PLAYABLE,
+            started_at=NOW - timedelta(days=1),
+            checked_at=NOW - timedelta(hours=1),
+            vod_duration=2.0,
+            stored_duration=2.0,
+            formats=[
+                {"format_id": "140", "protocol": "https", "vcodec": "none",
+                 "acodec": "mp4a.40.2", "abr": 129.5, "filesize": 33_000},
+                {"format_id": "251", "protocol": "https", "vcodec": "none",
+                 "acodec": "opus", "abr": 129.6, "filesize": 33_100},
+                {"format_id": "137", "protocol": "https", "vcodec": "avc1.640028",
+                 "acodec": "none", "height": 1080, "fps": 30, "tbr": 476.5,
+                 "filesize": 120_000},
+            ],
+        )
     )
     # A migration inserts the row with the defaults.
     session.merge(

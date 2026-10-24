@@ -206,6 +206,22 @@ def check_video(page: Page) -> str:
     return f"media {status}"
 
 
+def check_formats(page: Page) -> str:
+    video_id = MANIFEST["video_id"]
+    with page.expect_response(
+        lambda r: path_of(r.url) == f"/api/videos/{video_id}/formats"
+    ) as formats:
+        page.goto(f"{BASE}/videos/{video_id}")
+    assert formats.value.ok, f"formats answered {formats.value.status}"
+    table = page.locator("#format-watch").get_by_role("table", name="Formats")
+    expect(table).to_be_visible()
+    # One badge for the offered audio, one for the kept video.
+    expect(table.locator("[data-slot=badge]")).to_have_count(2)
+    expect(table.get_by_role("button", name="Use format 251")).to_be_enabled()
+    settle(page)
+    return f"{table.locator('tbody tr').count()} rows"
+
+
 CHECKS = [
     ("Home", check_home),
     ("Videos", check_videos),
@@ -214,6 +230,7 @@ CHECKS = [
     ("Channel", check_channel),
     ("Settings", check_settings),
     ("Video", check_video),
+    ("Formats", check_formats),
 ]
 
 

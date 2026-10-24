@@ -13,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { VideoYouTubeLink } from "@/components/youtube-link"
 import { api, mutations, type Job } from "@/lib/api"
 import { jobStateVariant } from "@/lib/channel"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
@@ -38,6 +39,7 @@ function ProblemJob({ job }: { job: Job }) {
       ) : (
         <span className="font-medium">Job {job.id}</span>
       )}
+      {job.video_id && <VideoYouTubeLink id={job.video_id} title={job.title} iconOnly />}
       {job.reason && (
         <span
           className="min-w-0 truncate text-xs text-muted-foreground"

@@ -6,7 +6,7 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import audio, cookies, integrity, logs
+from savetube import audio, cookies, integrity, logs, watch
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import Job, JobKind, JobState, Video, VideoState
@@ -26,6 +26,7 @@ from savetube.jobs.guards import (
     Paused,
     _blocked,
     _network_stalls,
+    _unavailable_streak,
     _unblock,
     _unless_paused,
 )
@@ -54,6 +55,7 @@ from savetube.poll import MAX_ARCHIVE_ATTEMPTS
 from savetube.storage import dir_size
 from savetube.ytdl import (
     DEFAULT_FORMAT,
+    bare_unavailable,
     build_params,
     members_only,
     network_error,
@@ -67,6 +69,10 @@ log = logging.getLogger("savetube.jobs")
 # Network interruptions in a row that added no bytes. A run that adds bytes
 # resets the count, so a download that moves on is retried until it ends.
 MAX_NETWORK_STALLS = 5
+# Bare "Video unavailable" failures of different videos in a row, within the
+# window, that read as a YouTube block rather than deleted videos.
+UNAVAILABLE_STREAK = 3
+UNAVAILABLE_STREAK_WINDOW = timedelta(hours=1)
 PAUSED_LOG = "paused by user"
 
 
@@ -90,8 +96,18 @@ async def run(
     """Run one job. An archive job outside the download window, with no free
     slot, at the daily cap, or while paused, goes back to waiting for the
     dispatcher. A pause
-    while it runs interrupts it. A recording ignores the limits."""
+    while it runs interrupts it. A recording ignores the limits. A replace
+    job runs savetube.jobs.replace instead."""
     sessionmaker = sessionmaker or default_sessionmaker()
+    if not live:
+        async with sessionmaker() as session:
+            kind = await session.scalar(select(Job.kind).where(Job.id == job_id))
+        if kind is JobKind.REPLACE:
+            # Late: savetube.jobs.replace imports this module.
+            from savetube.jobs.replace import run as replace
+
+            await replace(job_id, settings, runner=runner, sessionmaker=sessionmaker, tools=tools)
+            return
     begun = await _begin(sessionmaker, job_id, settings, live=live)
     if begun is None:
         return
@@ -520,6 +536,7 @@ async def _finish(
             ready_root=None if r.live else settings.ready_root,
             from_shorts_tab=shorts,
         )
+        await watch.start(session, video, video.completed_at)
         if checks is not None:
             video.resume_format = None
             video.verified_at = video.completed_at
@@ -555,10 +572,25 @@ async def _record_stop(r: _Run, e: asyncio.CancelledError | Paused) -> None:
 
 
 async def _record_failure(r: _Run, e: Exception) -> bool:
-    """Write the failure to the job row and log it: a YouTube block or a
-    network error interrupts an archive job, anything else fails it. Returns
-    whether it wrote, False when the run lost its row."""
-    if not r.live and isinstance(e, DownloadFailed) and youtube_block(str(e)):
+    """Write the failure to the job row and log it: a YouTube block, a streak
+    of bare "Video unavailable" failures, or a network error interrupts an
+    archive job, anything else fails it. Returns whether it wrote, False when
+    the run lost its row."""
+    message = str(e)
+    if (
+        not r.live
+        and isinstance(e, DownloadFailed)
+        and (
+            youtube_block(message)
+            # A bare "Video unavailable" alone may be a deleted video.
+            or (
+                bare_unavailable(message)
+                and await _unavailable_streak(
+                    r.sessionmaker, r.video_id, UNAVAILABLE_STREAK - 1, UNAVAILABLE_STREAK_WINDOW
+                )
+            )
+        )
+    ):
         if not await _blocked(r.sessionmaker, r.job_id, e, r.disowned):
             return False
         r.interrupted(logging.WARNING, BLOCKED_LOG, _present_label(r.workdir))

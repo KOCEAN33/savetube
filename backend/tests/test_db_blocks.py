@@ -211,6 +211,101 @@ async def test_a_blocked_recording_still_fails(settings, caplog):
     assert len(_events(caplog, "job.failed")) == 1
 
 
+UNAVAILABLE = "DownloadError: ERROR: [youtube] v1: Video unavailable"
+REMOVED = (
+    "DownloadError: ERROR: [youtube] v1: Video unavailable."
+    " This video has been removed by the uploader"
+)
+
+
+def _ended_jobs(settings, *rows):
+    """Archive jobs of other videos, each `(state, log_tail, minutes ago)`."""
+    values = ", ".join(
+        f"({100 + i}, 'archive', '{state}', 'other{i}', 1, '{tail}',"
+        f" now() - interval '{minutes} minutes')"
+        for i, (state, tail, minutes) in enumerate(rows)
+    )
+    videos = ", ".join(f"('other{i}', 'UC1', 'videos', 't', 'failed')" for i in range(len(rows)))
+    _job_rows(
+        settings,
+        "SELECT setval('job_id_seq', 200)",
+        f"INSERT INTO video (id, channel_id, type, title, state) VALUES {videos}",
+        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail, finished_at)"
+        f" VALUES {values}",
+    )
+
+
+async def _unavailable_run(settings, message=UNAVAILABLE):
+    async def unavailable(params, report):
+        from savetube.jobs import DownloadFailed
+
+        raise DownloadFailed(message)
+
+    return await _run_steps(settings, _Steps(unavailable))
+
+
+@pytest.mark.anyio
+async def test_a_third_bare_unavailable_in_a_row_is_a_youtube_block(settings, caplog):
+    import logging
+
+    from savetube.web.api import job_reason
+
+    _ended_jobs(
+        settings,
+        ("failed", UNAVAILABLE.replace("v1", "other0"), 20),
+        ("failed", UNAVAILABLE.replace("v1", "other1") + ".", 5),
+    )
+    before = datetime.now(UTC)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _unavailable_run(settings)
+    [history] = [j for j in jobs.values() if j.id not in (1, 100, 101)]
+    assert history.state == "interrupted"
+    assert history.log_tail == f"blocked by YouTube: {UNAVAILABLE}"
+    assert job_reason(history.log_tail) == "blocked by YouTube"
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.QUEUED, 0)
+    assert video.state is VideoState.PENDING
+    count, until = _block_state(settings)
+    assert count == 1
+    assert before + timedelta(minutes=30) <= until <= datetime.now(UTC) + timedelta(minutes=30)
+    assert _events(caplog, "job.failed") == []
+    assert len(_events(caplog, "dispatch.blocked")) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("ended", "message"),
+    [
+        # A success between the failures ends the streak.
+        (
+            [
+                ("failed", UNAVAILABLE, 20),
+                ("succeeded", None, 10),
+                ("failed", UNAVAILABLE, 5),
+            ],
+            UNAVAILABLE,
+        ),
+        # The two failures before this one are more than an hour old.
+        ([("failed", UNAVAILABLE, 70), ("failed", UNAVAILABLE, 61)], UNAVAILABLE),
+        # A sub-reason is a video that is gone, not a refused client.
+        ([("failed", REMOVED, 20), ("failed", UNAVAILABLE, 5)], UNAVAILABLE),
+        ([("failed", UNAVAILABLE, 20), ("failed", UNAVAILABLE, 5)], REMOVED),
+    ],
+    ids=["success_between", "older_than_window", "earlier_sub_reason", "own_sub_reason"],
+)
+async def test_a_bare_unavailable_outside_a_streak_fails_the_job(settings, ended, message):
+    _ended_jobs(
+        settings,
+        *[
+            (state, (tail or "").replace("v1", f"other{i}"), m)
+            for i, (state, tail, m) in enumerate(ended)
+        ],
+    )
+    jobs, video = await _unavailable_run(settings, message)
+    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, message)
+    assert video.state is VideoState.FAILED
+    assert _block_state(settings) == (0, None)
+
+
 def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
     from alembic import command
 

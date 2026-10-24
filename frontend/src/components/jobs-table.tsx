@@ -10,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
 import type { Job, JobState, MissReason } from "@/lib/api"
 import { JOB_STATES, jobStateVariant } from "@/lib/channel"
 import { formatClock, formatDateTime } from "@/lib/format"
@@ -101,13 +102,16 @@ export function JobsTable({
                     a narrow table, which then scrolls sideways. */}
                 <TableCell className="w-full max-w-0 min-w-48">
                   {j.video_id ? (
-                    <Link
-                      className="block truncate hover:underline"
-                      title={j.title ?? j.video_id}
-                      to={`/videos/${encodeURIComponent(j.video_id)}`}
-                    >
-                      {j.title ?? j.video_id}
-                    </Link>
+                    <div className="flex items-center gap-2">
+                      <Link
+                        className="min-w-0 truncate hover:underline"
+                        title={j.title ?? j.video_id}
+                        to={`/videos/${encodeURIComponent(j.video_id)}`}
+                      >
+                        {j.title ?? j.video_id}
+                      </Link>
+                      <VideoYouTubeLink id={j.video_id} title={j.title} iconOnly />
+                    </div>
                   ) : (
                     "-"
                   )}
@@ -115,12 +119,18 @@ export function JobsTable({
                 {channelName && (
                   <TableCell>
                     {j.channel_id ? (
-                      <Link
-                        className="hover:underline"
-                        to={`/channels/${encodeURIComponent(j.channel_id)}`}
-                      >
-                        {channelName.get(j.channel_id) ?? j.channel_id}
-                      </Link>
+                      <span className="inline-flex items-center gap-1.5">
+                        <Link
+                          className="hover:underline"
+                          to={`/channels/${encodeURIComponent(j.channel_id)}`}
+                        >
+                          {channelName.get(j.channel_id) ?? j.channel_id}
+                        </Link>
+                        <ChannelYouTubeLink
+                          id={j.channel_id}
+                          name={channelName.get(j.channel_id)}
+                        />
+                      </span>
                     ) : (
                       "-"
                     )}

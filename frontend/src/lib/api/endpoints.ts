@@ -9,6 +9,7 @@ import type {
   DailyStat,
   DownloadSettings,
   DownloadSettingsIn,
+  FormatWatch,
   Job,
   JobKind,
   JobState,
@@ -46,6 +47,14 @@ export const mutations = {
   setDownloadsPaused: (paused: boolean) =>
     request<DownloadSettings>("PUT", "/api/download-settings/paused", { paused }),
   replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
+  // Queues a replace with the format and ends the automatic replaces. A held
+  // video needs `confirm`.
+  pickFormat: (videoId: string, body: { format_id: string; confirm: boolean }) =>
+    request<FormatWatch>(
+      "POST",
+      `/api/videos/${encodeURIComponent(videoId)}/formats/pick`,
+      body,
+    ),
 }
 
 export const api = {
@@ -104,6 +113,9 @@ export const api = {
   // A complete video's stored mkv and its Opus audio copy, served with Range.
   mediaUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/media`,
   audioUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/audio`,
+  // Null for a video without a format watch.
+  formatWatch: (id: string) =>
+    get<FormatWatch | null>(`/api/videos/${encodeURIComponent(id)}/formats`),
   subtitles: (id: string) => get<Subtitle[]>(`/api/videos/${encodeURIComponent(id)}/subtitles`),
   subtitleUrl: (id: string, lang: string) =>
     `/api/videos/${encodeURIComponent(id)}/subtitles/${encodeURIComponent(lang)}`,

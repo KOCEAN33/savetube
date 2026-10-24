@@ -20,6 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
 import { api, type VideoType } from "@/lib/api"
 import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
@@ -139,12 +140,23 @@ export function VideosPage() {
                 <TableBody>
                   {page.items.map((v) => (
                     <TableRow key={v.id}>
-                      <TableCell className="max-w-96 truncate font-medium">
-                        <Link className="hover:underline" to={`/videos/${encodeURIComponent(v.id)}`}>
-                          {v.title}
-                        </Link>
+                      <TableCell className="max-w-96 font-medium">
+                        <div className="flex items-center gap-2">
+                          <Link
+                            className="min-w-0 truncate hover:underline"
+                            to={`/videos/${encodeURIComponent(v.id)}`}
+                          >
+                            {v.title}
+                          </Link>
+                          <VideoYouTubeLink id={v.id} title={v.title} iconOnly />
+                        </div>
                       </TableCell>
-                      <TableCell>{channelName.get(v.channel_id) ?? v.channel_id}</TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1.5">
+                          {channelName.get(v.channel_id) ?? v.channel_id}
+                          <ChannelYouTubeLink id={v.channel_id} name={channelName.get(v.channel_id)} />
+                        </span>
+                      </TableCell>
                       <TableCell>{v.type}</TableCell>
                       <TableCell>{formatUploadDate(v.upload_date)}</TableCell>
                       <TableCell className="text-right">{formatDuration(v.duration)}</TableCell>

@@ -430,6 +430,15 @@ def test_the_api_serves_the_stored_video(server, downloaded, media):
     assert server.get(f"/api/videos/{VIDEO_ID}/subtitles/fr").status_code == 404
 
 
+def test_a_video_that_is_no_live_has_no_format_watch(server, downloaded):
+    r = server.get(f"/api/videos/{VIDEO_ID}/formats")
+    assert r.status_code == 200 and r.json() is None
+    r = server.post(
+        f"/api/videos/{VIDEO_ID}/formats/pick", json={"format_id": "251"}, headers=WRITE
+    )
+    assert r.status_code == 404
+
+
 def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):
     r = server.get("/api/jobs", params={"kind": "archive", "state": ["succeeded", "failed"]})
     assert r.status_code == 200

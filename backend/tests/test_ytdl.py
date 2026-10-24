@@ -185,3 +185,30 @@ def test_a_format_server_error_is_http_500_after_every_retry(message, server):
     from savetube.ytdl import format_server_error
 
     assert format_server_error(message) is server
+
+
+@pytest.mark.parametrize(
+    ("message", "bare"),
+    [
+        ("DownloadError: ERROR: [youtube] a-b_1: Video unavailable", True),
+        ("DownloadError: ERROR: [youtube] a-b_1: Video unavailable. ", True),
+        ("ERROR: [youtube] a-b_1: Video unavailable\n", True),
+        (
+            "DownloadError: ERROR: [youtube] a-b_1: Video unavailable."
+            " This video has been removed by the uploader",
+            False,
+        ),
+        (
+            "DownloadError: ERROR: [youtube] a-b_1: Video unavailable. This video is no longer"
+            " available because the YouTube account associated with this video has been"
+            " terminated.",
+            False,
+        ),
+        ("DownloadError: ERROR: [youtube] a-b_1: Private video", False),
+        ("DownloadError: ERROR: [youtube] a-b_1: This video is unavailable", False),
+    ],
+)
+def test_a_bare_unavailable_has_no_sub_reason(message, bare):
+    from savetube.ytdl import bare_unavailable
+
+    assert bare_unavailable(message) is bare
