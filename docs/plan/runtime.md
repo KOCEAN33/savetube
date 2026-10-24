@@ -28,10 +28,14 @@ One image, three roles, plus a recorder Job per live.
 - The chart's ClusterIP Service `savetube-scheduler` exposes port 8082. The web calls it at `SAVETUBE_SCHEDULER_URL`, `http://savetube-scheduler:8082` in the chart and `http://scheduler:8082` in `compose.yaml`. The scheduler runs one replica with `Recreate`, so the Service reaches one pod.
 - No auth: the API is cluster-internal and only the web calls it. The chart has no NetworkPolicy yet, so any pod in the cluster can reach it.
 - On SIGTERM uvicorn closes the server, waiting up to 5 s for a running request, then raises the signal again, so the process stops as it did without the server.
+- A route that starts long work answers before it. It hands the request to its loop through `scheduler_api.Requests` and sets the loop's wake event, so the loop runs at once instead of after its 60 s sleep. Requests live in memory, and a restart drops them: the source polls at its interval, and the staged videos move by the other rules.
+- The web calls every route through `call_scheduler` (`web/api/deps.py`). It passes the scheduler's 404 and 409 on with their detail, answers 504 on a timeout and 502 on any other failure, and logs the failure.
 
 | Route | Does |
 | --- | --- |
 | `POST /probe/{video_id}` | probes a `complete` video's formats now and stores them in `format_watch` (live.md, Format watch). It waits for the format watch's probe in progress. 204 when stored, a failed probe included, 404 for an unknown video, 409 for one not `complete` |
+| `POST /poll/{source_id}` | puts the source's poll ahead of the due sources, even when it is not due. Polls stay one at a time, so it waits for a running poll. A source polls once per round, so a request for one the round already polled runs in the next round, which starts at once. 202, 404 for an unknown source, 409 for a disabled source or a playlist of a disabled `playlists` source |
+| `POST /staging/move` | runs the staging check now as a Move now (storage.md, Staging). 202, 409 when no staging volume is set |
 
 ## Embedding yt-dlp
 

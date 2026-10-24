@@ -10,10 +10,42 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from savetube import watch
 from savetube.config import Settings
+from savetube.db.models import Source
 from savetube.integrity import Tools
+from savetube.poll import disabled
 
 # An in-flight probe gets this long after SIGTERM before the server closes.
 _GRACEFUL_SECONDS = 5
+
+
+class Requests:
+    """The user's asks the API hands to the scheduler's loops, each with the
+    event that wakes its loop. In memory only: a restart drops them, and the
+    source then polls at its interval, the staged videos move by move_reason's
+    other rules."""
+
+    def __init__(self) -> None:
+        self._polls: list[int] = []
+        self.poll_wake = asyncio.Event()
+        self._move = False
+        self.move_wake = asyncio.Event()
+
+    def ask_poll(self, source_id: int) -> None:
+        if source_id not in self._polls:
+            self._polls.append(source_id)
+        self.poll_wake.set()
+
+    def take_poll(self) -> int | None:
+        """The oldest requested source, None when none waits."""
+        return self._polls.pop(0) if self._polls else None
+
+    def ask_move(self) -> None:
+        self._move = True
+        self.move_wake.set()
+
+    def take_move(self) -> bool:
+        asked, self._move = self._move, False
+        return asked
 
 
 def create_app(
@@ -23,6 +55,7 @@ def create_app(
     probes: asyncio.Lock,
     probe: watch.Probe,
     tools: Tools,
+    requests: Requests,
 ) -> FastAPI:
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
@@ -38,6 +71,28 @@ def create_app(
         except watch.NotComplete:
             raise HTTPException(status_code=409, detail="the video is not complete") from None
         return Response(status_code=204)
+
+    @app.post("/poll/{source_id}", status_code=202)
+    async def poll_now(source_id: int) -> Response:
+        """Poll the source next, without waiting for the poll: a first listing
+        of a big channel takes minutes."""
+        async with sessionmaker() as session:
+            source = await session.get(Source, source_id)
+            if source is None:
+                raise HTTPException(status_code=404, detail="no such source")
+            if await disabled(session, source):
+                raise HTTPException(status_code=409, detail="the source is disabled")
+        requests.ask_poll(source_id)
+        return Response(status_code=202)
+
+    @app.post("/staging/move", status_code=202)
+    async def move_staged() -> Response:
+        """Move every staged video now, without waiting for the move: a batch is
+        up to 80 GB."""
+        if settings.staging_root is None:
+            raise HTTPException(status_code=409, detail="no staging volume")
+        requests.ask_move()
+        return Response(status_code=202)
 
     return app
 

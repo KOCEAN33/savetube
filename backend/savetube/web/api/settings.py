@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime, time
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,7 @@ from savetube import cookies, limits, logs
 from savetube.db.models import CookieProfile, DownloadSettings, GlobalWords, Video, VideoState
 from savetube.logs import emit
 from savetube.tz import TIMEZONE
-from savetube.web.api.deps import Session, _normalize, log
+from savetube.web.api.deps import Session, _normalize, call_scheduler, log
 from savetube.web.api.schemas import WordsIn, _Out
 from savetube.web.auth import CurrentUser, User
 
@@ -56,8 +56,10 @@ async def replace_global_words(session: Session, body: WordsIn) -> WordsIn:
 class StagedOut(BaseModel):
     count: int
     bytes: int
-    # A Move now the scheduler has not taken yet.
-    move_requested: bool
+
+
+# The scheduler only marks the move, so it answers at once.
+MOVE_TIMEOUT = 10
 
 
 @router.get("/staging")
@@ -70,20 +72,19 @@ async def staging(session: Session) -> StagedOut:
             )
         )
     ).one()
-    requested = (await limits.load(session)).move_requested_at is not None
-    return StagedOut(count=count, bytes=size, move_requested=requested)
+    return StagedOut(count=count, bytes=size)
 
 
 @router.post("/staging/move")
-async def move_staging(session: Session) -> StagedOut:
-    """Move every staged video now. The scheduler does it on its next check,
-    within a minute (savetube.staging)."""
-    row = await session.get(DownloadSettings, 1)
-    if row is None:
-        row = DownloadSettings(id=1)
-        session.add(row)
-    row.move_requested_at = datetime.now(UTC)
-    await session.commit()
+async def move_staging(session: Session, request: Request) -> StagedOut:
+    """Ask the scheduler to move every staged video now (savetube.staging). It
+    answers before the move. The web pod cannot move them, because it mounts
+    neither staging nor a writable archive."""
+
+    def failed(status: int, reason: str) -> None:
+        emit(log, logging.WARNING, "staging.move_request_failed", status=status, reason=reason)
+
+    await call_scheduler(request, "/staging/move", seconds=MOVE_TIMEOUT, failed=failed)
     emit(log, logging.INFO, "staging.move_requested")
     return await staging(session)
 

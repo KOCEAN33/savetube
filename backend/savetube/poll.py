@@ -55,6 +55,16 @@ NO_OWNER = "playlist has no owner channel; turn on other channels to archive it"
 UNLISTED = "playlist no longer listed on the channel"
 
 
+async def disabled(session: AsyncSession, source: Source) -> bool:
+    """A disabled source, or a playlist of a disabled `playlists` source:
+    due_sources never lists it."""
+    if not source.enabled:
+        return True
+    if source.parent_id is None:
+        return False
+    return not (await session.get(Source, source.parent_id)).enabled
+
+
 async def due_sources(session: AsyncSession, now: datetime) -> list[int]:
     interval = func.make_interval(0, 0, 0, 0, 0, Source.poll_interval_minutes)
     parent = aliased(Source)

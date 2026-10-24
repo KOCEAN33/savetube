@@ -181,7 +181,7 @@ def test_api_writes_sources(settings):
         patched = client.patch(f"/api/sources/{source_id}", json={"enabled": False})
         assert patched.json()["enabled"] is False
         assert patched.json()["poll_interval_minutes"] == 360
-        assert client.post(f"/api/sources/{source_id}/poll").status_code == 202
+        assert client.post(f"/api/sources/{source_id}/poll").status_code == 409
 
         for s in created.json():
             assert client.delete(f"/api/sources/{s['id']}").status_code == 204
@@ -238,7 +238,7 @@ async def test_a_source_lists_without_downloading_until_archiving_is_on(settings
         ).json()
         assert preview["total"] == 2
         on = client.patch(f"/api/sources/{source['id']}", json={"archiving": True}).json()
-        assert on["archiving"] is True and on["last_polled_at"] is None
+        assert on["archiving"] is True
 
     await _poll(sessionmaker, settings, source["id"], listing)
     assert await _archive_jobs(sessionmaker) == ["new"]

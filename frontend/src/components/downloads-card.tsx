@@ -56,8 +56,8 @@ function ProblemJob({ job }: { job: Job }) {
   )
 }
 
-// Finished videos waiting on staging, and Move now, which the scheduler takes
-// on its next check (docs/plan/storage.md, Staging).
+// Finished videos waiting on staging, and Move now, which the scheduler starts
+// at once (docs/plan/storage.md, Staging).
 function StagingLine() {
   const queryClient = useQueryClient()
   const staged = useQuery({
@@ -70,17 +70,17 @@ function StagingLine() {
     onSuccess: (updated) => queryClient.setQueryData(queryKeys.staging(), updated),
   })
   if (!staged.data || staged.data.count === 0) return null
-  const { count, bytes, move_requested } = staged.data
+  const { count, bytes } = staged.data
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
       <span>
         {`${count} finished, waiting to move into the archive (${formatBytes(bytes)}).`}
-        {move_requested && " Move requested, it starts within a minute."}
+        {move.isSuccess && " Moving into the archive."}
       </span>
       <Button
         size="sm"
         variant="outline"
-        disabled={move_requested || move.isPending}
+        disabled={move.isPending}
         onClick={() => move.mutate()}
       >
         Move now

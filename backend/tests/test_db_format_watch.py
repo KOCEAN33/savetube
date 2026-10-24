@@ -474,13 +474,12 @@ async def _move_staged_vod(settings, *, upload_date, info):
         " size_bytes, completed_at, upload_date, info) VALUES ('s1', 'UC1', 'lives', 't',"
         " 'staged', 'was_live', 'A [UC1]/lives/s1', 1, now() - interval '2 hours',"
         f" {upload_date}, CAST('{json.dumps(info)}' AS jsonb))",
-        "UPDATE download_settings SET move_requested_at = now()",
     )
     assert _sql_rows(settings, "SELECT video_id FROM format_watch") == []
 
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await move_staged(sessionmaker, staged)
+    await move_staged(sessionmaker, staged, requested=True)
     async with sessionmaker() as session:
         watch = await session.get(FormatWatch, "s1")
     await engine.dispose()
@@ -772,7 +771,7 @@ class _Scheduler:
         from sqlalchemy.pool import NullPool
 
         from savetube.db import PSYCOPG_CONNECT_ARGS
-        from savetube.scheduler_api import create_app
+        from savetube.scheduler_api import Requests, create_app
 
         # NullPool: the web app's loop runs these calls, so no connection
         # outlives it.
@@ -785,6 +784,7 @@ class _Scheduler:
             probes=asyncio.Lock(),
             probe=probe,
             tools=_Tools(8312.0),
+            requests=Requests(),
         )
         self.urls = []
 

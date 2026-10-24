@@ -3,6 +3,7 @@ Jobs, the format watch, storage samples, and the internal HTTP API.
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import tempfile
@@ -68,23 +69,46 @@ async def sample_storage(settings: Settings) -> None:
         await session.commit()
 
 
-async def poll_sources(settings: Settings) -> None:
+async def poll_sources(settings: Settings, requests: scheduler_api.Requests) -> None:
+    """Poll the user's requested sources, then the due ones. A request made
+    while the round runs goes ahead of the due sources left. A source polls at
+    most once per round: a request for one this round polled, perhaps minutes
+    ago, waits for the next round, which it starts at once."""
+
     async def cancel(queue_job_id: int) -> bool:
         return await app.job_manager.cancel_job_by_id_async(queue_job_id)
 
     sessionmaker = default_sessionmaker()
     async with sessionmaker() as session:
         due = await due_sources(session, datetime.now(UTC))
-    # One at a time: every listing counts against YouTube's request limits.
-    for source_id in due:
-        await poll_source(
-            sessionmaker,
-            source_id,
-            settings,
-            lister=list_entries,
-            cancel=cancel,
-            prober=probe_member,
-        )
+    polled: set[int] = set()
+    later: list[int] = []
+    try:
+        # One at a time: every listing counts against YouTube's request limits.
+        while True:
+            source_id = requests.take_poll()
+            requested = source_id is not None
+            if not requested:
+                source_id = next((s for s in due if s not in polled), None)
+                if source_id is None:
+                    return
+            if source_id in polled:
+                later.append(source_id)
+                continue
+            polled.add(source_id)
+            if requested:
+                emit(log, logging.INFO, "poll.requested", source=source_id)
+            await poll_source(
+                sessionmaker,
+                source_id,
+                settings,
+                lister=list_entries,
+                cancel=cancel,
+                prober=probe_member,
+            )
+    finally:
+        for source_id in later:
+            requests.ask_poll(source_id)
 
 
 class DispatchLog:
@@ -267,15 +291,32 @@ async def format_watch(settings: Settings, probes: asyncio.Lock) -> None:
     )
 
 
+async def move_requested(settings: Settings, requests: scheduler_api.Requests) -> None:
+    """Take the user's Move now before the move, so one asked during a long
+    move runs another after it: it may name a video staged meanwhile."""
+    await move_staged(default_sessionmaker(), settings, requested=requests.take_move())
+
+
 async def _every(
-    name: str, step: Callable[[], Awaitable[None]], seconds: float = TICK_SECONDS
+    name: str,
+    step: Callable[[], Awaitable[None]],
+    seconds: float = TICK_SECONDS,
+    wake: asyncio.Event | None = None,
 ) -> None:
+    """Run `step` every `seconds`, and at once when `wake` is set, also while
+    `step` runs."""
     while True:
+        if wake is not None:
+            wake.clear()
         try:
             await step()
         except Exception:
             emit(log, logging.ERROR, "loop.failed", loop=name, exc_info=True)
-        await asyncio.sleep(seconds)
+        if wake is None:
+            await asyncio.sleep(seconds)
+        else:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), seconds)
 
 
 async def run(settings: Settings) -> None:
@@ -290,8 +331,14 @@ async def run(settings: Settings) -> None:
     # The format watch and the user's probes take turns: every listing counts
     # against YouTube's request limits.
     probes = asyncio.Lock()
+    requests = scheduler_api.Requests()
     api = scheduler_api.create_app(
-        settings, default_sessionmaker(), probes=probes, probe=probe_formats, tools=Tools()
+        settings,
+        default_sessionmaker(),
+        probes=probes,
+        probe=probe_formats,
+        tools=Tools(),
+        requests=requests,
     )
     async with app.open_async():
         # Separate loops, so a long first listing of a big channel never delays
@@ -301,7 +348,13 @@ async def run(settings: Settings) -> None:
             tg.create_task(_every("cookie profiles", lambda: record_profiles(settings)))
             # Its own loop, so a slow read never delays recording the profiles.
             tg.create_task(_every("cookie accounts", lambda: read_accounts(settings)))
-            tg.create_task(_every("source poll", lambda: poll_sources(settings)))
+            tg.create_task(
+                _every(
+                    "source poll",
+                    lambda: poll_sources(settings, requests),
+                    wake=requests.poll_wake,
+                )
+            )
             report = DispatchLog()
             tg.create_task(
                 _every("archive dispatch", lambda: dispatch_archives(report), DISPATCH_SECONDS)
@@ -316,7 +369,11 @@ async def run(settings: Settings) -> None:
             )
             if settings.staging_root is not None:
                 tg.create_task(
-                    _every("staging move", lambda: move_staged(default_sessionmaker(), settings))
+                    _every(
+                        "staging move",
+                        lambda: move_requested(settings, requests),
+                        wake=requests.move_wake,
+                    )
                 )
             tg.create_task(
                 _every(

@@ -3,10 +3,10 @@ live, and the user's probe and pick (docs/plan/live.md, Format watch)."""
 
 import logging
 from datetime import datetime
+from functools import partial
 from typing import Any, Literal
 from urllib.parse import quote
 
-import httpx2
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -16,7 +16,7 @@ from savetube import formats
 from savetube.db.models import FormatWatch, Job, JobKind, JobState, Video, VideoState
 from savetube.logs import emit
 from savetube.watch import ends_at, replace_active
-from savetube.web.api.deps import Session, log
+from savetube.web.api.deps import Session, call_scheduler, log
 from savetube.web.api.jobs import job_reason
 
 router = APIRouter()
@@ -186,25 +186,12 @@ async def probe_formats(session: Session, request: Request, video_id: str) -> Fo
         raise HTTPException(status_code=404, detail="no such video")
     if video.state is not VideoState.COMPLETE:
         raise HTTPException(status_code=409, detail="the video is not complete")
-    url = f"{request.app.state.scheduler_url}/probe/{quote(video_id, safe='')}"
-    try:
-        async with httpx2.AsyncClient(timeout=SCHEDULER_TIMEOUT) as client:
-            r = await client.post(url)
-    except httpx2.TimeoutException:
-        _probe_failed(video_id, 504, "timed out")
-        raise HTTPException(
-            status_code=504, detail=f"the scheduler did not answer within {SCHEDULER_TIMEOUT} s"
-        ) from None
-    except httpx2.HTTPError as e:
-        _probe_failed(video_id, 502, f"{type(e).__name__}: {e}")
-        raise HTTPException(
-            status_code=502, detail=f"the scheduler is unreachable: {type(e).__name__}"
-        ) from None
-    if r.status_code in (404, 409):
-        raise HTTPException(status_code=r.status_code, detail=r.json().get("detail"))
-    if r.status_code != 204:
-        _probe_failed(video_id, 502, f"scheduler answered {r.status_code}")
-        raise HTTPException(status_code=502, detail=f"the scheduler answered {r.status_code}")
+    await call_scheduler(
+        request,
+        f"/probe/{quote(video_id, safe='')}",
+        seconds=SCHEDULER_TIMEOUT,
+        failed=partial(_probe_failed, video_id),
+    )
     watch = await session.get(FormatWatch, video_id)
     return await _out(session, watch, video)
 

@@ -18,7 +18,6 @@ Confirm `v0.13.0` in production: the Downloads page, the `members_all` and `play
    - Decision: a user action that asks the scheduler to act now goes over HTTP, never through a DB flag the scheduler loop picks up. The procrastinate queue stays in Postgres.
    - Build: add the routes to the scheduler's internal API, `backend/savetube/scheduler_api.py` behind the ClusterIP Service `savetube-scheduler` (`docs/plan/runtime.md`, Scheduler API), and limit access to the web pod. The chart has no NetworkPolicy yet.
    - The onboarding call: `POST /api/channel-scan` calls the scheduler, which lists the tabs with the cookie profiles, checks membership on a members-only entry, stores `membership`, and answers within the scan's 120 s timeout. This lists with the real account, which `docs/plan/access.md` keeps for members-only downloads today, so that section changes.
-   - Convert to HTTP: Move now (`POST /api/staging/move` sets `download_settings.move_requested_at`, read in `staging.py`), Poll now (`POST /api/sources/{id}/poll` clears `last_polled_at`), and turning `archiving` on in `PATCH /api/sources/{id}`, which also clears `last_polled_at`. Find any other such flag before building.
    - Update `docs/plan/access.md`, `docs/plan/frontend.md` (Add channel) and `docs/plan/operations.md` with the API.
 10. `9a21b21`, the manual format probe and replace for any complete video, is on develop only. The user ships it in one release with other features. After that deploy, check these things on a non-live video and on a live whose watch ended:
     - Probe now on the Formats card answers within 120 s and logs `watch.probed` in the scheduler.
@@ -28,3 +27,7 @@ Confirm `v0.13.0` in production: the Downloads page, the `members_all` and `play
     - The Recording now card shows no pod badge for a healthy recorder, and the Streams row shows the recorder Job number in the Recorder column.
     - The Streams table fits the screen without sideways scrolling, and no page shows a time with seconds.
     - `GET /api/pods` answers `{available, recorders}` with no `workers`.
+12. Poll now, turning `archiving` on, and Move now call the scheduler's API (`docs/plan/runtime.md`, Scheduler API), on develop only. Migration `0024` drops `download_settings.move_requested_at`. After the deploy, check these things:
+    - Poll now on a channel source logs `poll.requested` in the scheduler within seconds, unless a long poll runs.
+    - Move now while videos wait on staging logs `staging.move` with `reason=manual` within seconds.
+    - The web log holds no `source.poll_request_failed` or `staging.move_request_failed`.

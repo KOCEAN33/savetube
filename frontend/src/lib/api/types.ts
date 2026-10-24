@@ -141,8 +141,6 @@ export interface RecorderJob {
 export interface Staging {
   count: number
   bytes: number
-  // A Move now the scheduler has not taken yet.
-  move_requested: boolean
 }
 
 export interface JobStep {
