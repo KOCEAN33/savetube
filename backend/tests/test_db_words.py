@@ -334,7 +334,6 @@ async def test_a_live_is_recorded_only_when_a_watching_source_passes_its_title(s
 
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    seen = {}
     for _ in range(2):
         await check_channel(
             sessionmaker,
@@ -345,12 +344,11 @@ async def test_a_live_is_recorded_only_when_a_watching_source_passes_its_title(s
                 "3d", "【3DLIVE】 VESPERBELL カスカ Birthday Live 2026", "is_live"
             ),
             list_streams=_no_streams,
-            seen=seen,
         )
     # The watching /streams tab decides alone, so the /videos tab's 3DLIVE
     # word does not record "3d".
     assert sorted(j.video_id for j in await _record_jobs(sessionmaker)) == ["utawaku"]
-    # A skipped detection is not probed again by the same process.
+    # A skipped detection is not probed again.
     assert sorted(probed) == ["guerrilla", "members", "utawaku"]
     await engine.dispose()
 
@@ -390,7 +388,6 @@ async def test_members_all_records_a_members_only_live_whatever_its_title(settin
         probe=lambda v: probes[v],
         probe_live=lambda c: stream("public", "public"),
         list_streams=_no_streams,
-        seen={},
     )
     # The public stream of the same channel still meets the words.
     assert [j.video_id for j in await _record_jobs(sessionmaker)] == ["members"]
@@ -432,7 +429,6 @@ async def test_keep_all_records_a_live_whatever_its_title(settings):
             probe=stream,
             probe_live=lambda c: stream(video_id),
             list_streams=_no_streams,
-            seen={},
         )
 
     await detect("kept")
@@ -665,7 +661,6 @@ async def test_a_global_exclude_word_stops_a_live_detection(settings):
         probe={UPCOMING["id"]: UPCOMING}.__getitem__,
         probe_live=lambda c: LIVE_NOW,
         list_streams=_no_streams,
-        seen={},
     )
     assert [j.video_id for j in await _record_jobs(sessionmaker)] == [LIVE_NOW["id"]]
     await engine.dispose()

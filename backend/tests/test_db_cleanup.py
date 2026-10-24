@@ -74,7 +74,7 @@ async def test_cleanup_clears_progress_of_every_job_not_running(settings, caplog
     assert rows == [(2, {"percent": 50})]
     [done] = _events(caplog, "cleanup.done")
     assert done.levelno == logging.INFO
-    assert _fields(done) == {"progress": 4, "queue_jobs": 0, "interrupted": 0}
+    assert _fields(done) == {"progress": 4, "queue_jobs": 0, "interrupted": 0, "live_seen": 0}
 
     # Nothing left to clear logs nothing.
     caplog.clear()

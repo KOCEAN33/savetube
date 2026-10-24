@@ -5,15 +5,17 @@
 - A watched channel has "watch lives" on and at least one enabled tab source.
 - Every minute, per watched channel, the scheduler reads three places: the RSS feed, the first page of the Live tab, and the `/live` page.
 - The RSS feed holds only the 15 newest uploads. On a busy channel a waiting room drops out of it days before the stream, so the Live tab's `is_upcoming` and `is_live` entries are candidates too.
-- Each candidate id is probed once per scheduler process with yt-dlp and `ignore_no_formats_error`. Without that option an upcoming stream raises "This live event will begin in ..." instead of returning `release_timestamp`. The Live tab listing and the probes use the general cookie profile. The RSS feed takes no cookies. A probe that fails with a members-only error is probed once more with the channel's first member profile by name, if one is present. A probe that still fails, such as a private video or a members-only video no profile may watch, is skipped.
+- Each candidate id is probed with yt-dlp and `ignore_no_formats_error`. Without that option an upcoming stream raises "This live event will begin in ..." instead of returning `release_timestamp`. The Live tab listing and the probes use the general cookie profile. The RSS feed takes no cookies. A probe that fails with a members-only error is probed once more with the channel's first member profile by name, if one is present. A probe that still fails, such as a private video or a members-only video no profile may watch, is skipped.
+- A probed id is a `live_seen` row with the probe's fields, or null for a probe that failed (storage.md). A check reads the rows of its candidate ids in one query and probes only ids without a row, so a scheduler restart probes nothing already seen. A row with the probe's fields is never probed again. A null row is probed again 24 hours after its `probed_at`, because a member profile or a membership may have appeared. A success stores the fields, and another refusal sets `probed_at` to the check's time.
+- One upsert per check stores the new rows and sets `listed_at` on every candidate id. The upsert runs also when a probe cuts the check off, so the probes before it stay stored. The hourly database cleanup deletes a row 30 days after its `listed_at`. A check touches every id it lists, so only an id gone from the feed and the Live tab for 30 days is deleted.
 - A detection through the member profile, or whose probe reports `availability` `subscriber_only`, stores its video as type `members`. Its recording then takes a member profile (access.md, Cookies and account).
 - A members-only detection of a channel with `members_all` on passes the title words of any watching source (archive.md, Title words).
 - Every detection of a channel with `keep_all` on passes the title words of any watching source.
 - The `/live` page probe takes the general profile only.
 - The `/live` page finds a stream with no waiting room. "The channel is not currently live" is the normal answer and is not an error.
 - No Data API key is used. The probe reads the scheduled start that `videos.list` would.
-- A detection is a queued `record` job. `scheduled_at` comes from `release_timestamp` for an upcoming stream and is null for a stream found live. The record job keeps a video to one detection across scheduler restarts.
-- The first check of a channel probes up to 15 feed ids and takes about a minute. Later checks take seconds.
+- A detection is a queued `record` job. `scheduled_at` comes from `release_timestamp` for an upcoming stream and is null for a stream found live. The record job keeps a video to one detection.
+- The first check of a newly watched channel probes up to 15 feed ids and takes about a minute. Later checks take seconds.
 - A queued record job does not stop the archive poll from queuing the VOD. The poll skips a live until it ends, so the VOD is queued only when the recording has not stored the video.
 - WebSub push needs a public HTTPS callback, which the tailnet-only cluster lacks. Not used.
 

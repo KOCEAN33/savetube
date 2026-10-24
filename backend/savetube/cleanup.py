@@ -1,5 +1,6 @@
-"""Hourly database cleanup: stale progress, finished queue jobs, and the
-interrupted runs of videos archived long ago."""
+"""Hourly database cleanup: stale progress, finished queue jobs, the
+interrupted runs of videos archived long ago, and live detection's probed ids
+no listing showed for long."""
 
 import logging
 from datetime import UTC, datetime, timedelta
@@ -7,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import Text, column, delete, func, null, select, table, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from savetube.db.models import Job, JobKind, JobState
+from savetube.db.models import Job, JobKind, JobState, LiveSeen
 from savetube.logs import emit
 
 log = logging.getLogger(__name__)
@@ -17,6 +18,9 @@ QUEUE_JOB_DAYS = 30
 # An archive job's interrupted rows are kept this long after the video's
 # latest successful download.
 INTERRUPTED_DAYS = 30
+# A `live_seen` row is kept this long after a check last listed its id. Every
+# check touches the ids it lists, so an id still listed is never deleted.
+LIVE_SEEN_DAYS = 30
 
 # The procrastinate statuses no worker or dispatch reads again. `aborting` is
 # legacy and unused since procrastinate 3.0.
@@ -62,11 +66,15 @@ async def clean_database(sessionmaker: async_sessionmaker) -> None:
                 Job.video_id.in_(archived_long_ago),
             )
         )
+        live_seen = await session.execute(
+            delete(LiveSeen).where(LiveSeen.listed_at < now - timedelta(days=LIVE_SEEN_DAYS))
+        )
         await session.commit()
     counts = {
         "progress": progress.rowcount,
         "queue_jobs": queue_jobs.rowcount,
         "interrupted": interrupted.rowcount,
+        "live_seen": live_seen.rowcount,
     }
     if any(counts.values()):
         emit(log, logging.INFO, "cleanup.done", **counts)

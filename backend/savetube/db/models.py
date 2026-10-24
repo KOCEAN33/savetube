@@ -392,6 +392,24 @@ class FormatWatch(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class LiveSeen(Base):
+    """A video id live detection probed, so no check probes it again
+    (docs/plan/live.md, Live detection)."""
+
+    __tablename__ = "live_seen"
+
+    video_id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    # The probe's fields that `savetube.live` reads. Null for a video the probe
+    # could not read, such as a private or members-only one.
+    info: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    # The last probe. A null `info` is probed again RETRY_UNREADABLE after it
+    # (savetube.live), since a member profile or a membership may appear.
+    probed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # The last check whose feed or Live tab listed the id. The hourly cleanup
+    # deletes the row LIVE_SEEN_DAYS later (savetube.cleanup).
+    listed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class StorageSample(Base):
     __tablename__ = "storage_sample"
 

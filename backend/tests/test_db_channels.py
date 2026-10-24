@@ -525,8 +525,8 @@ async def test_a_failed_live_check_is_one_warning_with_the_channel_name(settings
 
     checks = {"probe": lambda v: UPCOMING, "probe_live": _not_live, "list_streams": _no_streams}
     with caplog.at_level(logging.INFO, logger="savetube"):
-        await check_logged(sessionmaker, NASA, fetch_feed=gone, seen={}, **checks)
-        await check_logged(sessionmaker, NASA, fetch_feed=broken, seen={}, **checks)
+        await check_logged(sessionmaker, NASA, fetch_feed=gone, **checks)
+        await check_logged(sessionmaker, NASA, fetch_feed=broken, **checks)
     await engine.dispose()
     expected, unexpected = [r for r in caplog.records if r.getMessage() == "live.check_failed"]
     assert expected.levelno == logging.WARNING and expected.exc_info is None
