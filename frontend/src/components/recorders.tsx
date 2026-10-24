@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { ChannelLink } from "@/components/job-row"
 import { PageSection, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
@@ -9,7 +10,7 @@ import { recorderOf, usePods } from "@/hooks/use-pods"
 import { api, type Job, type Pods } from "@/lib/api"
 import { STEP_LABELS } from "@/lib/channel"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
-import { formatBytes, formatClock, formatDuration, formatKst } from "@/lib/format"
+import { formatBytes, formatClock, formatDuration } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
@@ -121,8 +122,8 @@ export function ScheduledSection() {
             <ul className="flex flex-col divide-y">
               {[...jobs].sort(byStart).map((j) => (
                 <li key={j.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 p-3 text-sm">
-                  <span className="w-44 shrink-0 tabular-nums">
-                    {j.scheduled_at ? formatKst(j.scheduled_at) : "live now"}
+                  <span className="w-24 shrink-0 tabular-nums">
+                    {j.scheduled_at ? <Clock iso={j.scheduled_at} /> : "live now"}
                   </span>
                   {j.video_id ? (
                     <Link

@@ -1,6 +1,7 @@
 import { Fragment, useState, type MouseEvent } from "react"
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { Badge } from "@/components/ui/badge"
 import {
   Table,
@@ -40,11 +41,6 @@ export function JobStateCounts({ jobs }: { jobs: Job[] }) {
       ))}
     </div>
   )
-}
-
-// The year shows only in the tooltip, so an old row still reads in full.
-function Clock({ iso }: { iso: string | null }) {
-  return <span title={iso ? formatDateTime(iso) : undefined}>{formatClock(iso)}</span>
 }
 
 // A record job not started yet shows its announced start, dimmed.

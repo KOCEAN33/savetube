@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link, useParams } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { FormatWatchCard } from "@/components/format-watch"
 import { Page, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
@@ -8,13 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { VideoPlayer } from "@/components/video-player"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
 import { api, type VideoDetail } from "@/lib/api"
-import {
-  formatBytes,
-  formatCount,
-  formatDateTime,
-  formatDuration,
-  formatUploadDate,
-} from "@/lib/format"
+import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 
 function infoString(info: VideoDetail["info"], key: string): string | null {
@@ -70,11 +65,18 @@ export function VideoDetailPage() {
                   <Field label="Uploaded">{formatUploadDate(v.upload_date)}</Field>
                   <Field label="Duration">{formatDuration(v.duration)}</Field>
                   <Field label="Size on disk">{formatBytes(v.size_bytes)}</Field>
-                  <Field label="Completed">{formatDateTime(v.completed_at)}</Field>
+                  <Field label="Completed">
+                    <Clock iso={v.completed_at} />
+                  </Field>
                   <Field label="Verified">
-                    {v.verified_at
-                      ? `${formatDateTime(v.verified_at)} (${v.verified_checks?.join(", ") || "no check ran"})`
-                      : "-"}
+                    {v.verified_at ? (
+                      <>
+                        <Clock iso={v.verified_at} /> (
+                        {v.verified_checks?.join(", ") || "no check ran"})
+                      </>
+                    ) : (
+                      "-"
+                    )}
                   </Field>
                   <Field label="Views">{infoString(v.info, "view_count") ?? "-"}</Field>
                   <Field label="Resolution">{infoString(v.info, "resolution") ?? "-"}</Field>

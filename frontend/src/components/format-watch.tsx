@@ -2,6 +2,7 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ChevronRightIcon } from "lucide-react"
 
+import { Clock } from "@/components/clock"
 import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -31,7 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { api, mutations, type FormatRow, type FormatWatch } from "@/lib/api"
-import { formatBytes, formatDateTime, formatDuration, formatKbps } from "@/lib/format"
+import { formatBytes, formatClock, formatDuration, formatKbps } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 import { cn } from "@/lib/utils"
@@ -64,7 +65,7 @@ function summary(w: FormatWatch): string {
     : w.formats.length
       ? "no upgrade"
       : "no formats listed"
-  const probed = w.checked_at ? `probed ${formatDateTime(w.checked_at)}` : "never probed"
+  const probed = w.checked_at ? `probed ${formatClock(w.checked_at)}` : "never probed"
   return [`stored ${stored || "-"}`, upgrade, probed].join(" / ")
 }
 
@@ -308,8 +309,8 @@ function FormatSection({
 function WatchStatus({ watch: w }: { watch: FormatWatch }) {
   const automatic = w.started_at != null
   let state = "no automatic watch"
-  if (w.ended_at != null) state = `ended ${formatDateTime(w.ended_at)}`
-  else if (automatic) state = `until ${formatDateTime(w.ends_at)}`
+  if (w.ended_at != null) state = `ended ${formatClock(w.ended_at)}`
+  else if (automatic) state = `until ${formatClock(w.ends_at)}`
   return (
     <dl className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
       <div className="flex flex-col gap-0.5">
@@ -318,7 +319,9 @@ function WatchStatus({ watch: w }: { watch: FormatWatch }) {
       </div>
       <div className="flex flex-col gap-0.5">
         <dt className="text-xs text-muted-foreground">Last probe</dt>
-        <dd>{formatDateTime(w.checked_at)}</dd>
+        <dd>
+          <Clock iso={w.checked_at} />
+        </dd>
       </div>
       <div className="flex flex-col gap-0.5">
         <dt className="text-xs text-muted-foreground">Replaces</dt>
@@ -339,7 +342,7 @@ function WatchStatus({ watch: w }: { watch: FormatWatch }) {
             <span className="text-muted-foreground">
               {" "}
               (original kept
-              {w.original_until ? ` until ${formatDateTime(w.original_until)}` : ""})
+              {w.original_until ? ` until ${formatClock(w.original_until)}` : ""})
             </span>
           )}
         </dd>

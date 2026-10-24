@@ -4,7 +4,7 @@ import { ChannelAvatar } from "@/components/channel-avatar"
 import { Badge } from "@/components/ui/badge"
 import { type Channel, type Source } from "@/lib/api"
 import { channelBase } from "@/lib/channel"
-import { formatBytes, formatCount, formatDateTime } from "@/lib/format"
+import { formatBytes, formatClock, formatCount } from "@/lib/format"
 
 export function ChannelHeader({ channel, sources }: { channel: Channel; sources: Source[] }) {
   const top = sources.filter((s) => s.parent_id === null)
@@ -19,7 +19,7 @@ export function ChannelHeader({ channel, sources }: { channel: Channel; sources:
     ["Stored", formatCount(channel.video_count)],
     ["Size", formatBytes(channel.bytes)],
     ["Sources", formatCount(sources.length)],
-    ["Last poll", lastPoll ? formatDateTime(lastPoll) : "waiting"],
+    ["Last poll", lastPoll ? formatClock(lastPoll) : "waiting"],
   ]
   return (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-3">

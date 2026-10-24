@@ -1,9 +1,10 @@
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
 import { type Job } from "@/lib/api"
 import { STEP_LABELS } from "@/lib/channel"
-import { formatBytes, formatClock, formatDateTime, formatDuration } from "@/lib/format"
+import { formatBytes, formatDuration } from "@/lib/format"
 
 
 function ProgressLine({ job }: { job: Job }) {
@@ -72,11 +73,8 @@ export function RunningJob({ job, withChannel = false }: { job: Job; withChannel
           <span className="font-medium">Job {job.id}</span>
         )}
         {job.video_id && <VideoYouTubeLink id={job.video_id} title={job.title} />}
-        <span
-          className="ml-auto text-xs text-muted-foreground tabular-nums"
-          title={formatDateTime(job.started_at)}
-        >
-          started {formatClock(job.started_at)}
+        <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+          started <Clock iso={job.started_at} />
         </span>
       </div>
       <ProgressLine job={job} />

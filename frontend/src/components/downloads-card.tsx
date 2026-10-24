@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { RunningJob } from "@/components/job-row"
 import { ErrorBox, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
@@ -17,7 +18,7 @@ import { VideoYouTubeLink } from "@/components/youtube-link"
 import { api, mutations, type Job } from "@/lib/api"
 import { jobStateVariant } from "@/lib/channel"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
-import { formatBytes, formatDateTime } from "@/lib/format"
+import { formatBytes } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
@@ -49,7 +50,7 @@ function ProblemJob({ job }: { job: Job }) {
         </span>
       )}
       <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-        {formatDateTime(job.finished_at)}
+        <Clock iso={job.finished_at} />
       </span>
     </li>
   )

@@ -3,6 +3,7 @@ import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query"
 import { ChevronRightIcon } from "lucide-react"
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { VideoYouTubeLink } from "@/components/youtube-link"
 import { api, type Source, type Video, type VideoOrder, type VideoType } from "@/lib/api"
 import { sourceLabel, thumbUrl } from "@/lib/channel"
-import { formatBytes, formatCount, formatDateTime, formatDuration, formatUploadDate } from "@/lib/format"
+import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { cn } from "@/lib/utils"
 
@@ -207,7 +208,7 @@ function PlaylistFold({ source, order }: { source: Source; order: VideoOrder }) 
         </span>
         {!source.enabled && <Badge variant="outline">disabled</Badge>}
         <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-          last poll {source.last_polled_at ? formatDateTime(source.last_polled_at) : "waiting"}
+          last poll {source.last_polled_at ? <Clock iso={source.last_polled_at} /> : "waiting"}
         </span>
       </button>
       {open && (

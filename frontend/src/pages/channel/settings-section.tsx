@@ -2,12 +2,12 @@ import { useState, type FormEvent } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 
 import { DateCutoffField, QualityField } from "@/components/channel-fields"
+import { Clock } from "@/components/clock"
 import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { api, mutations, type Channel, type ChannelSettings, type Membership } from "@/lib/api"
-import { formatDateTime } from "@/lib/format"
 import { profileLabel } from "@/lib/profiles"
 import { queryKeys } from "@/lib/query-keys"
 import { useInvalidate } from "@/pages/channel/use-invalidate"
@@ -33,7 +33,7 @@ function MembershipList({ memberships }: { memberships: Membership[] }) {
                 {m.is_member ? "member" : "not a member"}
               </Badge>
               <span className="text-xs text-muted-foreground">
-                checked {formatDateTime(m.checked_at)}
+                checked <Clock iso={m.checked_at} />
               </span>
             </li>
           ))}

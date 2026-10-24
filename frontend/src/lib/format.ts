@@ -42,30 +42,17 @@ export function formatDateTime(iso: string | null | undefined): string {
   return new Date(iso).toLocaleString()
 }
 
-/** A time in Korea, where the streams the user watches are announced: "10/24/2026, 21:00 KST". */
-export function formatKst(iso: string): string {
-  const text = new Date(iso).toLocaleString(undefined, {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  })
-  return `${text} KST`
-}
-
-/** Local time of day, with the date when it is not today: "02:00" or "10/23 02:00".
- * No year: pair it with formatDateTime in a tooltip where a row can be old. */
+/** The one time form the UI shows, local and without seconds: "02:00" today,
+ * "10/23 02:00" this year, "2025/10/23 02:00" before. formatDateTime is its tooltip. */
 export function formatClock(iso: string | null | undefined): string {
   if (!iso) return "-"
   const d = new Date(iso)
+  const now = new Date()
   const pad = (n: number) => String(n).padStart(2, "0")
   const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`
-  return d.toDateString() === new Date().toDateString()
-    ? time
-    : `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${time}`
+  if (d.toDateString() === now.toDateString()) return time
+  const day = `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${time}`
+  return d.getFullYear() === now.getFullYear() ? day : `${d.getFullYear()}/${day}`
 }
 
 /** A recording's length in hours and minutes: "4:01" or "0:28". */

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { DownloadPauseToggle } from "@/components/download-pause"
 import { ErrorBox, Page, PageSection, QueryState } from "@/components/query-state"
 import { WordListEditor } from "@/components/source-words"
@@ -34,7 +35,6 @@ import {
   type DownloadSettingsIn,
   type TitleWords,
 } from "@/lib/api"
-import { formatDateTime } from "@/lib/format"
 import { profileLabel } from "@/lib/profiles"
 import { queryKeys } from "@/lib/query-keys"
 import { COMMON_SUBTITLE_LANGS, getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
@@ -396,7 +396,7 @@ function MembershipTable({ channels, profiles }: { channels: Channel[]; profiles
                             {m.is_member ? "member" : "not a member"}
                           </Badge>
                           <span className="text-xs text-muted-foreground">
-                            {formatDateTime(m.checked_at)}
+                            <Clock iso={m.checked_at} />
                           </span>
                         </span>
                       ) : (
