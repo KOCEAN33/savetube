@@ -234,6 +234,8 @@ export interface FormatWatch {
     id: number
     state: JobState
     format_id: string | null
+    // A user's pick. A queued automatic replace gives way to a pick.
+    manual: boolean
     reason: string | null
     created_at: string
     finished_at: string | null

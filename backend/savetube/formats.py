@@ -186,6 +186,24 @@ def pick_video(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> 
     return Pick("video", best, False, f"the stored {s_name} {kbps(s_tbr)} is not below {kbps(tbr)}")
 
 
+def best_first(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The video formats, then the audio formats, each best first. Video:
+    height, fps, codec rank, then `tbr`. Audio: codec rank, then `abr`."""
+    video = [f for f in formats if kind(f) == "video"]
+    audio = [f for f in formats if kind(f) == "audio"]
+    video.sort(
+        key=lambda f: (
+            f.get("height") or 0,
+            f.get("fps") or 0,
+            video_codec(f.get("vcodec"))[0],
+            f.get("tbr") or 0,
+        ),
+        reverse=True,
+    )
+    audio.sort(key=lambda f: (audio_codec(f.get("acodec"))[0], f.get("abr") or 0), reverse=True)
+    return video + audio
+
+
 def picks(formats: list[dict[str, Any]], info: dict[str, Any]) -> dict[Kind, Pick]:
     stored = stored_streams(info)
     return {

@@ -436,7 +436,7 @@ def test_a_video_that_is_no_live_has_no_format_watch(server, downloaded):
     r = server.get(f"/api/videos/{VIDEO_ID}/formats")
     assert r.status_code == 200 and r.json() is None
     r = server.post(
-        f"/api/videos/{VIDEO_ID}/formats/pick", json={"format_id": "251"}, headers=WRITE
+        f"/api/videos/{VIDEO_ID}/formats/pick", json={"format_ids": ["251"]}, headers=WRITE
     )
     assert r.status_code == 404
     # No scheduler runs here, so the probe cannot reach it.

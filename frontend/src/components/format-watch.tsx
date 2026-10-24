@@ -69,14 +69,26 @@ function summary(w: FormatWatch): string {
   return [`stored ${stored || "-"}`, upgrade, probed].join(" / ")
 }
 
-// The stored file and the formats YouTube offers for it. A live's automatic
-// watch probes for 7 days, and "Probe now" lists the formats of any complete
-// video. The pick of each kind carries a `recommended` badge, and any listed
-// format can replace its stream by hand.
+// The radio value of the stored row: keep the stored stream of that kind.
+const STORED = "stored"
+
+// The selected row of a kind: the user's choice while the table still lists
+// it, else the recommended upgrade, else the stored row.
+function selection(w: FormatWatch, kind: Kind, chosen: string | undefined): string {
+  const offered = w.formats.filter((r) => r.kind === kind)
+  if (chosen === STORED || offered.some((r) => r.format_id === chosen)) return chosen ?? STORED
+  return offered.find((r) => r.recommended)?.format_id ?? STORED
+}
+
+// The stored file and the formats YouTube offers for it, best first. A live's
+// automatic watch probes for 7 days, and "Probe now" lists the formats of any
+// complete video. The pick of each kind carries a `recommended` badge. One
+// video and one audio format can replace the stored streams by hand.
 export function FormatWatchCard({ videoId }: { videoId: string }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
-  const [confirming, setConfirming] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const [chosen, setChosen] = useState<Partial<Record<Kind, string>>>({})
   const watch = useQuery({
     queryKey: queryKeys.formatWatch(videoId),
     queryFn: () => api.formatWatch(videoId),
@@ -86,11 +98,12 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
     },
   })
   const pick = useMutation({
-    mutationFn: (body: { format_id: string; confirm: boolean }) =>
+    mutationFn: (body: { format_ids: string[]; confirm: boolean }) =>
       mutations.pickFormat(videoId, body),
     onSuccess: (updated) => {
       queryClient.setQueryData(queryKeys.formatWatch(videoId), updated)
-      setConfirming(null)
+      setConfirming(false)
+      setChosen({})
     },
   })
   const probe = useMutation({
@@ -131,10 +144,22 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
     )
   }
 
-  const replaceActive = w.replace?.state === "queued" || w.replace?.state === "running"
-  const choose = (formatId: string) => {
-    if (w.held) setConfirming(formatId)
-    else pick.mutate({ format_id: formatId, confirm: false })
+  // A queued automatic replace gives way to a pick. A running replace or a
+  // queued pick does not.
+  const supersedable = w.replace?.state === "queued" && !w.replace.manual
+  const blocked =
+    w.replace?.state === "running" || (w.replace?.state === "queued" && w.replace.manual)
+  const selected: Record<Kind, string> = {
+    video: selection(w, "video", chosen.video),
+    audio: selection(w, "audio", chosen.audio),
+  }
+  const picked = (["video", "audio"] as const)
+    .map((k) => selected[k])
+    .filter((id) => id !== STORED)
+  const replaceLabel = picked.length ? `Replace with ${picked.join(" + ")}` : "Replace"
+  const replace = () => {
+    if (w.held) setConfirming(true)
+    else pick.mutate({ format_ids: picked, confirm: false })
   }
 
   return (
@@ -169,15 +194,31 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
                   key={kind}
                   kind={kind}
                   watch={w}
-                  disabled={replaceActive || pick.isPending}
-                  onUse={choose}
+                  selected={selected[kind]}
+                  disabled={blocked || pick.isPending}
+                  onSelect={(id) => setChosen({ ...chosen, [kind]: id })}
                 />
               ))}
+              <div className="flex flex-col gap-2">
+                {supersedable && (
+                  <p className="text-sm text-muted-foreground">
+                    The queued automatic replace ({w.replace?.format_id ?? "-"}) is cancelled
+                    and replaced by this pick.
+                  </p>
+                )}
+                <Button
+                  className="w-fit"
+                  disabled={blocked || pick.isPending || picked.length === 0}
+                  onClick={replace}
+                >
+                  {replaceLabel}
+                </Button>
+              </div>
             </>
           )}
         </CardContent>
       )}
-      <Dialog open={confirming != null} onOpenChange={(o) => !o && setConfirming(null)}>
+      <Dialog open={confirming} onOpenChange={setConfirming}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Replace a held video?</DialogTitle>
@@ -195,9 +236,9 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
             <Button
               variant="destructive"
               disabled={pick.isPending}
-              onClick={() => confirming && pick.mutate({ format_id: confirming, confirm: true })}
+              onClick={() => pick.mutate({ format_ids: picked, confirm: true })}
             >
-              Replace with {confirming}
+              {replaceLabel}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -206,25 +247,33 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
   )
 }
 
-// One kind's rows: the stored stream and the recommended format first, the
-// rest behind a toggle.
+// The offered formats a collapsed table shows, best first.
+const TOP_FORMATS = 3
+
+// One kind's rows: the stored stream, then the offered formats in the API's
+// best-first order. The tail behind a toggle starts after the top formats and
+// the selected one. One radio per row picks the format, the stored row keeps
+// the stored stream.
 function FormatSection({
   kind,
   watch: w,
+  selected,
   disabled,
-  onUse,
+  onSelect,
 }: {
   kind: Kind
   watch: FormatWatch
+  selected: string
   disabled: boolean
-  onUse: (formatId: string) => void
+  onSelect: (formatId: string) => void
 }) {
   const [all, setAll] = useState(false)
   const stored = w.stored.filter((r) => r.kind === kind)
   const offered = w.formats.filter((r) => r.kind === kind)
-  const first = [...stored, ...offered.filter((r) => r.recommended)]
-  const rest = offered.filter((r) => !r.recommended)
-  const rows = all ? [...first, ...rest] : first
+  const shown = Math.max(TOP_FORMATS, offered.findIndex((r) => r.format_id === selected) + 1)
+  const rest = offered.slice(shown)
+  const rows = [...stored, ...(all ? offered : offered.slice(0, shown))]
+  const storedId = stored[0]?.format_id
   const label = `${KIND_LABEL[kind]} formats`
 
   return (
@@ -234,6 +283,9 @@ function FormatSection({
         <Table aria-label={label}>
           <TableHeader>
             <TableRow>
+              <TableHead>
+                <span className="sr-only">Pick</span>
+              </TableHead>
               <TableHead>Stream</TableHead>
               <TableHead>ID</TableHead>
               <TableHead>Codec</TableHead>
@@ -248,6 +300,20 @@ function FormatSection({
           <TableBody>
             {rows.map((row) => (
               <TableRow key={`${row.stored ? "stored" : "vod"}-${row.format_id}`}>
+                <TableCell>
+                  <input
+                    type="radio"
+                    name={`format-${kind}`}
+                    className="size-4 accent-primary"
+                    aria-label={
+                      row.stored ? `Keep stored ${kind}` : `Select format ${row.format_id}`
+                    }
+                    checked={selected === (row.stored ? STORED : row.format_id)}
+                    // The stored stream's id offered again is the same stream.
+                    disabled={disabled || (!row.stored && row.format_id === storedId)}
+                    onChange={() => onSelect(row.stored ? STORED : row.format_id)}
+                  />
+                </TableCell>
                 <TableCell>{row.stored ? "stored" : "YouTube"}</TableCell>
                 <TableCell className="font-mono">{row.format_id}</TableCell>
                 <TableCell>{row.codec}</TableCell>
@@ -266,24 +332,13 @@ function FormatSection({
                     {row.recommended && row.reason && (
                       <span className="text-xs text-muted-foreground">{row.reason}</span>
                     )}
-                    {!row.stored && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        aria-label={`Use format ${row.format_id}`}
-                        disabled={disabled}
-                        onClick={() => onUse(row.format_id)}
-                      >
-                        Use
-                      </Button>
-                    )}
                   </div>
                 </TableCell>
               </TableRow>
             ))}
             {rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} className="text-muted-foreground">
+                <TableCell colSpan={10} className="text-muted-foreground">
                   No {kind} stream listed.
                 </TableCell>
               </TableRow>
