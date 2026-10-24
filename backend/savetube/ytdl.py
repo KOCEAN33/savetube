@@ -15,10 +15,11 @@ from savetube.layout import OUTTMPL
 from savetube.logs import YtdlpLogger
 
 DEFAULT_FORMAT = "bv*+ba/b"
-# Resolution, then fps, then AV1 over VP9 over H.264. Fields given here go
-# before the YouTube extractor's own, whose `source` field ranks Premium VP9
-# (616) above AV1. Audio-only formats tie on all three, so the audio pick holds.
-FORMAT_SORT = ["res", "fps", "vcodec:av01"]
+# Resolution, then fps, then HDR over SDR, then AV1 over VP9 over H.264. Fields
+# given here go before the YouTube extractor's own, whose `source` field ranks
+# Premium VP9 (616) above AV1. Audio-only formats tie on all four, so the audio
+# pick holds. `hdr:12` ranks dynamic ranges up to 12-bit, HDR first.
+FORMAT_SORT = ["res", "fps", "hdr:12", "vcodec:av01"]
 
 # YoutubeDL loads plugins on first use, unlocked. Two threads creating the first
 # instances at once import the bgutil plugin twice, and yt-dlp prints the failed
