@@ -679,7 +679,7 @@ def test_staging_move_request(server):
 def test_pods_are_unavailable_outside_a_cluster(server):
     r = server.get("/api/pods")
     assert r.status_code == 200
-    assert r.json() == {"available": False, "recorders": [], "workers": []}
+    assert r.json() == {"available": False, "recorders": []}
 
 
 def test_every_api_route_is_covered():

@@ -56,13 +56,22 @@ export function formatKst(iso: string): string {
   return `${text} KST`
 }
 
-/** Local time of day, with the date when it is not today: "02:00" or "10/23/2026, 02:00". */
-export function formatClock(iso: string): string {
+/** Local time of day, with the date when it is not today: "02:00" or "10/23 02:00".
+ * No year: pair it with formatDateTime in a tooltip where a row can be old. */
+export function formatClock(iso: string | null | undefined): string {
+  if (!iso) return "-"
   const d = new Date(iso)
-  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+  const pad = (n: number) => String(n).padStart(2, "0")
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`
   return d.toDateString() === new Date().toDateString()
     ? time
-    : `${d.toLocaleDateString()}, ${time}`
+    : `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${time}`
+}
+
+/** A recording's length in hours and minutes: "4:01" or "0:28". */
+export function formatLength(seconds: number): string {
+  const m = Math.floor(seconds / 60)
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`
 }
 
 /** Local calendar day `daysAgo` days before today, as YYYY-MM-DD. */
