@@ -271,3 +271,33 @@ def test_a_download_prefers_av1_over_premium_vp9_at_the_same_resolution(tmp_path
 
 def test_a_download_keeps_a_higher_resolution_over_av1(tmp_path):
     assert _download_pick(build_params(tmp_path), [*_1080P, _1440P_VP9]) == "271+251"
+
+
+_2160P60 = [
+    {
+        "format_id": i,
+        "vcodec": c,
+        "acodec": "none",
+        "height": 2160,
+        "width": 3840,
+        "fps": 60,
+        "quality": 12,
+        "source_preference": -1,
+        "tbr": t,
+        "dynamic_range": r,
+    }
+    for i, c, r, t in [
+        ("337", "vp09.02.51.10.01.09.16.09.0", "HDR10", 20000),
+        ("401", "av01.0.12M.08", "SDR", 12000),
+    ]
+]
+_AUDIO = {"format_id": "251", "vcodec": "none", "acodec": "opus", "quality": 3, "abr": 132}
+
+
+def test_a_download_prefers_hdr_over_av1_at_the_same_resolution_and_fps(tmp_path):
+    assert _download_pick(build_params(tmp_path), [_AUDIO, *_2160P60]) == "337+251"
+
+
+def test_a_download_prefers_av1_between_two_sdr_formats(tmp_path):
+    vp9_sdr = {**_2160P60[0], "format_id": "313", "dynamic_range": "SDR"}
+    assert _download_pick(build_params(tmp_path), [_AUDIO, vp9_sdr, _2160P60[1]]) == "401+251"
