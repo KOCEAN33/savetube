@@ -1,5 +1,6 @@
 """yt-dlp embedded as a library. One YoutubeDL instance per download, never shared."""
 
+import re
 import shutil
 import urllib.request
 from collections.abc import Callable
@@ -63,12 +64,23 @@ SERVER_ERROR_MARKERS = (("http error 500", "giving up after"), ("the downloaded 
 # channel's members on level: ... Join this channel to get access to
 # members-only content and other exclusive perks."
 MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
+# yt-dlp's text when YouTube says only "Video unavailable", with no sentence
+# after it, such as "DownloadError: ERROR: [youtube] <id>: Video unavailable".
+# A throttled client gets this for public videos. A deleted video usually adds
+# why, such as "This video has been removed by the uploader".
+_BARE_UNAVAILABLE = re.compile(r"(?:\w+: )?(?:ERROR: )?\[youtube\] [\w-]+: Video unavailable\.?")
 
 
 def youtube_block(message: str) -> bool:
     """Whether a failure is YouTube refusing this client."""
     text = message.lower()
     return any(all(part in text for part in group) for group in BLOCK_MARKERS)
+
+
+def bare_unavailable(message: str) -> bool:
+    """Whether a failure is YouTube's "Video unavailable" with no reason. It is
+    a block or a deleted video, so alone it marks neither."""
+    return _BARE_UNAVAILABLE.fullmatch(message.strip()) is not None
 
 
 def network_error(message: str) -> bool:

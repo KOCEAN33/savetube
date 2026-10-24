@@ -28,7 +28,7 @@ def job_reason(log_tail: str | None) -> str | None:
     if not log_tail:
         return None
     text = log_tail.lower()
-    if youtube_block(log_tail):
+    if log_tail.startswith(BLOCKED_LOG) or youtube_block(log_tail):
         return BLOCKED_LOG
     if log_tail.startswith(STALLED_LOG):
         return "worker stopped"

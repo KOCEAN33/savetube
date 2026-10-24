@@ -18,6 +18,7 @@ from savetube.jobs.runners import DownloadFailed
 from savetube.limits import backoff, blocked, load, lock
 from savetube.logs import emit, human_duration
 from savetube.tz import TIMEZONE
+from savetube.ytdl import bare_unavailable
 
 # Every module of the package logs as `savetube.jobs`.
 log = logging.getLogger("savetube.jobs")
@@ -146,6 +147,35 @@ async def _network_stalls(sessionmaker: async_sessionmaker, video_id: str) -> in
                 (Job.finished_at > last_end) | last_end.is_(None),
             )
         )
+
+
+async def _unavailable_streak(
+    sessionmaker: async_sessionmaker, video_id: str, count: int, within: timedelta
+) -> bool:
+    """Whether the last `count` failed or succeeded archive jobs of other
+    videos, newest by `finished_at`, all failed on a bare "Video unavailable"
+    within `within` of now."""
+    since = datetime.now(UTC) - within
+    async with sessionmaker() as session:
+        ended = (
+            await session.execute(
+                select(Job.state, Job.log_tail, Job.finished_at)
+                .where(
+                    Job.kind == JobKind.ARCHIVE,
+                    Job.video_id != video_id,
+                    Job.state.in_([JobState.FAILED, JobState.SUCCEEDED]),
+                )
+                .order_by(Job.finished_at.desc().nulls_last())
+                .limit(count)
+            )
+        ).all()
+    return len(ended) == count and all(
+        state == JobState.FAILED
+        and finished_at is not None
+        and finished_at >= since
+        and bare_unavailable(log_tail or "")
+        for state, log_tail, finished_at in ended
+    )
 
 
 async def _unblock(session: AsyncSession, now: datetime) -> int:
