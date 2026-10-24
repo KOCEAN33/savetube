@@ -21,6 +21,7 @@ def test_live_params_record_from_start_without_pre_download_sleep(tmp_path):
     assert p["wait_for_video"] == WAIT_FOR_VIDEO
     assert "sleep_interval" not in p and "max_sleep_interval" not in p
     assert p["sleep_interval_requests"] == 0.75
+    assert "format_sort" not in p
 
 
 def _requested_subtitles(params):
@@ -212,3 +213,61 @@ def test_a_bare_unavailable_has_no_sub_reason(message, bare):
     from savetube.ytdl import bare_unavailable
 
     assert bare_unavailable(message) is bare
+
+
+# The 1080p30 formats of 1BXpG8kzeqA as yt-dlp 2026.08.19 lists them, with the
+# extractor's sort fields. Premium VP9 616 has `source_preference` 99, so
+# yt-dlp's own order picks it over AV1 399.
+_YOUTUBE_SORT = ["quality", "res", "fps", "hdr:12", "source", "vcodec", "channels", "acodec"]
+_1080P = [
+    {"format_id": "140", "vcodec": "none", "acodec": "mp4a.40.2", "quality": 3, "abr": 129},
+    {"format_id": "251-drc", "vcodec": "none", "acodec": "opus", "quality": 2.5, "abr": 132},
+    {"format_id": "251", "vcodec": "none", "acodec": "opus", "quality": 3, "abr": 132},
+    *(
+        {"format_id": i, "vcodec": c, "acodec": "none", "height": 1080, "width": 1920, "fps": 30}
+        | {"quality": 9, "source_preference": s, "tbr": t}
+        for i, c, s, t in [
+            ("137", "avc1.640028", -1, 496),
+            ("248", "vp9", -1, 1465),
+            ("399", "av01.0.08M.08", -1, 632),
+            ("616", "vp09.00.40.08", 99, 4306),
+        ]
+    ),
+]
+_1440P_VP9 = {
+    "format_id": "271",
+    "vcodec": "vp9",
+    "acodec": "none",
+    "height": 1440,
+    "width": 2560,
+    "fps": 30,
+    "quality": 10,
+    "source_preference": -1,
+    "tbr": 3000,
+}
+
+
+def _download_pick(params, formats):
+    from yt_dlp import YoutubeDL
+
+    info = {
+        "id": "v1",
+        "title": "t",
+        "extractor": "youtube",
+        "extractor_key": "Youtube",
+        "webpage_url": "https://www.youtube.com/watch?v=v1",
+        "_format_sort_fields": _YOUTUBE_SORT,
+        "formats": [
+            {**f, "ext": "webm", "url": f"https://example.test/{f['format_id']}"} for f in formats
+        ],
+    }
+    with YoutubeDL({**params, "quiet": True, "simulate": True}) as ydl:
+        return ydl.process_ie_result(info, download=False)["format_id"]
+
+
+def test_a_download_prefers_av1_over_premium_vp9_at_the_same_resolution(tmp_path):
+    assert _download_pick(build_params(tmp_path), _1080P) == "399+251"
+
+
+def test_a_download_keeps_a_higher_resolution_over_av1(tmp_path):
+    assert _download_pick(build_params(tmp_path), [*_1080P, _1440P_VP9]) == "271+251"
