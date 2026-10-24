@@ -6,6 +6,12 @@ export const DEFAULT_FORMAT = "bv*+ba/b"
 export const thumbUrl = (id: string, size: "mq" | "hq" | "oar") =>
   `https://i.ytimg.com/vi/${encodeURIComponent(id)}/${size}default.jpg`
 
+export const youtubeVideoUrl = (id: string) =>
+  `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`
+
+export const youtubeChannelUrl = (id: string) =>
+  `https://www.youtube.com/channel/${encodeURIComponent(id)}`
+
 export const VIDEO_TABS: { tab: VideoTab; label: string }[] = [
   { tab: "videos", label: "Videos" },
   { tab: "shorts", label: "Shorts" },
@@ -57,7 +63,7 @@ export function jobStateVariant(state: JobState) {
 export function channelBase(channelId: string, sources: Source[]): string {
   const own = sources.find((s) => s.channel_id === channelId && s.kind !== "playlist")
   if (own) return own.url.slice(0, own.url.lastIndexOf("/"))
-  return `https://www.youtube.com/channel/${channelId}`
+  return youtubeChannelUrl(channelId)
 }
 
 // Short name for a source: the playlist title, or the tab.

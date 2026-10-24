@@ -1,5 +1,6 @@
 import { Link } from "react-router"
 
+import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
 import { type Job } from "@/lib/api"
 import { STEP_LABELS } from "@/lib/channel"
 import { formatBytes, formatDateTime, formatDuration } from "@/lib/format"
@@ -41,12 +42,15 @@ function ProgressLine({ job }: { job: Job }) {
 export function ChannelLink({ job }: { job: Job }) {
   if (!job.channel_id) return <span className="text-xs text-muted-foreground">-</span>
   return (
-    <Link
-      className="w-fit text-xs text-muted-foreground hover:underline"
-      to={`/channels/${encodeURIComponent(job.channel_id)}`}
-    >
-      {job.channel_name ?? job.channel_id}
-    </Link>
+    <span className="inline-flex w-fit items-center gap-1.5">
+      <Link
+        className="text-xs text-muted-foreground hover:underline"
+        to={`/channels/${encodeURIComponent(job.channel_id)}`}
+      >
+        {job.channel_name ?? job.channel_id}
+      </Link>
+      <ChannelYouTubeLink id={job.channel_id} name={job.channel_name} />
+    </span>
   )
 }
 
@@ -67,7 +71,8 @@ export function RunningJob({ job, withChannel = false }: { job: Job; withChannel
         ) : (
           <span className="font-medium">Job {job.id}</span>
         )}
-        <span className="text-xs text-muted-foreground">
+        {job.video_id && <VideoYouTubeLink id={job.video_id} title={job.title} />}
+        <span className="ml-auto text-xs text-muted-foreground">
           started {formatDateTime(job.started_at)}
         </span>
       </div>

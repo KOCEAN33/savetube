@@ -12,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { VideoYouTubeLink } from "@/components/youtube-link"
 import { api, type Job, type Pods, type RecorderJob } from "@/lib/api"
 import { STEP_LABELS } from "@/lib/channel"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
@@ -39,10 +40,6 @@ function usePods() {
 
 function recorderOf(pods: Pods | undefined, jobId: number): RecorderJob | undefined {
   return pods?.recorders.find((r) => r.job_id === jobId)
-}
-
-function youtubeUrl(videoId: string) {
-  return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`
 }
 
 // A live has no total, so the line shows bytes and time since the start, not a
@@ -89,16 +86,7 @@ function RecordingRow({ job, pods, now }: { job: Job; pods: Pods | undefined; no
         ) : (
           <span className="font-medium">Job {job.id}</span>
         )}
-        {job.video_id && (
-          <a
-            className="text-xs text-muted-foreground hover:underline"
-            href={youtubeUrl(job.video_id)}
-            target="_blank"
-            rel="noreferrer"
-          >
-            YouTube
-          </a>
-        )}
+        {job.video_id && <VideoYouTubeLink id={job.video_id} title={job.title} />}
         <PodPhase pods={pods} jobId={job.id} />
       </div>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -178,6 +166,7 @@ export function ScheduledSection() {
                   ) : (
                     <span className="flex-1 font-medium">Job {j.id}</span>
                   )}
+                  {j.video_id && <VideoYouTubeLink id={j.video_id} title={j.title} />}
                   <ChannelLink job={j} />
                   <span className="text-xs">
                     Recorder Job: <RecorderCell pods={pods.data} jobId={j.id} />
@@ -216,12 +205,15 @@ export function PodsSection() {
                   <TableRow key={r.name}>
                     <TableCell>
                       {r.video_id ? (
-                        <Link
-                          className="hover:underline"
-                          to={`/videos/${encodeURIComponent(r.video_id)}`}
-                        >
-                          {r.name}
-                        </Link>
+                        <span className="inline-flex items-center gap-2">
+                          <Link
+                            className="hover:underline"
+                            to={`/videos/${encodeURIComponent(r.video_id)}`}
+                          >
+                            {r.name}
+                          </Link>
+                          <VideoYouTubeLink id={r.video_id} iconOnly />
+                        </span>
                       ) : (
                         r.name
                       )}

@@ -7,6 +7,7 @@ import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { VideoYouTubeLink } from "@/components/youtube-link"
 import { api, type Source, type Video, type VideoOrder, type VideoType } from "@/lib/api"
 import { sourceLabel, thumbUrl } from "@/lib/channel"
 import { formatBytes, formatCount, formatDateTime, formatDuration, formatUploadDate } from "@/lib/format"
@@ -19,6 +20,9 @@ const PAGE = 30
 export type VideoScope = { listedBy: string; type: VideoType } | { sourceId: number }
 
 const videoHref = (id: string) => `/videos/${encodeURIComponent(id)}`
+
+// The YouTube link sits on the thumbnail's top left corner.
+const OVERLAY = "absolute top-3 left-4 rounded bg-background/80 p-1 text-foreground"
 
 function useStoredVideos(scope: VideoScope, q: string, order: VideoOrder) {
   const filter =
@@ -41,7 +45,7 @@ function useStoredVideos(scope: VideoScope, q: string, order: VideoOrder) {
 function VideoRow({ video }: { video: Video }) {
   const meta = [formatUploadDate(video.upload_date), formatDuration(video.duration), formatBytes(video.size_bytes)]
   return (
-    <li>
+    <li className="relative">
       <Link
         to={videoHref(video.id)}
         className="grid grid-cols-[7rem_minmax(0,1fr)] items-center gap-3 px-3 py-2 text-sm hover:bg-muted/60 @2xl:grid-cols-[8rem_minmax(0,1fr)_6rem_4.5rem_5rem] @2xl:gap-4"
@@ -73,6 +77,8 @@ function VideoRow({ video }: { video: Video }) {
           </span>
         ))}
       </Link>
+      {/* Over the thumbnail's corner, outside the row link: a link cannot nest in one. */}
+      <VideoYouTubeLink id={video.id} title={video.title} iconOnly className={OVERLAY} />
     </li>
   )
 }
@@ -98,26 +104,34 @@ function VideoRows({ videos, total }: { videos: Video[]; total: number }) {
 
 function ShortTile({ video }: { video: Video }) {
   return (
-    <Link to={videoHref(video.id)} className="group flex flex-col gap-1.5">
-      {/* The 9:16 frame. A Short without one falls back to the 4:3 frame, cropped. */}
-      <img
-        src={thumbUrl(video.id, "oar")}
-        alt=""
-        loading="lazy"
-        referrerPolicy="no-referrer"
-        onError={(e) => {
-          const fallback = thumbUrl(video.id, "hq")
-          if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback
-        }}
-        className="aspect-9/16 w-full rounded-lg bg-muted object-cover"
+    <div className="relative">
+      <Link to={videoHref(video.id)} className="group flex flex-col gap-1.5">
+        {/* The 9:16 frame. A Short without one falls back to the 4:3 frame, cropped. */}
+        <img
+          src={thumbUrl(video.id, "oar")}
+          alt=""
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={(e) => {
+            const fallback = thumbUrl(video.id, "hq")
+            if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback
+          }}
+          className="aspect-9/16 w-full rounded-lg bg-muted object-cover"
+        />
+        <span className="line-clamp-2 text-sm font-medium group-hover:underline" title={video.title}>
+          {video.title}
+        </span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {formatUploadDate(video.upload_date)} · {formatBytes(video.size_bytes)}
+        </span>
+      </Link>
+      <VideoYouTubeLink
+        id={video.id}
+        title={video.title}
+        iconOnly
+        className={cn(OVERLAY, "top-1 left-1")}
       />
-      <span className="line-clamp-2 text-sm font-medium group-hover:underline" title={video.title}>
-        {video.title}
-      </span>
-      <span className="text-xs text-muted-foreground tabular-nums">
-        {formatUploadDate(video.upload_date)} · {formatBytes(video.size_bytes)}
-      </span>
-    </Link>
+    </div>
   )
 }
 
