@@ -1,5 +1,5 @@
 export type VideoType = "videos" | "shorts" | "lives" | "members"
-export type JobKind = "archive" | "record"
+export type JobKind = "archive" | "record" | "replace"
 export type JobState =
   | "queued"
   | "running"
@@ -188,6 +188,52 @@ export interface Video {
 export interface VideoDetail extends Video {
   // yt-dlp's info, null until a download completes.
   info: Record<string, unknown> | null
+}
+
+// A stored stream or a counted YouTube format of a watched live.
+export interface FormatRow {
+  format_id: string
+  kind: "audio" | "video"
+  codec: string
+  width: number | null
+  height: number | null
+  fps: number | null
+  // kbps: tbr for video, abr for audio.
+  bitrate: number | null
+  // Null for the stored streams.
+  size: number | null
+  stored: boolean
+  // The pick of its kind when it ranks above the stored stream, else the stored stream.
+  recommended: boolean
+  reason: string | null
+}
+
+// The format watch of a stored live (docs/plan/live.md, Format watch).
+export interface FormatWatch {
+  started_at: string
+  ends_at: string
+  ended_at: string | null
+  checked_at: string | null
+  probe_error: string | null
+  // A pick by hand ended the automatic replaces.
+  manual: boolean
+  // The VOD and the stored file differ by more than 2 s: a pick needs a confirm.
+  held: boolean
+  vod_duration: number | null
+  stored_duration: number | null
+  // VOD minus stored, in seconds.
+  duration_diff: number | null
+  original_kept: boolean
+  stored: FormatRow[]
+  formats: FormatRow[]
+  replace: {
+    id: number
+    state: JobState
+    format_id: string | null
+    reason: string | null
+    created_at: string
+    finished_at: string | null
+  } | null
 }
 
 // A stored `<video id>.<lang>.vtt`. The label is yt-dlp's track name, else the code.

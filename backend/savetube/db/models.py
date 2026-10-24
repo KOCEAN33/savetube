@@ -7,6 +7,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     MetaData,
     String,
@@ -39,6 +40,8 @@ class VideoState(enum.StrEnum):
 class JobKind(enum.StrEnum):
     ARCHIVE = "archive"
     RECORD = "record"
+    # One stream of a stored live swapped for a better one (savetube.watch).
+    REPLACE = "replace"
 
 
 class JobState(enum.StrEnum):
@@ -301,9 +304,39 @@ class Job(Base):
     # the worker at most every few seconds. None writes SQL NULL, not JSON
     # null, so `progress IS NULL` holds for a cleared row.
     progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    # The format ids a replace job downloads, `+`-joined. Null for other kinds.
+    format_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class FormatWatch(Base):
+    """The format watch of a stored live (docs/plan/live.md, Format watch)."""
+
+    __tablename__ = "format_watch"
+
+    video_id: Mapped[str] = mapped_column(
+        ForeignKey("video.id", ondelete="CASCADE"), primary_key=True
+    )
+    # When the video turned complete. The watch runs WATCH_DAYS from here.
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # The last probe, failed or not. Null before the first.
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The counted formats of the last probe that succeeded (savetube.formats.counted).
+    formats: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB(none_as_null=True))
+    # Seconds: the VOD's from the probe, and the stored file's from ffprobe.
+    vod_duration: Mapped[float | None] = mapped_column(Float)
+    stored_duration: Mapped[float | None] = mapped_column(Float)
+    # The last probe's failure, null after a success.
+    probe_error: Mapped[str | None] = mapped_column(Text)
+    # A user's pick from the video page ends the automatic replaces.
+    manual: Mapped[bool] = mapped_column(default=False, server_default=false())
+    # The first stored file, moved aside by the first replace. Relative to the
+    # archive root. Null until a replace happens.
+    original_path: Mapped[str | None] = mapped_column(Text)
+    # When the watch ended and the original was deleted.
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class StorageSample(Base):

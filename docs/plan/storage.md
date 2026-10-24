@@ -12,11 +12,13 @@
 | `listing_entry` | every video a source's last listings showed: source, video id, channel, title. Title word suggestions read it |
 | `video` | video id, channel, type, title, upload date, duration, live status, availability, format ids, file paths, `size_bytes`, `completed_at`, state, the pinned format of a partial download, the integrity checks it passed and when |
 | `video_source` | which sources reference a video, so a playlist never copies a file |
-| `job` | kind (archive, record), state, attempts, miss reason, log tail, the running download's progress, timestamps |
+| `job` | kind (archive, record, replace), state, attempts, miss reason, log tail, the running download's progress, the format ids a replace downloads, timestamps |
+| `format_watch` | per stored live: when the watch started and ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside |
 | `storage_sample` | hourly free and used bytes of the dataset |
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- Migration `0020` adds `format_watch`, `job.format_id` and the job kind `replace`. It starts a watch for every `complete` live video whose `completed_at` is within 7 days, from its `completed_at`. Its downgrade deletes every replace job and drops both. Files a replace moved aside stay in `.originals/`.
 - Migration `0018` adds `cookie_profile.account_name`, `account_handle`, `account_digest` and `account_checked_at`, all null. Its downgrade drops them.
 - Migration `0015` adds `download_settings.move_requested_at`, null. Its downgrade drops it.
 - Migration `0014` adds the video state `staged` (Staging). Its downgrade turns every `staged` video into `pending`, so the old code downloads it again.
@@ -43,7 +45,8 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
   lives/   <YYYY-MM-DD> <title> [<video id>]/
   members/ <YYYY-MM-DD> <title> [<video id>]/
 .incoming/<video id>/   archive downloads without staging
-.incoming/<job id>/     recordings
+.incoming/<job id>/     recordings, and replace jobs' remux output
+.originals/<video id>/  the first stored file of a live a replace changed, until its format watch ends
 ```
 
 - Each video directory holds the media, its audio-only copy (archive.md, Audio copy), `.info.json`, the thumbnail, subtitles, and the chat replay when YouTube offers one.
@@ -76,5 +79,6 @@ The archive's disks are loud while a download writes to them for hours. With `SA
 - A staged video whose files are in neither place goes back to `pending`, and the next poll downloads it. It logs `staging.missing` at WARNING.
 - A missing staging root moves nothing and logs `staging.unmounted` at ERROR, so a lost mount never reads every staged video as gone.
 - Recordings do not use staging.
+- A replace job (live.md, Format watch) downloads its stream into `<staging>/incoming/<job id>/` and writes the remux into the archive's `.incoming/<job id>/`, because the result renames over a file in the tree. It never waits for a batch move, and its video stays `complete` throughout.
 - In production, staging is the 100Gi PVC `savetube-staging` of StorageClass `nvme`, on the `rpool` NVMe mirror. The worker and the scheduler mount it at `/staging`. A new volume's root belongs to root, so an init container running as root with only `CHOWN` gives it to uid 1000. A pod-level `fsGroup` would also chown the archive's local PV recursively.
 - Switching staging on leaves the parts already in the archive's `.incoming/`. Their videos download again from zero on staging, and the hourly cleanup deletes the old parts after 7 days.

@@ -22,6 +22,7 @@ export const queryKeys = {
     ["titles-preview", channelId, titles, body] as const,
   video: (id: string) => ["video", id] as const,
   subtitles: (videoId: string) => ["video", videoId, "subtitles"] as const,
+  formatWatch: (videoId: string) => ["video", videoId, "formats"] as const,
   videos: (filter: {
     q: string
     type: string | undefined

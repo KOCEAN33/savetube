@@ -253,6 +253,12 @@ def probe_member(video_id: str, cookiefile: Path) -> dict[str, Any]:
     return _probe(video_url(video_id), cookiefile, formats_required=True)
 
 
+def probe_formats(video_id: str, cookiefile: Path | None) -> dict[str, Any]:
+    """A stored live's info with the formats its VOD offers now. Raises when
+    the video offers none, such as a live with no VOD."""
+    return _probe(video_url(video_id), cookiefile, formats_required=True)
+
+
 class NotSignedIn(Exception):
     def __init__(self) -> None:
         super().__init__("not signed in")

@@ -82,18 +82,18 @@
 
 ## Download limits
 
-- One global row, `download_settings`, holds four limits. They apply to archive jobs only. A live recording ignores all four, because a live missed is lost.
+- One global row, `download_settings`, holds four limits. They apply to archive jobs and to replace jobs (live.md, Format watch). A live recording ignores all four, because a live missed is lost.
 - `max_concurrent`, 1 to 10, default 1: archive downloads running at once. The chart's `worker.concurrency` is the hard ceiling and defaults to 10, so the setting decides.
 - `rate_limit_bytes`, null for no limit: passed to yt-dlp as `ratelimit`, so it limits each download. Three downloads at once can use three times the rate.
 - `window_start` and `window_end`, `HH:MM` in Asia/Seoul, both set or both null: archive downloads start only inside the window. A window may cross midnight, such as 23:00-05:00. Equal start and end is rejected.
 - `window_enabled` switches the window on and off. The window applies only when `window_enabled` is true and both times are set. Turning it off keeps the stored times. Enabling it with a missing time is a 422.
 - Migration `0013` sets `window_enabled` true where both times are set, else false.
 - A download already running when the window closes runs to the end.
-- `daily_limit`, at least 1, null for no cap: archive downloads per Asia/Seoul calendar day, which resets at 00:00 KST. The count is the archive jobs `succeeded` with `finished_at` since today's 00:00 KST, plus the running archive jobs. A job starts only while the count is below `daily_limit`.
+- `daily_limit`, at least 1, null for no cap: archive downloads per Asia/Seoul calendar day, which resets at 00:00 KST. The count is the archive jobs `succeeded` with `finished_at` since today's 00:00 KST, plus the running archive jobs. A job starts only while the count is below `daily_limit`. A replace job waits at the cap but adds nothing to the count.
 - The count holds successes, not starts, so an interrupted or resumed run takes nothing from the cap. A failed run takes nothing either.
 - A download already running when the count reaches `daily_limit` runs to the end.
 - A waiting archive job is a `queued` `job` row with no procrastinate job (`queue_job_id` null). Waiting adds no row to `procrastinate_jobs`.
-- The scheduler dispatches every 10 s, apart from its 60 s tick, because with `max_concurrent` 1 a slot sits idle until the next dispatch. Inside the window and under the daily cap, the dispatcher queues the oldest waiting jobs, by job id, up to `max_concurrent` minus running archive jobs minus dispatched jobs. With a `daily_limit`, it also queues at most `daily_limit` minus the daily count minus dispatched jobs. A dispatched job is a `queued` row with a procrastinate job. Outside the window or at the cap it queues nothing.
+- The scheduler dispatches every 10 s, apart from its 60 s tick, because with `max_concurrent` 1 a slot sits idle until the next dispatch. Inside the window and under the daily cap, the dispatcher queues the oldest waiting jobs, by job id, up to `max_concurrent` minus running archive and replace jobs minus dispatched jobs. With a `daily_limit`, it also queues at most `daily_limit` minus the daily count minus dispatched jobs. A dispatched job is a `queued` row with a procrastinate job. Outside the window or at the cap it queues nothing.
 - `job.deferred_until` holds the next window start for a waiting job outside the window, the next 00:00 KST at the daily cap, and the later of the two when both hold. It is null when neither holds. The dispatcher sets it on every run.
 - A dispatched job whose procrastinate job is no longer `todo` or `doing`, such as one that failed before the worker marked the row, goes back to waiting on the next dispatch. Otherwise it would hold its slot for good.
 - The worker checks the window, the daily cap and the free slots again before it starts. If it may not start, it hands the job back to waiting, queues nothing, and logs `job.returned` with reason `paused`, `blocked`, `daily_limit`, `window` or `slots`, the first that holds. The check, the `running` mark, and the dispatch all take one Postgres advisory lock, so a slot is never taken twice.

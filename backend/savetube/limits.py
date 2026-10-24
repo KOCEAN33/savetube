@@ -11,6 +11,9 @@ from savetube.db.models import DownloadSettings, Job, JobKind, JobState
 from savetube.tz import TIMEZONE
 
 BLOCK_BACKOFF = timedelta(minutes=30)
+# The jobs the limits govern. A replace job downloads a stream like an archive
+# job, so it waits for the same slots, window and pauses.
+DOWNLOAD_KINDS = (JobKind.ARCHIVE, JobKind.REPLACE)
 BLOCK_BACKOFF_MAX = timedelta(hours=12)
 
 
@@ -91,7 +94,7 @@ async def running(session: AsyncSession) -> int:
     return await session.scalar(
         select(func.count())
         .select_from(Job)
-        .where(Job.kind == JobKind.ARCHIVE, Job.state == JobState.RUNNING)
+        .where(Job.kind.in_(DOWNLOAD_KINDS), Job.state == JobState.RUNNING)
     )
 
 

@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import audio, cookies, integrity, logs
+from savetube import audio, cookies, integrity, logs, watch
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import Job, JobKind, JobState, Video, VideoState
@@ -96,8 +96,18 @@ async def run(
     """Run one job. An archive job outside the download window, with no free
     slot, at the daily cap, or while paused, goes back to waiting for the
     dispatcher. A pause
-    while it runs interrupts it. A recording ignores the limits."""
+    while it runs interrupts it. A recording ignores the limits. A replace
+    job runs savetube.jobs.replace instead."""
     sessionmaker = sessionmaker or default_sessionmaker()
+    if not live:
+        async with sessionmaker() as session:
+            kind = await session.scalar(select(Job.kind).where(Job.id == job_id))
+        if kind is JobKind.REPLACE:
+            # Late: savetube.jobs.replace imports this module.
+            from savetube.jobs.replace import run as replace
+
+            await replace(job_id, settings, runner=runner, sessionmaker=sessionmaker, tools=tools)
+            return
     begun = await _begin(sessionmaker, job_id, settings, live=live)
     if begun is None:
         return
@@ -526,6 +536,7 @@ async def _finish(
             ready_root=None if r.live else settings.ready_root,
             from_shorts_tab=shorts,
         )
+        await watch.start(session, video, video.completed_at)
         if checks is not None:
             video.resume_format = None
             video.verified_at = video.completed_at

@@ -37,6 +37,8 @@ async def enqueue(job_id: int) -> int:
 
 
 # Retries belong to the `job` row and the scheduler, so a failure is final here.
+# A replace job runs through this task too (savetube.jobs.run), so the
+# stalled-job reclaim, which reads one task name, covers it.
 @app.task(name="archive", queue=ARCHIVE_QUEUE, retry=False)
 async def archive(job_id: int) -> None:
     try:

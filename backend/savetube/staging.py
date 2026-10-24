@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from savetube import watch
 from savetube.config import Settings
 from savetube.db.models import DownloadSettings, Video, VideoState
 from savetube.limits import load, running
@@ -142,7 +143,9 @@ async def move_staged(sessionmaker: async_sessionmaker, settings: Settings) -> N
             else:
                 shutil.rmtree(ready, ignore_errors=True)
             async with sessionmaker() as session:
-                (await session.get(Video, video.id)).state = VideoState.COMPLETE
+                row = await session.get(Video, video.id)
+                row.state = VideoState.COMPLETE
+                await watch.start(session, row, datetime.now(UTC))
                 await session.commit()
         except Exception as e:
             emit(

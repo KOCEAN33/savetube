@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link, useParams } from "react-router"
 
+import { FormatWatchCard } from "@/components/format-watch"
 import { Page, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -99,6 +100,7 @@ export function VideoDetailPage() {
           )
         }}
       </QueryState>
+      <FormatWatchCard videoId={id} />
     </Page>
   )
 }

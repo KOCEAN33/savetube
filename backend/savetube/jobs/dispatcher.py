@@ -8,8 +8,9 @@ from datetime import datetime
 from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from savetube.db.models import Job, JobKind, JobState
+from savetube.db.models import Job, JobState
 from savetube.limits import (
+    DOWNLOAD_KINDS,
     blocked,
     capped,
     concurrency,
@@ -63,7 +64,7 @@ class Dispatched:
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
-    """Put the oldest waiting archive jobs on the queue, one per free slot, and
+    """Put the oldest waiting archive and replace jobs on the queue, one per free slot, and
     only inside the download window, outside a block pause, under the daily
     cap, and while the user has not paused downloads. Commits.
 
@@ -72,7 +73,7 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
     """
     await lock(session)
     limits = await load(session)
-    queued = (Job.kind == JobKind.ARCHIVE) & (Job.state == JobState.QUEUED)
+    queued = Job.kind.in_(DOWNLOAD_KINDS) & (Job.state == JobState.QUEUED)
     # A queue job that ended before the worker marked the row, such as an
     # error or a stopped worker, would hold its slot for good.
     requeued = list(

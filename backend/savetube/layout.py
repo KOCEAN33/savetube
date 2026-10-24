@@ -13,7 +13,7 @@ NAME_MAX_BYTES = 255
 # directory names carry a title and need the byte cap.
 OUTTMPL = "%(id)s.%(ext)s"
 
-_LIVE_STATUSES = frozenset({"is_live", "was_live", "post_live"})
+LIVE_STATUSES = frozenset({"is_live", "was_live", "post_live"})
 
 
 class VideoType(enum.StrEnum):
@@ -27,7 +27,7 @@ def classify(info: Mapping[str, Any], *, from_shorts_tab: bool = False) -> Video
     """First match wins: members, then lives, then shorts, then videos."""
     if info.get("availability") == "subscriber_only":
         return VideoType.MEMBERS
-    if info.get("live_status") in _LIVE_STATUSES:
+    if info.get("live_status") in LIVE_STATUSES:
         return VideoType.LIVES
     if from_shorts_tab:
         return VideoType.SHORTS

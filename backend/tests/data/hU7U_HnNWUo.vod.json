@@ -1,0 +1,22 @@
+{
+ "_source": "Members-only, so not fetched here: built from the production probe of 2026-10-24, which offered 299 (H.264 1080p60, about 4.6 Mbps), 251 and 251-drc as the best formats. The lower formats and the exact bitrates and sizes are illustrative. Replace with a real `yt-dlp -J` dump made with the member profile when one is at hand.",
+ "id": "hU7U_HnNWUo",
+ "live_status": "was_live",
+ "duration": 7421,
+ "formats": [
+  {"format_id": "sb0", "format_note": "storyboard", "ext": "mhtml", "protocol": "mhtml", "vcodec": "none", "acodec": "none", "width": 320, "height": 180},
+  {"format_id": "233", "format_note": "Default, low", "ext": "mp4", "protocol": "m3u8_native", "vcodec": "none"},
+  {"format_id": "234", "format_note": "Default, high", "ext": "mp4", "protocol": "m3u8_native", "vcodec": "none"},
+  {"format_id": "139", "format_note": "low", "ext": "m4a", "protocol": "https", "vcodec": "none", "acodec": "mp4a.40.5", "tbr": 48.8, "abr": 48.8, "vbr": 0, "filesize": 45270000},
+  {"format_id": "249", "format_note": "low", "ext": "webm", "protocol": "https", "vcodec": "none", "acodec": "opus", "tbr": 51.2, "abr": 51.2, "vbr": 0, "filesize": 47490000},
+  {"format_id": "140-drc", "format_note": "medium, DRC", "ext": "m4a", "protocol": "https", "vcodec": "none", "acodec": "mp4a.40.2", "tbr": 129.5, "abr": 129.5, "vbr": 0, "filesize": 120130000},
+  {"format_id": "140", "format_note": "medium", "ext": "m4a", "protocol": "https", "vcodec": "none", "acodec": "mp4a.40.2", "tbr": 129.5, "abr": 129.5, "vbr": 0, "filesize": 120130000},
+  {"format_id": "251-drc", "format_note": "medium, DRC", "ext": "webm", "protocol": "https", "vcodec": "none", "acodec": "opus", "tbr": 135.2, "abr": 135.2, "vbr": 0, "filesize": 125410000},
+  {"format_id": "251", "format_note": "medium", "ext": "webm", "protocol": "https", "vcodec": "none", "acodec": "opus", "tbr": 129.6, "abr": 129.6, "vbr": 0, "filesize": 120220000},
+  {"format_id": "134", "format_note": "360p", "ext": "mp4", "protocol": "https", "vcodec": "avc1.4D401E", "acodec": "none", "width": 640, "height": 360, "fps": 30, "tbr": 260.1, "abr": 0, "vbr": 260.1, "filesize_approx": 241280000},
+  {"format_id": "298", "format_note": "720p60", "ext": "mp4", "protocol": "https", "vcodec": "avc1.4D4020", "acodec": "none", "width": 1280, "height": 720, "fps": 60, "tbr": 2210.4, "abr": 0, "vbr": 2210.4, "filesize_approx": 2050420000},
+  {"format_id": "311", "ext": "mp4", "protocol": "m3u8_native", "vcodec": "avc1.4D4020", "acodec": "none", "width": 1280, "height": 720, "fps": 60.0, "tbr": 3011.2},
+  {"format_id": "299", "format_note": "1080p60", "ext": "mp4", "protocol": "https", "vcodec": "avc1.64002A", "acodec": "none", "width": 1920, "height": 1080, "fps": 60, "tbr": 4621.7, "abr": 0, "vbr": 4621.7, "filesize_approx": 4287280000},
+  {"format_id": "312", "ext": "mp4", "protocol": "m3u8_native", "vcodec": "avc1.64002A", "acodec": "none", "width": 1920, "height": 1080, "fps": 60.0, "tbr": 6151.9}
+ ]
+}
