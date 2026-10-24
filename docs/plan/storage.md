@@ -13,11 +13,12 @@
 | `video` | video id, channel, type, title, upload date, duration, live status, availability, format ids, file paths, `size_bytes`, `completed_at`, state, the pinned format of a partial download, the integrity checks it passed and when |
 | `video_source` | which sources reference a video, so a playlist never copies a file |
 | `job` | kind (archive, record, replace), state, attempts, miss reason, log tail, the running download's progress, the format ids a replace downloads, timestamps |
-| `format_watch` | per stored live: when the watch started and ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside |
+| `format_watch` | per stored live: the live's air time as `started_at`, when the watch ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside |
 | `storage_sample` | hourly free and used bytes of the dataset |
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- Migration `0021` sets each watch's `started_at` to its live's air time (live.md, Format watch). It ends every open watch whose live aired 7 or more days ago or has no air time, unless a replace job is queued or running or an original sits in `.originals/`. The scheduler ends the latter and deletes the original, so the migration deletes no file. Its downgrade does nothing.
 - Migration `0020` adds `format_watch`, `job.format_id` and the job kind `replace`. It starts a watch for every `complete` live video whose `completed_at` is within 7 days, from its `completed_at`. Its downgrade deletes every replace job and drops both. Files a replace moved aside stay in `.originals/`.
 - Migration `0018` adds `cookie_profile.account_name`, `account_handle`, `account_digest` and `account_checked_at`, all null. Its downgrade drops them.
 - Migration `0015` adds `download_settings.move_requested_at`, null. Its downgrade drops it.

@@ -31,7 +31,8 @@
 
 YouTube serves a live's VOD first in H.264 and AAC-or-Opus, and adds VP9 or AV1 at full resolution hours or days later, if ever. A live stream serves only AAC audio (`140`), while the VOD serves Opus (`251`) from the start. The user keeps lives mostly for the audio.
 
-- Every live video gets a format watch for 7 days from the moment it turns `complete`: a finished recording, or a VOD download of a live (`was_live`). Members-only lives are included.
+- A live video gets a format watch for 7 days from when it aired, once it turns `complete`: a finished recording, or a VOD download of a live (`was_live`). Members-only lives are included. A live that aired 7 or more days before it turns `complete`, such as a past live a backfill downloads, gets no watch, because YouTube adds no formats to an old VOD.
+- The air time is the info dict's `release_timestamp`, else its `timestamp`, else `video.upload_date` at midnight UTC (`savetube.watch.aired_at`). A live with none of them gets no watch.
 - Every 6 hours the scheduler probes each watched video's formats, with the general profile, or the member profile for type `members`. It stores the format list and the VOD duration.
 - Only `https` formats count. HLS (`m3u8`) copies of the same stream are ignored. Audio formats with `-drc` in the id are ignored, because dynamic range compression flattens singing.
 - Audio pick: Opus over AAC, then the higher `abr`.
@@ -43,7 +44,7 @@ YouTube serves a live's VOD first in H.264 and AAC-or-Opus, and adds VP9 or AV1 
 - The video page lists the stored file and every counted YouTube format: codec, resolution and fps, bitrate, size, duration, and the duration difference. The pick carries a `recommended` badge with a one-line reason.
 - The user can pick any listed format there, a held video included after a confirm. A manual pick ends the automatic replaces for that video.
 - A video with no VOD keeps its recording. The watch ends without a replace.
-- A watch is a `format_watch` row (storage.md). It starts when a recording or a live's VOD is stored `complete`, or when a staged VOD moves into the tree. `started_at` is that moment.
+- A watch is a `format_watch` row (storage.md). It starts when a recording or a live's VOD is stored `complete`, or when a staged VOD moves into the tree. `started_at` holds the live's air time, not that moment.
 - The scheduler's format watch loop runs every 60 s (`savetube.watch`). It ends each watch past 7 days that has no replace job queued or running, then probes each watch whose last probe is 6 hours old, one at a time. A failed probe stores its error and waits 6 hours like a success.
 - The stored stream comes from the video's `info.requested_formats`. The stored duration is read once, and again after each replace.
 - A replace is a `job` of kind `replace`, with the format ids it downloads in `job.format_id`. One job carries every stream that changes. A watch with a replace queued or running gets no second.

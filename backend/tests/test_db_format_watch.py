@@ -268,22 +268,24 @@ async def test_a_finished_recording_starts_a_watch(settings):
         " VALUES (1, 'record', 'queued', 'v1', 0)",
     )
 
+    aired = datetime.now(UTC).replace(microsecond=0) - timedelta(hours=3)
+
     async def record(params, report):
         home = Path(params["paths"]["home"])
         (home / "v1.mkv").write_bytes(b"recording")
         media = home / "v1.mkv"
         return {"id": "v1", "title": "t", "channel_id": "UC1", "live_status": "is_live",
-                "ext": "mkv", "requested_downloads": [{"filepath": str(media)}]}  # fmt: skip
+                "release_timestamp": int(aired.timestamp()), "ext": "mkv",
+                "requested_downloads": [{"filepath": str(media)}]}  # fmt: skip
 
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
     await run(1, settings, live=True, runner=_Steps(record), sessionmaker=sessionmaker)
     async with sessionmaker() as session:
-        video = await session.get(Video, "v1")
         watch = await session.get(FormatWatch, "v1")
     await engine.dispose()
 
-    assert watch is not None and watch.started_at == video.completed_at
+    assert watch is not None and watch.started_at == aired
 
 
 @pytest.mark.anyio
@@ -298,9 +300,11 @@ async def test_an_archive_download_that_is_no_live_starts_no_watch(settings):
     assert _sql_rows(settings, "SELECT video_id FROM format_watch") == []
 
 
-@pytest.mark.anyio
-async def test_a_staged_vod_starts_its_watch_when_it_moves_into_the_tree(settings):
+async def _move_staged_vod(settings, *, upload_date, info):
+    """Moves the staged VOD s1 of a live into the tree. Returns its watch's
+    start and end, or None without a watch."""
     from savetube.staging import move_staged
+    from savetube.watch import ends_at
 
     staged = settings.model_copy(update={"staging_root": settings.archive_root.parent / "staging"})
     ready = staged.staging_root / "ready" / "s1"
@@ -310,19 +314,65 @@ async def test_a_staged_vod_starts_its_watch_when_it_moves_into_the_tree(setting
         settings,
         "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
         "INSERT INTO video (id, channel_id, type, title, state, live_status, dir_path,"
-        " size_bytes, completed_at) VALUES ('s1', 'UC1', 'lives', 't', 'staged', 'was_live',"
-        " 'A [UC1]/lives/s1', 1, now() - interval '2 hours')",
+        " size_bytes, completed_at, upload_date, info) VALUES ('s1', 'UC1', 'lives', 't',"
+        " 'staged', 'was_live', 'A [UC1]/lives/s1', 1, now() - interval '2 hours',"
+        f" {upload_date}, CAST('{json.dumps(info)}' AS jsonb))",
         "UPDATE download_settings SET move_requested_at = now()",
     )
     assert _sql_rows(settings, "SELECT video_id FROM format_watch") == []
 
     engine = make_engine(settings.sqlalchemy_url)
-    await move_staged(make_sessionmaker(engine), staged)
+    sessionmaker = make_sessionmaker(engine)
+    await move_staged(sessionmaker, staged)
+    async with sessionmaker() as session:
+        watch = await session.get(FormatWatch, "s1")
     await engine.dispose()
+    return watch and (watch.started_at, ends_at(watch))
 
-    rows = _sql_rows(settings, "SELECT video_id, started_at > now() - interval '1 minute'"
-                     " FROM format_watch")  # fmt: skip
-    assert rows == [("s1", True)]
+
+@pytest.mark.anyio
+async def test_a_staged_vod_of_a_live_aired_2_days_ago_is_watched_5_more_days(settings):
+    aired = datetime.now(UTC).replace(microsecond=0) - timedelta(days=2)
+
+    watch = await _move_staged_vod(
+        settings,
+        upload_date=f"'{aired.date().isoformat()}'",
+        info={"release_timestamp": int(aired.timestamp()), "timestamp": 1},
+    )
+
+    assert watch == (aired, aired + timedelta(days=7))
+
+
+@pytest.mark.anyio
+async def test_a_live_without_release_timestamp_airs_at_its_timestamp(settings):
+    aired = datetime.now(UTC).replace(microsecond=0) - timedelta(days=1)
+
+    watch = await _move_staged_vod(
+        settings, upload_date="NULL", info={"timestamp": int(aired.timestamp())}
+    )
+
+    assert watch == (aired, aired + timedelta(days=7))
+
+
+@pytest.mark.anyio
+async def test_a_live_with_only_an_upload_date_airs_at_its_midnight_utc(settings):
+    day = (datetime.now(UTC) - timedelta(days=3)).date()
+
+    watch = await _move_staged_vod(settings, upload_date=f"'{day.isoformat()}'", info={})
+
+    midnight = datetime(day.year, day.month, day.day, tzinfo=UTC)
+    assert watch == (midnight, midnight + timedelta(days=7))
+
+
+@pytest.mark.anyio
+async def test_a_backfilled_live_aired_long_ago_gets_no_watch(settings):
+    long_ago = int(datetime(2024, 5, 1, 12, tzinfo=UTC).timestamp())
+
+    watch = await _move_staged_vod(
+        settings, upload_date="'2024-05-01'", info={"release_timestamp": long_ago}
+    )
+
+    assert watch is None
 
 
 def test_migration_0020_watches_the_lives_stored_in_the_last_7_days(settings):
@@ -343,7 +393,7 @@ def test_migration_0020_watches_the_lives_stored_in_the_last_7_days(settings):
         " ('wait', 'UC1', 'lives', 't', 'staged', 'was_live', now())",
     )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0020")
 
     rows = _sql_rows(
         settings,
@@ -351,6 +401,62 @@ def test_migration_0020_watches_the_lives_stored_in_the_last_7_days(settings):
         " JOIN video v ON v.id = w.video_id ORDER BY 1",
     )
     assert rows == [("new", True), ("vod", True)]
+
+
+def _info(**fields):
+    return "CAST('" + json.dumps(fields) + "' AS jsonb)"
+
+
+def test_migration_0021_ends_the_watches_of_lives_aired_over_7_days_ago(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    config = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(config, "0020")
+    now = datetime.now(UTC)
+    recent = int((now - timedelta(days=2)).timestamp())
+    old = int((now - timedelta(days=400)).timestamp())
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state, live_status, completed_at,"
+        " upload_date, info) VALUES"
+        f" ('recent', 'UC1', 'lives', 't', 'complete', 'is_live', now(), NULL,"
+        f"  {_info(release_timestamp=recent)}),"
+        f" ('old', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
+        f"  {_info(release_timestamp=old, timestamp=recent)}),"
+        " ('dated', 'UC1', 'lives', 't', 'complete', 'was_live', now(), '2025-01-02', NULL),"
+        f" ('busy', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
+        f"  {_info(timestamp=old)}),"
+        f" ('kept', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
+        f"  {_info(timestamp=old)})",
+        "INSERT INTO format_watch (video_id, started_at, original_path) VALUES"
+        " ('recent', now(), NULL), ('old', now(), NULL), ('dated', now(), NULL),"
+        " ('busy', now(), NULL), ('kept', now(), '.originals/kept/kept.mkv')",
+        "INSERT INTO job (kind, state, video_id, attempts)"
+        " VALUES ('replace', 'running', 'busy', 0)",
+    )
+    originals = settings.archive_root / ".originals" / "kept"
+    originals.mkdir(parents=True)
+    (originals / "kept.mkv").write_bytes(b"recording")
+
+    command.upgrade(config, "head")
+
+    rows = _sql_rows(
+        settings,
+        "SELECT video_id, extract(epoch FROM started_at)::bigint,"
+        " ended_at IS NOT NULL FROM format_watch ORDER BY 1",
+    )
+    jan_2 = int(datetime(2025, 1, 2, tzinfo=UTC).timestamp())
+    assert rows == [
+        ("busy", old, False),
+        ("dated", jan_2, True),
+        ("kept", old, False),
+        ("old", old, True),
+        ("recent", recent, False),
+    ]
+    assert (originals / "kept.mkv").read_bytes() == b"recording"
 
 
 @pytest.mark.anyio

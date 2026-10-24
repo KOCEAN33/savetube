@@ -1,7 +1,7 @@
 """The format watch of stored lives (docs/plan/live.md, Format watch).
 
 YouTube adds better formats to a live's VOD hours or days after the stream.
-For WATCH_DAYS after a live video turns complete, the scheduler probes its
+For WATCH_DAYS after a stored live aired, the scheduler probes its
 formats every PROBE_EVERY and queues a replace job for a stream that a better
 one can take the place of (savetube.jobs.replace)."""
 
@@ -10,7 +10,7 @@ import logging
 import shutil
 import tempfile
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -43,14 +43,31 @@ def is_live(video: Video) -> bool:
     return video.live_status in LIVE_STATUSES
 
 
+def aired_at(video: Video) -> datetime | None:
+    """When the live aired: yt-dlp's `release_timestamp`, else `timestamp`,
+    else the upload date at midnight UTC."""
+    info = video.info or {}
+    for field in ("release_timestamp", "timestamp"):
+        if info.get(field) is not None:
+            return datetime.fromtimestamp(info[field], UTC)
+    if video.upload_date is not None:
+        return datetime.combine(video.upload_date, time(), UTC)
+    return None
+
+
 async def start(session: AsyncSession, video: Video, now: datetime) -> None:
-    """Start the watch of a live video that just turned complete. A video
-    already watched keeps its watch. The caller commits."""
+    """Start the watch of a live video that just turned complete, unless it
+    aired WATCH_DAYS or more before `now` or its air time is unknown, as for a
+    past live a backfill stores. A video already watched keeps its watch. The
+    caller commits."""
     if video.state is not VideoState.COMPLETE or not is_live(video):
+        return
+    aired = aired_at(video)
+    if aired is None or aired <= now - WATCH_DAYS:
         return
     await session.execute(
         insert(FormatWatch)
-        .values(video_id=video.id, started_at=now)
+        .values(video_id=video.id, started_at=aired)
         .on_conflict_do_nothing(index_elements=["video_id"])
     )
 

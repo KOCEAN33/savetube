@@ -319,7 +319,7 @@ class FormatWatch(Base):
     video_id: Mapped[str] = mapped_column(
         ForeignKey("video.id", ondelete="CASCADE"), primary_key=True
     )
-    # When the video turned complete. The watch runs WATCH_DAYS from here.
+    # When the live aired (savetube.watch.aired_at). The watch runs WATCH_DAYS from here.
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     # The last probe, failed or not. Null before the first.
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
