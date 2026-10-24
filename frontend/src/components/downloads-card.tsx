@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { RunningJob } from "@/components/job-row"
 import { ErrorBox, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
@@ -17,7 +18,7 @@ import { VideoYouTubeLink } from "@/components/youtube-link"
 import { api, mutations, type Job } from "@/lib/api"
 import { jobStateVariant } from "@/lib/channel"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
-import { formatBytes, formatDateTime } from "@/lib/format"
+import { formatBytes } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
@@ -49,14 +50,14 @@ function ProblemJob({ job }: { job: Job }) {
         </span>
       )}
       <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-        {formatDateTime(job.finished_at)}
+        <Clock iso={job.finished_at} />
       </span>
     </li>
   )
 }
 
-// Finished videos waiting on staging, and Move now, which the scheduler takes
-// on its next check (docs/plan/storage.md, Staging).
+// Finished videos waiting on staging, and Move now, which the scheduler starts
+// at once (docs/plan/storage.md, Staging).
 function StagingLine() {
   const queryClient = useQueryClient()
   const staged = useQuery({
@@ -69,17 +70,17 @@ function StagingLine() {
     onSuccess: (updated) => queryClient.setQueryData(queryKeys.staging(), updated),
   })
   if (!staged.data || staged.data.count === 0) return null
-  const { count, bytes, move_requested } = staged.data
+  const { count, bytes } = staged.data
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
       <span>
         {`${count} finished, waiting to move into the archive (${formatBytes(bytes)}).`}
-        {move_requested && " Move requested, it starts within a minute."}
+        {move.isSuccess && " Moving into the archive."}
       </span>
       <Button
         size="sm"
         variant="outline"
-        disabled={move_requested || move.isPending}
+        disabled={move.isPending}
         onClick={() => move.mutate()}
       >
         Move now

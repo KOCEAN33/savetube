@@ -286,6 +286,8 @@ def app_env(dsn, archive_root, media, tmp_path_factory) -> dict[str, str]:
         SAVETUBE_OIDC_CLIENT_ID="e2e",
         SAVETUBE_OIDC_ISSUER="https://issuer.test",
         SAVETUBE_PUBLIC_URL="http://127.0.0.1",
+        # A free port: nothing answers there.
+        SAVETUBE_SCHEDULER_URL=f"http://127.0.0.1:{_free_port()}",
         SAVETUBE_E2E_INFO=json.dumps(INFO),
         SAVETUBE_E2E_MEDIA=str(media),
         SAVETUBE_E2E_VIDEO=VIDEO_ID,
@@ -437,6 +439,9 @@ def test_a_video_that_is_no_live_has_no_format_watch(server, downloaded):
         f"/api/videos/{VIDEO_ID}/formats/pick", json={"format_id": "251"}, headers=WRITE
     )
     assert r.status_code == 404
+    # No scheduler runs here, so the probe cannot reach it.
+    r = server.post(f"/api/videos/{VIDEO_ID}/formats/probe", headers=WRITE)
+    assert r.status_code == 502 and "unreachable" in r.json()["detail"]
 
 
 def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):
@@ -554,8 +559,9 @@ def test_a_playlist_source_lifecycle(server):
     assert r.status_code == 200
     assert r.json()["enabled"] is False and r.json()["include_words"] == ["Live"]
 
+    # A disabled source is not polled, so the scheduler is not asked.
     r = server.post(f"/api/sources/{source['id']}/poll", headers=WRITE)
-    assert r.status_code == 202 and r.json()["last_polled_at"] is None
+    assert r.status_code == 409
 
     assert any(s["id"] == source["id"] for s in server.get("/api/sources").json())
     r = server.delete(f"/api/sources/{source['id']}", headers=WRITE)
@@ -671,15 +677,16 @@ def test_download_settings_round_trip(server):
 def test_staging_move_request(server):
     r = server.get("/api/staging")
     assert r.status_code == 200
-    assert r.json() == {"count": 0, "bytes": 0, "move_requested": False}
+    assert r.json() == {"count": 0, "bytes": 0}
+    # No scheduler runs here, so the request cannot reach it.
     r = server.post("/api/staging/move", headers=WRITE)
-    assert r.status_code == 200 and r.json()["move_requested"] is True
+    assert r.status_code == 502 and "unreachable" in r.json()["detail"]
 
 
 def test_pods_are_unavailable_outside_a_cluster(server):
     r = server.get("/api/pods")
     assert r.status_code == 200
-    assert r.json() == {"available": False, "recorders": [], "workers": []}
+    assert r.json() == {"available": False, "recorders": []}
 
 
 def test_every_api_route_is_covered():

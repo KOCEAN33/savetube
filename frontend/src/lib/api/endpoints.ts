@@ -55,6 +55,10 @@ export const mutations = {
       `/api/videos/${encodeURIComponent(videoId)}/formats/pick`,
       body,
     ),
+  // The scheduler probes the formats now. Up to 120 s while the format watch
+  // probes another video first.
+  probeFormats: (videoId: string) =>
+    request<FormatWatch>("POST", `/api/videos/${encodeURIComponent(videoId)}/formats/probe`),
 }
 
 export const api = {
@@ -119,7 +123,7 @@ export const api = {
   // A complete video's stored mkv and its Opus audio copy, served with Range.
   mediaUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/media`,
   audioUrl: (id: string) => `/api/videos/${encodeURIComponent(id)}/audio`,
-  // Null for a video without a format watch.
+  // Null for a video without a row: no format watch and no probe yet.
   formatWatch: (id: string) =>
     get<FormatWatch | null>(`/api/videos/${encodeURIComponent(id)}/formats`),
   subtitles: (id: string) => get<Subtitle[]>(`/api/videos/${encodeURIComponent(id)}/subtitles`),

@@ -1,6 +1,7 @@
 import { Fragment, useState, type MouseEvent } from "react"
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { Badge } from "@/components/ui/badge"
 import {
   Table,
@@ -11,9 +12,10 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
-import type { Job, JobState, MissReason } from "@/lib/api"
+import { recorderOf } from "@/hooks/use-pods"
+import type { Job, JobState, MissReason, Pods } from "@/lib/api"
 import { JOB_STATES, jobStateVariant } from "@/lib/channel"
-import { formatClock, formatDateTime } from "@/lib/format"
+import { formatClock, formatDateTime, formatLength } from "@/lib/format"
 
 const MISS_REASON_LABEL: Record<MissReason, string> = {
   dvr_off: "DVR off",
@@ -41,24 +43,68 @@ export function JobStateCounts({ jobs }: { jobs: Job[] }) {
   )
 }
 
+// A record job not started yet shows its announced start, dimmed.
+function LiveStart({ job }: { job: Job }) {
+  const title = [
+    job.scheduled_at && `Scheduled ${formatDateTime(job.scheduled_at)}`,
+    `Detected ${formatDateTime(job.created_at)}`,
+    job.started_at && `Started ${formatDateTime(job.started_at)}`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+  return (
+    <span title={title} className={job.started_at ? undefined : "text-muted-foreground"}>
+      {formatClock(job.started_at ?? job.scheduled_at)}
+    </span>
+  )
+}
+
+function liveLength(job: Job): string {
+  if (!job.started_at) return "-"
+  const end = job.finished_at ? Date.parse(job.finished_at) : Date.now()
+  return formatLength((end - Date.parse(job.started_at)) / 1000)
+}
+
+// The recorder Job's number is the record job's id. A missing Job is one not made
+// yet or one the TTL removed, so only a retry or a failure is worth a word.
+function RecorderCell({ pods, jobId }: { pods: Pods | undefined; jobId: number }) {
+  const recorder = recorderOf(pods, jobId)
+  if (!recorder) return <span className="text-muted-foreground">-</span>
+  const alerts = [
+    recorder.status === "failed" && "failed",
+    recorder.restarts > 0 &&
+      `${recorder.restarts} ${recorder.restarts === 1 ? "retry" : "retries"}`,
+  ].filter(Boolean)
+  return (
+    <span title={recorder.name}>
+      {jobId}
+      {alerts.length > 0 && <span className="ml-2 text-destructive">{alerts.join(", ")}</span>}
+    </span>
+  )
+}
+
 export function JobsTable({
   jobs,
   channelName,
-  scheduled = false,
+  live = false,
+  pods,
   expandLog = false,
   empty,
 }: {
   jobs: Job[]
   // Set to show a channel column.
   channelName?: Map<string, string>
-  // Show the announced start, which only a recording has.
-  scheduled?: boolean
+  // Record jobs: one start, the length and the recorder Job, in place of the
+  // queued, started and finished times.
+  live?: boolean
+  // The recorder Jobs for the live table's Recorder column.
+  pods?: Pods
   // A click on a failed or interrupted row opens its full log_tail below it.
   expandLog?: boolean
   empty: string
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set())
-  const columns = 6 + (channelName ? 1 : 0) + (scheduled ? 1 : 0)
+  const columns = (live ? 6 : 5) + (channelName ? 1 : 0)
   return (
     <Table>
       <TableHeader className="bg-muted">
@@ -66,11 +112,19 @@ export function JobsTable({
           <TableHead>Video</TableHead>
           {channelName && <TableHead>Channel</TableHead>}
           <TableHead>State</TableHead>
-          <TableHead className="text-right">Attempts</TableHead>
-          {scheduled && <TableHead>Scheduled start</TableHead>}
-          <TableHead>{scheduled ? "Detected" : "Queued"}</TableHead>
-          <TableHead>Started</TableHead>
-          <TableHead>Finished</TableHead>
+          {live ? (
+            <>
+              <TableHead>Start</TableHead>
+              <TableHead className="text-right">Length</TableHead>
+              <TableHead>Recorder</TableHead>
+            </>
+          ) : (
+            <>
+              <TableHead>Queued</TableHead>
+              <TableHead>Started</TableHead>
+              <TableHead>Finished</TableHead>
+            </>
+          )}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -119,9 +173,10 @@ export function JobsTable({
                 {channelName && (
                   <TableCell>
                     {j.channel_id ? (
-                      <span className="inline-flex items-center gap-1.5">
+                      <span className="inline-flex max-w-48 items-center gap-1.5">
                         <Link
-                          className="hover:underline"
+                          className="min-w-0 truncate hover:underline"
+                          title={channelName.get(j.channel_id) ?? j.channel_id}
                           to={`/channels/${encodeURIComponent(j.channel_id)}`}
                         >
                           {channelName.get(j.channel_id) ?? j.channel_id}
@@ -140,6 +195,14 @@ export function JobsTable({
                     With expandLog it truncates instead, so a closed row stays one line. */}
                 <TableCell className={expandLog ? "whitespace-nowrap" : "min-w-40 whitespace-normal"}>
                   <Badge variant={jobStateVariant(j.state)}>{j.state}</Badge>
+                  {j.attempts > 1 && (
+                    <span
+                      className="ml-2 text-xs text-muted-foreground"
+                      title={`${j.attempts} attempts`}
+                    >
+                      ×{j.attempts}
+                    </span>
+                  )}
                   {j.state === "queued" && j.deferred_until && (
                     <span className="ml-2 text-xs text-muted-foreground">
                       waits until {formatClock(j.deferred_until)}
@@ -171,11 +234,29 @@ export function JobsTable({
                     )
                   )}
                 </TableCell>
-                <TableCell className="text-right">{j.attempts}</TableCell>
-                {scheduled && <TableCell>{formatDateTime(j.scheduled_at)}</TableCell>}
-                <TableCell>{formatDateTime(j.created_at)}</TableCell>
-                <TableCell>{formatDateTime(j.started_at)}</TableCell>
-                <TableCell>{formatDateTime(j.finished_at)}</TableCell>
+                {live ? (
+                  <>
+                    <TableCell className="tabular-nums">
+                      <LiveStart job={j} />
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{liveLength(j)}</TableCell>
+                    <TableCell className="tabular-nums">
+                      <RecorderCell pods={pods} jobId={j.id} />
+                    </TableCell>
+                  </>
+                ) : (
+                  <>
+                    <TableCell className="tabular-nums">
+                      <Clock iso={j.created_at} />
+                    </TableCell>
+                    <TableCell className="tabular-nums">
+                      <Clock iso={j.started_at} />
+                    </TableCell>
+                    <TableCell className="tabular-nums">
+                      <Clock iso={j.finished_at} />
+                    </TableCell>
+                  </>
+                )}
               </TableRow>
               {expanded && (
                 <TableRow className="hover:bg-transparent">

@@ -76,6 +76,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: SAVETUBE_SCHEDULER_URL
+              value: http://{{ include "savetube.fullname" . }}-scheduler:8082
             - name: SAVETUBE_PUBLIC_URL
               value: {{ required "publicUrl is required" .Values.publicUrl | quote }}
             - name: SAVETUBE_OIDC_ISSUER

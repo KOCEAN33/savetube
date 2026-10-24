@@ -18,7 +18,6 @@ RECORDER_CONTAINER = "recorder"
 JOB_ID_LABEL = "savetube.io/job-id"
 VIDEO_ID_ANNOTATION = "savetube.io/video-id"
 # Every worker pod carries it. One release per namespace, so no instance label.
-WORKER_LABELS = {"app.kubernetes.io/component": "worker"}
 
 
 def recorder_job(cronjob: CronJob, job_id: int, video_id: str) -> Job:
@@ -121,31 +120,11 @@ def recorder_summaries(jobs: list[Job], pods: list[Pod]) -> list[dict[str, Any]]
     return sorted(rows, key=lambda r: r["job_id"], reverse=True)
 
 
-def worker_summaries(pods: list[Pod]) -> list[dict[str, Any]]:
-    rows = []
-    for pod in pods:
-        status = pod.status
-        ready = any(c.type == "Ready" and c.status == "True" for c in status.conditions or [])
-        containers = [*(status.initContainerStatuses or []), *(status.containerStatuses or [])]
-        rows.append(
-            {
-                "name": pod.metadata.name,
-                "phase": status.phase,
-                "ready": ready,
-                "restarts": sum(c.restartCount for c in containers),
-                "started_at": status.startTime,
-            }
-        )
-    return sorted(rows, key=lambda r: r["name"])
-
-
 async def cluster_pods(namespace: str) -> dict[str, list[dict[str, Any]]]:
-    """The recorder Jobs and the worker pods, read with get/list only."""
+    """The recorder Jobs, read with get/list only."""
     async with AsyncClient(namespace=namespace) as client:
         jobs = [j async for j in client.list(Job, labels={JOB_ID_LABEL: exists()})]
         recorder_pods = [p async for p in client.list(Pod, labels={JOB_ID_LABEL: exists()})]
-        workers = [p async for p in client.list(Pod, labels=WORKER_LABELS)]
     return {
         "recorders": recorder_summaries(jobs, recorder_pods),
-        "workers": worker_summaries(workers),
     }

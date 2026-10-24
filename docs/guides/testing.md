@@ -8,7 +8,7 @@ bash /tmp/savetube-testdb/run-tests.sh <repo root> make check
 
 Pytest args can replace `make check`. The script reads `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` and the password from `op read 'op://Homelab/savetube-dev-db/password'`. It prints no secret. Parallel runs are safe.
 
-Tests that need ffmpeg skip on this Mac. To run them, put the shims in `/tmp/savetube-ffshim` first on PATH. The shims call the local `savetube:after` image and mount only `/private/tmp`, so add `--basetemp=/private/tmp/<dir>` to the pytest args. Without it the fixtures' ffmpeg fails with exit 254.
+Tests that need ffmpeg use Homebrew `ffmpeg` and `ffprobe` on this Mac. Without them on PATH they skip.
 
 DB tests live in `backend/tests/test_db_*.py`, with shared fixtures and helpers in `conftest.py`.
 

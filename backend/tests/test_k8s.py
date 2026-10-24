@@ -4,7 +4,7 @@ import pytest
 from lightkube.resources.batch_v1 import CronJob, Job
 from lightkube.resources.core_v1 import Pod
 
-from savetube.k8s import recorder_job, recorder_states, recorder_summaries, worker_summaries
+from savetube.k8s import recorder_job, recorder_states, recorder_summaries
 
 
 def _cronjob(container_name: str = "recorder") -> CronJob:
@@ -106,7 +106,7 @@ def test_recorder_states_reads_a_failed_job_by_its_condition():
     assert recorder_states(jobs) == {7: True, 8: False, 9: False, 10: False}
 
 
-def _pod(name, phase, *, created, job_id=None, ready=None, restarts=()):
+def _pod(name, phase, *, created, job_id=None):
     pod = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -118,14 +118,8 @@ def _pod(name, phase, *, created, job_id=None, ready=None, restarts=()):
         "status": {
             "phase": phase,
             "startTime": created,
-            "containerStatuses": [
-                {"name": f"c{i}", "image": "i", "imageID": "", "ready": True, "restartCount": n}
-                for i, n in enumerate(restarts)
-            ],
         },
     }
-    if ready is not None:
-        pod["status"]["conditions"] = [{"type": "Ready", "status": "True" if ready else "False"}]
     return Pod.from_dict(pod)
 
 
@@ -175,32 +169,3 @@ def test_a_recorder_shows_its_newest_pod_and_its_failed_retries():
     assert (rows[9]["status"], rows[9]["restarts"]) == ("failed", 4)
     # A pod not made yet, or one the TTL removed.
     assert (rows[10]["status"], rows[10]["pod_phase"]) == ("pending", None)
-
-
-def test_a_worker_pod_shows_its_readiness_and_every_container_restart():
-    pods = [
-        _pod(
-            "savetube-worker-b",
-            "Running",
-            created="2026-10-24T01:00:00Z",
-            ready=True,
-            restarts=(2, 1),
-        ),
-        _pod("savetube-worker-a", "Pending", created="2026-10-24T02:00:00Z", ready=False),
-    ]
-    assert worker_summaries(pods) == [
-        {
-            "name": "savetube-worker-a",
-            "phase": "Pending",
-            "ready": False,
-            "restarts": 0,
-            "started_at": datetime(2026, 10, 24, 2, 0, tzinfo=UTC),
-        },
-        {
-            "name": "savetube-worker-b",
-            "phase": "Running",
-            "ready": True,
-            "restarts": 3,
-            "started_at": datetime(2026, 10, 24, 1, 0, tzinfo=UTC),
-        },
-    ]

@@ -1,8 +1,10 @@
 """Dependencies and helpers the route modules share."""
 
 import logging
+from collections.abc import Callable
 from typing import Annotated, Any
 
+import httpx2
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import ColumnElement, func, select
@@ -34,6 +36,32 @@ def require_csrf_header(request: Request) -> None:
     subdomain POST with the session cookie."""
     if request.method not in _SAFE_METHODS and CSRF_HEADER.lower() not in request.headers:
         raise HTTPException(status_code=403, detail=f"missing {CSRF_HEADER} header")
+
+
+async def call_scheduler(
+    request: Request, path: str, *, seconds: float, failed: Callable[[int, str], None]
+) -> None:
+    """POST `path` on the scheduler's internal API (savetube.scheduler_api).
+    Its 404 and 409 pass through with its detail. A timeout answers 504 and any
+    other failure 502, after `failed(status, reason)` logs it."""
+    try:
+        async with httpx2.AsyncClient(timeout=seconds) as client:
+            r = await client.post(f"{request.app.state.scheduler_url}{path}")
+    except httpx2.TimeoutException:
+        failed(504, "timed out")
+        raise HTTPException(
+            status_code=504, detail=f"the scheduler did not answer within {seconds} s"
+        ) from None
+    except httpx2.HTTPError as e:
+        failed(502, f"{type(e).__name__}: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"the scheduler is unreachable: {type(e).__name__}"
+        ) from None
+    if r.status_code in (404, 409):
+        raise HTTPException(status_code=r.status_code, detail=r.json().get("detail"))
+    if not r.is_success:
+        failed(502, f"scheduler answered {r.status_code}")
+        raise HTTPException(status_code=502, detail=f"the scheduler answered {r.status_code}")
 
 
 _size = func.coalesce(func.sum(Video.size_bytes), 0)

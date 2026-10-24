@@ -55,6 +55,7 @@
 | `POST /api/sources` | `tabs` also accepts `playlists`. New fields `include_words`, `exclude_words` (lists of strings, default empty) and `other_channels` (default false) | the created sources |
 | `PATCH /api/sources/{id}` | also `include_words`, `exclude_words`, `other_channels`, `enabled` | the source |
 | `GET /api/sources` | | each source also carries `include_words`, `exclude_words`, `other_channels`, `parent_id`, `title` |
+| `POST /api/sources/{id}/poll` | | asks the scheduler to poll the source now (`POST /poll/{id}`, runtime.md, Scheduler API), then returns the source with 202. 404 for an unknown source, 409 for a disabled source or a playlist of a disabled `playlists` source, 502 when the scheduler is unreachable or answers an error, 504 after 10 s |
 | `POST /api/channel-playlists` | `{url}`, a channel URL | `[{id, title, url, source_id}]`, `source_id` null for a playlist that is not a source yet. Lists live through yt-dlp, at most two at a time, 502 on a yt-dlp error, 504 after 120 s |
 | `GET /api/channels/{id}/words` | | `[{word, count}]`, best first |
 | `POST /api/sources/{id}/title-preview` | `{include_words, exclude_words}`, the source's own lists being edited | `{total, kept, titles: [{video_id, title, kept}]}` from the source's `listing_entry` rows, matched with the stored global and channel lists merged in. A `playlist` source of a channel with `playlists_pass` on matches with the exclude list only. Every title is kept for a source of a channel with `keep_all` on |
@@ -69,7 +70,7 @@
 
 - A source with `archiving` off is still polled. Its polls write `listing_entry` rows and `video_source` links but create no `video` rows and no archive jobs. The channel page turns it off to pause a channel's downloads.
 - The words preview at onboarding reads the first scan, so a channel added through `POST /api/channels` starts with `archiving` on.
-- `PATCH /api/sources/{id}` with `archiving: true` resumes downloads, and the source is polled on the next scheduler tick. On a `playlists` parent the flag is copied to every child, and a child created later takes the parent's value.
+- `PATCH /api/sources/{id}` with `archiving: true` resumes downloads. On an enabled source the web then asks the scheduler to poll it now, as Poll now does. When that call fails, the PATCH still answers 200 and the source polls at its interval. On a `playlists` parent the flag is copied to every child, and a child created later takes the parent's value.
 - Sources that existed before migration 0003 keep downloading: the migration sets `archiving` on for them.
 - Live detection ignores `archiving`.
 - `download_settings.paused` pauses every archive download. The user sets it with the header's pause switch (frontend.md). Polls go on and still create archive jobs, which wait.

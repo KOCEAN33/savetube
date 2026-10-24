@@ -236,6 +236,54 @@ def test_scheduler_names_the_rendered_cronjob(release):
     }
 
 
+@pytest.mark.parametrize("release", ["savetube", "other"])
+def test_web_reaches_the_scheduler_api_through_its_cluster_ip_service(release):
+    docs = render(release=release)
+    by_name = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+
+    def deployment(role):
+        (found,) = [d for (k, n), d in by_name.items() if k == "Deployment" and n.endswith(role)]
+        return found
+
+    (app,) = pod_spec(deployment("-web"))["containers"]
+    url = {e["name"]: e.get("value") for e in app["env"]}["SAVETUBE_SCHEDULER_URL"]
+    host, port = url.removeprefix("http://").split(":")
+    service = by_name["Service", host]
+    assert service["spec"]["type"] == "ClusterIP"
+    (served,) = [p for p in service["spec"]["ports"] if p["port"] == int(port)]
+    scheduler = deployment("-scheduler")
+    assert service["spec"]["selector"] == scheduler["spec"]["selector"]["matchLabels"]
+    (c,) = [c for c in pod_spec(scheduler)["containers"] if c["name"] == "scheduler"]
+    ports = {p["name"]: p["containerPort"] for p in c["ports"]}
+    assert ports[served["targetPort"]] == Settings.model_fields["scheduler_api_port"].default
+
+
+@pytest.mark.parametrize("release", ["savetube", "other"])
+def test_only_the_web_reaches_the_scheduler_api(release):
+    docs = render(release=release)
+    by_name = {(d["kind"], d["metadata"]["name"]): d for d in docs}
+
+    def deployment(role):
+        (found,) = [d for (k, n), d in by_name.items() if k == "Deployment" and n.endswith(role)]
+        return found
+
+    (policy,) = [d for d in docs if d["kind"] == "NetworkPolicy"]
+    scheduler, web = deployment("-scheduler"), deployment("-web")
+    spec = policy["spec"]
+    assert spec["podSelector"]["matchLabels"] == scheduler["spec"]["selector"]["matchLabels"]
+    assert spec["policyTypes"] == ["Ingress"]
+    (c,) = [c for c in pod_spec(scheduler)["containers"] if c["name"] == "scheduler"]
+    # Every port the scheduler serves has a rule, so the policy blocks none by omission.
+    open_to = {}
+    for rule in spec["ingress"]:
+        for port in rule["ports"]:
+            open_to[port["port"]] = rule.get("from")
+    assert set(open_to) == {p["name"] for p in c["ports"]}
+    web_pods = {"podSelector": {"matchLabels": web["spec"]["selector"]["matchLabels"]}}
+    assert open_to["api"] == [web_pods]
+    assert all(peers is None for name, peers in open_to.items() if name != "api")
+
+
 def test_oidc_values_reach_web():
     web = one(render(), "Deployment", "savetube-web")
     (app,) = pod_spec(web)["containers"]

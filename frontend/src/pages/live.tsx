@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router"
 
 import { JobStateCounts, JobsTable } from "@/components/jobs-table"
 import { Page, PageSection, QueryState } from "@/components/query-state"
-import { PodsSection, RecordingNowSection, ScheduledSection } from "@/components/recorders"
+import { RecordingNowSection, ScheduledSection } from "@/components/recorders"
 import { Badge } from "@/components/ui/badge"
 import {
   Select,
@@ -12,6 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { usePods } from "@/hooks/use-pods"
 import { api, type JobState } from "@/lib/api"
 import { JOB_STATES } from "@/lib/channel"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
@@ -29,6 +30,7 @@ export function LivePage() {
     queryFn: () => api.jobs({ kind: "record", state: state ? [state] : undefined, limit: LIMIT }),
     refetchInterval: IDLE_REFETCH_MS,
   })
+  const pods = usePods()
   const channelName = new Map(channels.data?.map((c) => [c.id, c.name]))
   const watched = channels.data?.filter((c) => c.watch_lives) ?? []
 
@@ -52,9 +54,8 @@ export function LivePage() {
       </div>
       <RecordingNowSection />
       <ScheduledSection />
-      <PodsSection />
       <PageSection
-        title="Detected, upcoming and recorded streams"
+        title="Streams"
         actions={
           <Select value={state ?? ALL} onValueChange={setState}>
             <SelectTrigger size="sm" className="w-36" aria-label="State">
@@ -78,7 +79,8 @@ export function LivePage() {
               <JobsTable
                 jobs={rows}
                 channelName={channelName}
-                scheduled
+                live
+                pods={pods.data}
                 empty="No live detected yet."
               />
             </>

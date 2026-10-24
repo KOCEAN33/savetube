@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     metrics_port: int = 9090
     # GET /healthz of the worker and the scheduler, served by their asyncio loop.
     health_port: int = 8081
+    # The scheduler's internal HTTP API (savetube.scheduler_api): the port it
+    # serves, and the address the web calls it at. Cluster-internal, no auth.
+    scheduler_api_port: int = 8082
+    scheduler_url: str = "http://127.0.0.1:8082"
 
     # DEBUG, INFO, WARNING or ERROR, any case (docs/plan/operations.md, Logging).
     log_level: str = "INFO"

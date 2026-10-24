@@ -1,26 +1,18 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router"
 
+import { Clock } from "@/components/clock"
 import { ChannelLink } from "@/components/job-row"
 import { PageSection, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { VideoYouTubeLink } from "@/components/youtube-link"
-import { api, type Job, type Pods, type RecorderJob } from "@/lib/api"
+import { recorderOf, usePods } from "@/hooks/use-pods"
+import { api, type Job, type Pods } from "@/lib/api"
 import { STEP_LABELS } from "@/lib/channel"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
-import { formatBytes, formatDateTime, formatDuration, formatKst } from "@/lib/format"
+import { formatBytes, formatClock, formatDuration } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
-
-const UNAVAILABLE = "Pod state is unavailable: the web server runs outside a cluster."
 
 function useRecordingNow() {
   return useQuery({
@@ -28,18 +20,6 @@ function useRecordingNow() {
     queryFn: () => api.jobs({ kind: "record", state: ["running"] }),
     refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),
   })
-}
-
-function usePods() {
-  return useQuery({
-    queryKey: queryKeys.pods(),
-    queryFn: api.pods,
-    refetchInterval: IDLE_REFETCH_MS,
-  })
-}
-
-function recorderOf(pods: Pods | undefined, jobId: number): RecorderJob | undefined {
-  return pods?.recorders.find((r) => r.job_id === jobId)
 }
 
 // A live has no total, so the line shows bytes and time since the start, not a
@@ -51,18 +31,22 @@ function RecordingProgress({ job, now }: { job: Job; now: number }) {
     p && "step" in p ? STEP_LABELS[p.step] : null,
     p && "done" in p ? `${formatBytes(p.done)} so far` : "waiting for the first bytes",
     p && "speed" in p && p.speed !== null ? `${formatBytes(p.speed)}/s` : null,
+    job.started_at ? `started ${formatClock(job.started_at)}` : null,
+    job.scheduled_at ? `scheduled ${formatClock(job.scheduled_at)}` : null,
     elapsed !== null ? `elapsed ${formatDuration(elapsed)}` : null,
   ].filter(Boolean)
   return <span className="text-xs text-muted-foreground tabular-nums">{parts.join(" · ")}</span>
 }
 
-function PodPhase({ pods, jobId }: { pods: Pods | undefined; jobId: number }) {
-  if (!pods) return null
-  if (!pods.available) return <span className="text-xs text-muted-foreground">pod unknown</span>
+// Kubernetes keeps the pod's state. The card speaks only when the recording may
+// lose a stretch: no recorder Job, a pod not running, or a retry.
+function PodAlert({ pods, jobId }: { pods: Pods | undefined; jobId: number }) {
+  if (!pods?.available) return null
   const recorder = recorderOf(pods, jobId)
   if (!recorder) return <Badge variant="destructive">no recorder Job</Badge>
+  if (recorder.pod_phase === "Running" && recorder.restarts === 0) return null
   return (
-    <Badge variant="outline" title={recorder.name}>
+    <Badge variant="destructive" title={recorder.name}>
       pod {recorder.pod_phase ?? "not started"}
       {recorder.restarts > 0 &&
         `, ${recorder.restarts} ${recorder.restarts === 1 ? "retry" : "retries"}`}
@@ -87,14 +71,9 @@ function RecordingRow({ job, pods, now }: { job: Job; pods: Pods | undefined; no
           <span className="font-medium">Job {job.id}</span>
         )}
         {job.video_id && <VideoYouTubeLink id={job.video_id} title={job.title} />}
-        <PodPhase pods={pods} jobId={job.id} />
+        <PodAlert pods={pods} jobId={job.id} />
       </div>
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <RecordingProgress job={job} now={now} />
-        <span className="text-xs text-muted-foreground">
-          started {formatDateTime(job.started_at)}
-        </span>
-      </div>
+      <RecordingProgress job={job} now={now} />
     </li>
   )
 }
@@ -126,21 +105,12 @@ function byStart(a: Job, b: Job) {
   return (a.scheduled_at ?? "").localeCompare(b.scheduled_at ?? "") || a.id - b.id
 }
 
-function RecorderCell({ pods, jobId }: { pods: Pods | undefined; jobId: number }) {
-  if (!pods) return "-"
-  if (!pods.available) return <span className="text-muted-foreground">unknown</span>
-  const recorder = recorderOf(pods, jobId)
-  if (!recorder) return <span className="text-muted-foreground">not yet</span>
-  return `${recorder.status}, pod ${recorder.pod_phase ?? "not started"}`
-}
-
 export function ScheduledSection() {
   const queued = useQuery({
     queryKey: queryKeys.scheduledRecords(),
     queryFn: () => api.jobs({ kind: "record", state: ["queued"] }),
     refetchInterval: IDLE_REFETCH_MS,
   })
-  const pods = usePods()
   return (
     <PageSection title="Scheduled">
       <QueryState query={queued}>
@@ -152,8 +122,8 @@ export function ScheduledSection() {
             <ul className="flex flex-col divide-y">
               {[...jobs].sort(byStart).map((j) => (
                 <li key={j.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 p-3 text-sm">
-                  <span className="w-44 shrink-0 tabular-nums">
-                    {j.scheduled_at ? formatKst(j.scheduled_at) : "live now"}
+                  <span className="w-24 shrink-0 tabular-nums">
+                    {j.scheduled_at ? <Clock iso={j.scheduled_at} /> : "live now"}
                   </span>
                   {j.video_id ? (
                     <Link
@@ -168,80 +138,9 @@ export function ScheduledSection() {
                   )}
                   {j.video_id && <VideoYouTubeLink id={j.video_id} title={j.title} />}
                   <ChannelLink job={j} />
-                  <span className="text-xs">
-                    Recorder Job: <RecorderCell pods={pods.data} jobId={j.id} />
-                  </span>
                 </li>
               ))}
             </ul>
-          )
-        }
-      </QueryState>
-    </PageSection>
-  )
-}
-
-export function PodsSection() {
-  const pods = usePods()
-  return (
-    <PageSection title="Recorder and worker pods">
-      <QueryState query={pods}>
-        {(data) =>
-          !data.available ? (
-            <p className="p-3 text-sm text-muted-foreground">{UNAVAILABLE}</p>
-          ) : (
-            <Table>
-              <TableHeader className="bg-muted">
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Pod</TableHead>
-                  <TableHead className="text-right">Restarts</TableHead>
-                  <TableHead>Started</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {data.recorders.map((r) => (
-                  <TableRow key={r.name}>
-                    <TableCell>
-                      {r.video_id ? (
-                        <span className="inline-flex items-center gap-2">
-                          <Link
-                            className="hover:underline"
-                            to={`/videos/${encodeURIComponent(r.video_id)}`}
-                          >
-                            {r.name}
-                          </Link>
-                          <VideoYouTubeLink id={r.video_id} iconOnly />
-                        </span>
-                      ) : (
-                        r.name
-                      )}
-                    </TableCell>
-                    <TableCell>{r.status}</TableCell>
-                    <TableCell>{r.pod_phase ?? "-"}</TableCell>
-                    <TableCell className="text-right">{r.restarts}</TableCell>
-                    <TableCell>{formatDateTime(r.started_at)}</TableCell>
-                  </TableRow>
-                ))}
-                {data.workers.map((w) => (
-                  <TableRow key={w.name}>
-                    <TableCell>{w.name}</TableCell>
-                    <TableCell>{w.ready ? "ready" : "not ready"}</TableCell>
-                    <TableCell>{w.phase ?? "-"}</TableCell>
-                    <TableCell className="text-right">{w.restarts}</TableCell>
-                    <TableCell>{formatDateTime(w.started_at)}</TableCell>
-                  </TableRow>
-                ))}
-                {data.recorders.length + data.workers.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground">
-                      No recorder Job or worker pod.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
           )
         }
       </QueryState>

@@ -118,12 +118,11 @@ export interface Job {
   progress: JobProgress | JobStep | null
 }
 
-// GET /api/pods: the recorder Jobs and the worker pods from the Kubernetes API.
+// GET /api/pods: the recorder Jobs from the Kubernetes API.
 export interface Pods {
-  // False outside a cluster, where the lists are empty.
+  // False outside a cluster, where the list is empty.
   available: boolean
   recorders: RecorderJob[]
-  workers: WorkerPod[]
 }
 
 export interface RecorderJob {
@@ -139,19 +138,9 @@ export interface RecorderJob {
   started_at: string | null
 }
 
-export interface WorkerPod {
-  name: string
-  phase: string | null
-  ready: boolean
-  restarts: number
-  started_at: string | null
-}
-
 export interface Staging {
   count: number
   bytes: number
-  // A Move now the scheduler has not taken yet.
-  move_requested: boolean
 }
 
 export interface JobStep {
@@ -219,10 +208,12 @@ export interface FormatRow {
   reason: string | null
 }
 
-// The format watch of a stored live (docs/plan/live.md, Format watch).
+// The format watch of a stored live, or a user's probe of any complete video
+// (docs/plan/live.md, Format watch).
 export interface FormatWatch {
-  started_at: string
-  ends_at: string
+  // Null for a row a user's probe made: no automatic watch.
+  started_at: string | null
+  ends_at: string | null
   ended_at: string | null
   checked_at: string | null
   probe_error: string | null
@@ -235,6 +226,8 @@ export interface FormatWatch {
   // VOD minus stored, in seconds.
   duration_diff: number | null
   original_kept: boolean
+  // When the original of a swap outside an open watch is deleted.
+  original_until: string | null
   stored: FormatRow[]
   formats: FormatRow[]
   replace: {

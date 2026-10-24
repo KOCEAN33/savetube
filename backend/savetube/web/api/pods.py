@@ -1,4 +1,4 @@
-"""The recorder Jobs and the worker pods, read from the Kubernetes API."""
+"""The recorder Jobs, read from the Kubernetes API."""
 
 import os
 from datetime import datetime
@@ -24,25 +24,16 @@ class RecorderOut(_Out):
     started_at: datetime | None
 
 
-class WorkerPodOut(_Out):
-    name: str
-    phase: str | None
-    ready: bool
-    restarts: int
-    started_at: datetime | None
-
-
 class PodsOut(_Out):
     # False outside a cluster, where no Kubernetes API answers.
     available: bool
     recorders: list[RecorderOut]
-    workers: list[WorkerPodOut]
 
 
 @router.get("/pods")
 async def pods(request: Request) -> PodsOut:
     # Kubernetes sets this in every pod. compose.yaml and a local serve have no API.
     if not os.environ.get("KUBERNETES_SERVICE_HOST"):
-        return PodsOut(available=False, recorders=[], workers=[])
+        return PodsOut(available=False, recorders=[])
     found = await k8s.cluster_pods(request.app.state.namespace)
     return PodsOut(available=True, **found)

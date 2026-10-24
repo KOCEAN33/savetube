@@ -41,6 +41,10 @@ services:
     command: [web]
     ports:
       - 127.0.0.1:8000:8000
+    # A merge key replaces the whole map, so the archive root repeats.
+    environment:
+      SAVETUBE_ARCHIVE_ROOT: /archive
+      SAVETUBE_SCHEDULER_URL: http://scheduler:8082
     depends_on:
       migrate:
         condition: service_completed_successfully

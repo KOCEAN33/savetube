@@ -1,23 +1,28 @@
-"""The format watch of a stored live on the video page (docs/plan/live.md,
-Format watch)."""
+"""The formats of a stored video on the video page: the format watch of a
+live, and the user's probe and pick (docs/plan/live.md, Format watch)."""
 
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
+from functools import partial
 from typing import Any, Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import formats
-from savetube.db.models import FormatWatch, Job, JobKind, JobState, Video
+from savetube.db.models import FormatWatch, Job, JobKind, JobState, Video, VideoState
 from savetube.logs import emit
 from savetube.watch import ends_at, replace_active
-from savetube.web.api.deps import Session, log
+from savetube.web.api.deps import Session, call_scheduler, log
 from savetube.web.api.jobs import job_reason
 
 router = APIRouter()
+
+# The scheduler waits its turn behind the format watch's probe, then probes.
+SCHEDULER_TIMEOUT = 120
 
 
 class FormatRow(BaseModel):
@@ -49,8 +54,9 @@ class ReplaceOut(BaseModel):
 
 
 class FormatWatchOut(BaseModel):
-    started_at: datetime
-    ends_at: datetime
+    # Null for a row a user's probe made: no automatic watch.
+    started_at: datetime | None
+    ends_at: datetime | None
     ended_at: datetime | None
     checked_at: datetime | None
     probe_error: str | None
@@ -63,8 +69,9 @@ class FormatWatchOut(BaseModel):
     stored_duration: float | None
     # VOD minus stored, in seconds.
     duration_diff: float | None
-    # The first stored file waits aside until the watch ends.
+    # A replaced file waits aside until the watch ends or `original_until`.
     original_kept: bool
+    original_until: datetime | None
     stored: list[FormatRow]
     formats: list[FormatRow]
     # The latest replace job.
@@ -131,7 +138,8 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
         vod_duration=watch.vod_duration,
         stored_duration=watch.stored_duration,
         duration_diff=diff,
-        original_kept=watch.original_path is not None and watch.ended_at is None,
+        original_kept=watch.original_path is not None,
+        original_until=watch.original_until,
         stored=[
             _row(stored[k], k, stored=True, recommended=recommended, key=f"stored:{k}")
             for k in ("video", "audio")
@@ -164,9 +172,39 @@ async def _watched(session: AsyncSession, video_id: str) -> tuple[FormatWatch, V
 
 @router.get("/videos/{video_id}/formats")
 async def video_formats(session: Session, video_id: str) -> FormatWatchOut | None:
-    """Null for a video without a format watch."""
+    """Null for a video without a row: no watch and no probe yet."""
     found = await _watched(session, video_id)
     return None if found is None else await _out(session, *found)
+
+
+@router.post("/videos/{video_id}/formats/probe")
+async def probe_formats(session: Session, request: Request, video_id: str) -> FormatWatchOut:
+    """Ask the scheduler to probe the video's formats now. The web pod has no
+    cookies, so the scheduler probes."""
+    video = await session.get(Video, video_id)
+    if video is None:
+        raise HTTPException(status_code=404, detail="no such video")
+    if video.state is not VideoState.COMPLETE:
+        raise HTTPException(status_code=409, detail="the video is not complete")
+    await call_scheduler(
+        request,
+        f"/probe/{quote(video_id, safe='')}",
+        seconds=SCHEDULER_TIMEOUT,
+        failed=partial(_probe_failed, video_id),
+    )
+    watch = await session.get(FormatWatch, video_id)
+    return await _out(session, watch, video)
+
+
+def _probe_failed(video_id: str, status: int, reason: str) -> None:
+    emit(
+        log,
+        logging.WARNING,
+        "watch.probe_request_failed",
+        video=video_id,
+        status=status,
+        reason=reason,
+    )
 
 
 @router.post("/videos/{video_id}/formats/pick")
@@ -176,8 +214,6 @@ async def pick_format(session: Session, video_id: str, body: PickIn) -> FormatWa
     if found is None:
         raise HTTPException(status_code=404, detail="the video has no format watch")
     watch, video = found
-    if watch.ended_at is not None or datetime.now(UTC) >= ends_at(watch):
-        raise HTTPException(status_code=409, detail="the format watch has ended")
     if body.format_id not in {str(f.get("format_id")) for f in watch.formats or []}:
         raise HTTPException(status_code=404, detail="the VOD does not offer this format")
     if await replace_active(session, video_id) is not None:
@@ -189,7 +225,7 @@ async def pick_format(session: Session, video_id: str, body: PickIn) -> FormatWa
             detail=f"the VOD and the stored file differ by {diff:.1f} s; confirm to replace",
         )
     watch.manual = True
-    job = Job(kind=JobKind.REPLACE, video_id=video_id, format_id=body.format_id)
+    job = Job(kind=JobKind.REPLACE, video_id=video_id, format_id=body.format_id, manual=True)
     session.add(job)
     await session.commit()
     emit(

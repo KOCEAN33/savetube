@@ -12,18 +12,19 @@
 | `listing_entry` | every video a source's last listings showed: source, video id, channel, title. Title word suggestions read it |
 | `video` | video id, channel, type, title, upload date, duration, live status, availability, format ids, file paths, `size_bytes`, `completed_at`, state, the pinned format of a partial download, the integrity checks it passed and when, and the stored streams' quality generated from `info` |
 | `video_source` | which sources reference a video, so a playlist never copies a file |
-| `job` | kind (archive, record, replace), state, attempts, miss reason, log tail, the running download's progress, the format ids a replace downloads, timestamps |
-| `format_watch` | per stored live: the live's air time as `started_at`, when the watch ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside |
+| `job` | kind (archive, record, replace), state, attempts, miss reason, log tail, the running download's progress, the format ids a replace downloads, `manual` for a replace the user picked, timestamps |
+| `format_watch` | per stored live, or per video a user's probe listed: the live's air time as `started_at`, null for a row without an automatic watch, when the watch ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside while it is kept, and `original_until`, when an original kept outside an open watch is deleted |
 | `storage_sample` | hourly free and used bytes of the dataset |
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
 - `video.video_codec`, `audio_codec`, `video_width`, `video_height`, `video_fps`, `video_kbps` and `premium` are stored generated columns over `info`. They read the stored streams the way `savetube.formats.stored_streams` does: the first requested format with that stream, else the info dict itself. A replace keeps the top-level `format_note` of the first download, so `premium` reads the video stream's note. `video_kbps` is `vbr`, else `tbr`. The Videos page filters on them, because reading the TOASTed `info` took about 2 s per query on 5,000 videos and the columns take about 1 ms.
+- Migration `0024` drops `download_settings.move_requested_at`, the Move now flag before the Scheduler API (runtime.md). Its downgrade adds it back, null.
+- Migration `0023` makes `format_watch.started_at` nullable and adds `format_watch.original_until` and `job.manual`. It clears `original_path` of every ended watch, whose end deleted the original, and marks the queued or running replace of a picked watch `manual`. Its downgrade deletes the rows without `started_at`.
 - Migration `0022` adds those generated columns. It rewrites the `video` table under an exclusive lock, about 40 s on 5,000 videos with 150 KB info dicts. Its downgrade drops them.
 - Migration `0021` sets each watch's `started_at` to its live's air time (live.md, Format watch). It cancels every queued replace job of an old watch, one whose live aired 7 or more days ago or has no air time, and every queued replace job of a recent watch without a manual pick, so the next probe queues again what still ranks above. A queued job whose procrastinate job a worker already took stays. It ends every open old watch, unless a replace job is still queued or running or an original sits in `.originals/`. The scheduler ends the latter and deletes the original, so the migration deletes no file. Its downgrade does nothing.
 - Migration `0020` adds `format_watch`, `job.format_id` and the job kind `replace`. It starts a watch for every `complete` live video whose `completed_at` is within 7 days, from its `completed_at`. Its downgrade deletes every replace job and drops both. Files a replace moved aside stay in `.originals/`.
 - Migration `0018` adds `cookie_profile.account_name`, `account_handle`, `account_digest` and `account_checked_at`, all null. Its downgrade drops them.
-- Migration `0015` adds `download_settings.move_requested_at`, null. Its downgrade drops it.
 - Migration `0014` adds the video state `staged` (Staging). Its downgrade turns every `staged` video into `pending`, so the old code downloads it again.
 - Migration `0013` adds `download_settings.window_enabled`, true where both window times are set, and `download_settings.daily_limit`, null. Its downgrade drops both.
 - Migration `0012` sets every `failed` video with a queued archive job back to `pending`. The poll used to queue a retry without resetting the video. Its downgrade changes nothing.
@@ -49,7 +50,7 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
   members/ <YYYY-MM-DD> <title> [<video id>]/
 .incoming/<video id>/   archive downloads without staging
 .incoming/<job id>/     recordings, and replace jobs' remux output
-.originals/<video id>/  the first stored file of a live a replace changed, until its format watch ends
+.originals/<video id>/  the file a replace moved aside, until the open watch ends, or 7 days after a swap outside one
 ```
 
 - Each video directory holds the media, its audio-only copy (archive.md, Audio copy), `.info.json`, the thumbnail, subtitles, and the chat replay when YouTube offers one.
@@ -73,11 +74,11 @@ The archive's disks are loud while a download writes to them for hours. With `SA
 
 - The download, the integrity checks and the audio copy all run on staging. A passed download is renamed into `ready/` and its video becomes `staged`. Its job succeeds, and `dir_path` already names its place in the tree.
 - A `staged` video is hidden like any video that is not `complete`: no list shows it and nothing plays it. The poll counts it as stored and queues no job for it.
-- The scheduler checks every 60 s whether the staged videos move (`savetube.staging`). They move when at least one of these holds:
+- The scheduler checks every 60 s whether the staged videos move (`savetube.staging`), and at once on Move now. They move when at least one of these holds:
   - The staged videos hold 80 GiB or more (`MOVE_BATCH_BYTES`), even while a download runs. On a volume smaller than about 95 GiB, the free-space rule fires first.
   - Staging has less than 15 GiB free (`MIN_FREE_BYTES`). The largest stored video is 7 GB, and yt-dlp holds about twice that while it merges.
   - No archive download runs, and the newest staged video has waited 1 hour (`MOVE_IDLE`).
-  - The user pressed Move now on the Downloads card. `POST /api/staging/move` sets `download_settings.move_requested_at`, because the web pod mounts neither staging nor a writable archive. The scheduler clears it after the move, and clears it at once when nothing is staged. A request made during a move stays for the next check.
+  - The user pressed Move now on the Downloads card. `POST /api/staging/move` calls the scheduler's `POST /staging/move` (runtime.md, Scheduler API), because the web pod mounts neither staging nor a writable archive. A request made during a move runs one more check after it, because it may name a video staged during the move.
 - A move copies every staged video, oldest first. Each copy goes to `.incoming/<video id>.moving/` on the archive, is renamed to its place in the tree, and its `ready/` directory is deleted. Then the video becomes `complete`.
 - A staged video whose place in the tree exists was renamed there by a move cut off before its row changed. It becomes `complete`. To keep that rule true, a download is not staged when its place in the tree already exists.
 - A staged video whose files are in neither place goes back to `pending`, and the next poll downloads it. It logs `staging.missing` at WARNING.

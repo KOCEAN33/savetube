@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { CornerDownRightIcon, MoreHorizontalIcon } from "lucide-react"
 
+import { Clock } from "@/components/clock"
 import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -32,7 +33,6 @@ import {
   sourceLabel,
   VIDEO_TABS,
 } from "@/lib/channel"
-import { formatDateTime } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { useInvalidate } from "@/pages/channel/use-invalidate"
 
@@ -105,7 +105,7 @@ function SourceRow({ source, child = false }: { source: Source; child?: boolean 
         </div>
         <span className="text-xs text-muted-foreground">
           every {source.poll_interval_minutes} min, last poll{" "}
-          {source.last_polled_at ? formatDateTime(source.last_polled_at) : "waiting"}
+          {source.last_polled_at ? <Clock iso={source.last_polled_at} /> : "waiting"}
         </span>
         {source.last_error && (
           <span className="truncate text-xs text-destructive" title={source.last_error}>

@@ -4,7 +4,8 @@
 The job downloads only the streams it names and remuxes them with the kept
 stream of the stored file through `ffmpeg -c copy`. The result passes the
 download's integrity checks, then takes the stored file's place in the tree.
-The first stored file moves aside until the watch ends."""
+The first stored file moves aside until the watch ends, or for ORIGINAL_KEPT
+after a swap outside an open watch."""
 
 import asyncio
 import json
@@ -36,7 +37,7 @@ from savetube.layout import VideoType
 from savetube.limits import admit
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.storage import dir_size
-from savetube.watch import media_path, originals_dir, probe_duration
+from savetube.watch import ORIGINAL_KEPT, is_open, media_path, originals_dir, probe_duration
 from savetube.ytdl import build_params, video_url, youtube_block
 
 # Every module of the package logs as `savetube.jobs`.
@@ -296,6 +297,10 @@ async def _replace(
         video.verified_checks = checks
         if aside is not None:
             watch.original_path = aside.relative_to(settings.archive_root).as_posix()
+        # The latest swap restarts the keep, so the user can compare with the
+        # original for a week after each pick.
+        if watch.original_path is not None and not is_open(watch, video.verified_at):
+            watch.original_until = video.verified_at + ORIGINAL_KEPT
         try:
             watch.stored_duration = await asyncio.to_thread(probe_duration, final, tools)
         except integrity.IntegrityFailed:
