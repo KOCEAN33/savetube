@@ -5,6 +5,7 @@ import { Link } from "react-router"
 import { ErrorBox } from "@/components/query-state"
 import { TitlePreview, WordListEditor, WordSuggestions } from "@/components/source-words"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -15,12 +16,28 @@ import {
 } from "@/components/ui/select"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { api, mutations, type Channel, type Source, type TitleWords } from "@/lib/api"
-import { sourceLabel } from "@/lib/channel"
+import {
+  KEEP_ALL_HINT,
+  KEEP_ALL_LABEL,
+  MEMBERS_ALL_HINT,
+  MEMBERS_ALL_LABEL,
+  PLAYLISTS_PASS_HINT,
+  PLAYLISTS_PASS_LABEL,
+  sourceLabel,
+} from "@/lib/channel"
 import { queryKeys } from "@/lib/query-keys"
 import { EXCLUDE_HINT, INCLUDE_HINT, addWord, type WordList } from "@/lib/words"
 import { useInvalidate } from "@/pages/channel/use-invalidate"
 
 type WordTarget = "channel" | "global"
+
+type ChannelWords = TitleWords & Pick<Channel, "members_all" | "playlists_pass" | "keep_all">
+
+const WORD_FLAGS = [
+  { key: "members_all", label: MEMBERS_ALL_LABEL, hint: MEMBERS_ALL_HINT },
+  { key: "playlists_pass", label: PLAYLISTS_PASS_LABEL, hint: PLAYLISTS_PASS_HINT },
+  { key: "keep_all", label: KEEP_ALL_LABEL, hint: KEEP_ALL_HINT },
+] as const
 
 function SourcePreview({ source }: { source: Source }) {
   const invalidate = useInvalidate()
@@ -78,9 +95,10 @@ export function WordsSection({ channel, sources }: { channel: Channel; sources: 
   const previewable = sources.filter((s) => s.kind !== "playlists")
   const [previewId, setPreviewId] = useState<number | null>(previewable[0]?.id ?? null)
   const previewed = previewable.find((s) => s.id === previewId) ?? previewable[0]
-  // Channel and global lists save on every change: the preview merges their stored state.
+  // Channel words, word flags and global lists save on every change: the preview merges
+  // their stored state.
   const saveChannel = useMutation({
-    mutationFn: (body: TitleWords) => mutations.updateChannel(channel.id, body),
+    mutationFn: (body: ChannelWords) => mutations.updateChannel(channel.id, body),
     onSuccess: (updated) => {
       queryClient.setQueryData<Channel[]>(queryKeys.channels(), (cur) =>
         cur?.map((c) => (c.id === updated.id ? updated : c)),
@@ -95,9 +113,15 @@ export function WordsSection({ channel, sources }: { channel: Channel; sources: 
       queryClient.invalidateQueries({ queryKey: queryKeys.titlePreviews() })
     },
   })
-  const channelWords: TitleWords = saveChannel.isPending
+  const channelWords: ChannelWords = saveChannel.isPending
     ? saveChannel.variables
-    : { include_words: channel.include_words, exclude_words: channel.exclude_words }
+    : {
+        include_words: channel.include_words,
+        exclude_words: channel.exclude_words,
+        members_all: channel.members_all,
+        playlists_pass: channel.playlists_pass,
+        keep_all: channel.keep_all,
+      }
   const writing = saveChannel.isPending || saveGlobal.isPending
   const present = new Map<string, WordList>()
   for (const lists of [globalWords.data, channelWords]) {
@@ -136,6 +160,21 @@ export function WordsSection({ channel, sources }: { channel: Channel; sources: 
           disabled={writing}
           onChange={(exclude_words) => saveChannel.mutate({ ...channelWords, exclude_words })}
         />
+        {WORD_FLAGS.map((f) => (
+          <div key={f.key} className="flex flex-col gap-2">
+            <Label className="font-normal">
+              <Checkbox
+                checked={channelWords[f.key]}
+                disabled={writing}
+                onCheckedChange={(on) =>
+                  saveChannel.mutate({ ...channelWords, [f.key]: on === true })
+                }
+              />
+              {f.label}
+            </Label>
+            <p className="text-xs text-muted-foreground">{f.hint}</p>
+          </div>
+        ))}
         {saveChannel.isError && <ErrorBox error={saveChannel.error} />}
         {saveGlobal.isError && <ErrorBox error={saveGlobal.error} />}
         <p className="text-xs text-muted-foreground">
