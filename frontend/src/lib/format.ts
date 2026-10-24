@@ -12,6 +12,12 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${value.toFixed(digits)} ${BYTE_UNITS[unit]}`
 }
 
+/** A stream's bitrate: "2.5 Mbps" or "130 kbps". */
+export function formatKbps(kbps: number | null | undefined): string {
+  if (kbps == null) return "-"
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${Math.round(kbps)} kbps`
+}
+
 /** Clock form for a single video: 1:02:03 or 4:05. */
 export function formatDuration(seconds: number | null | undefined): string {
   if (seconds == null) return "-"

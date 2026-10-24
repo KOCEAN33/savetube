@@ -29,6 +29,10 @@ export const queryKeys = {
     channelId: string | undefined
     channelNameParam: string | undefined
     listedBy: string | undefined
+    vcodec: string | undefined
+    acodec: string | undefined
+    height: string | undefined
+    premium: string | undefined
     offset: number
   }) => ["videos", filter] as const,
   typeTotal: (filter: { listedBy: string; type: VideoType; state: "complete"; limit: 1 }) =>

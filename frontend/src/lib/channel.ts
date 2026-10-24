@@ -34,8 +34,10 @@ export const KEEP_ALL_LABEL = "Download every video, ignoring title words"
 export const KEEP_ALL_HINT =
   "No title words apply to this channel's tabs and playlists, global words included. The date cutoff and the members-only check still apply."
 
+export const PLAYLISTS_PASS_LABEL = "Ignore include words in this channel's playlists"
+
 export const PLAYLISTS_PASS_HINT =
-  "Title words then only exclude in playlists. A video passes when its title passes the words or a chosen playlist lists it."
+  "Every video in the channel's playlists downloads, whatever its title. Exclude words still apply. Tabs and lives still use the include words."
 
 export const STEP_LABELS: Record<JobStep["step"], string> = {
   merging: "Merging the video and audio streams.",

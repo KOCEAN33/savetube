@@ -183,6 +183,17 @@ export interface Video {
   // The integrity checks the stored download passed: size, probe, packets.
   verified_at: string | null
   verified_checks: string[] | null
+  format_id: string | null
+  // The stored streams, named like the format watch: "AV1", "Opus".
+  video_codec: string | null
+  audio_codec: string | null
+  video_width: number | null
+  video_height: number | null
+  video_fps: number | null
+  // vbr, else the video stream's tbr.
+  video_kbps: number | null
+  // YouTube Premium's higher-bitrate format, such as itag 616.
+  premium: boolean | null
 }
 
 export interface VideoDetail extends Video {

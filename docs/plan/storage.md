@@ -10,7 +10,7 @@
 | `global_words` | one row: the global include and exclude title words |
 | `source` | a channel tab, a channel's playlists, or a playlist URL, enabled flag, archiving flag, poll interval, include and exclude title words, other-channel flag, parent source, last poll time and error |
 | `listing_entry` | every video a source's last listings showed: source, video id, channel, title. Title word suggestions read it |
-| `video` | video id, channel, type, title, upload date, duration, live status, availability, format ids, file paths, `size_bytes`, `completed_at`, state, the pinned format of a partial download, the integrity checks it passed and when |
+| `video` | video id, channel, type, title, upload date, duration, live status, availability, format ids, file paths, `size_bytes`, `completed_at`, state, the pinned format of a partial download, the integrity checks it passed and when, and the stored streams' quality generated from `info` |
 | `video_source` | which sources reference a video, so a playlist never copies a file |
 | `job` | kind (archive, record, replace), state, attempts, miss reason, log tail, the running download's progress, the format ids a replace downloads, timestamps |
 | `format_watch` | per stored live: the live's air time as `started_at`, when the watch ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside |
@@ -18,6 +18,8 @@
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- `video.video_codec`, `audio_codec`, `video_width`, `video_height`, `video_fps`, `video_kbps` and `premium` are stored generated columns over `info`. They read the stored streams the way `savetube.formats.stored_streams` does: the first requested format with that stream, else the info dict itself. A replace keeps the top-level `format_note` of the first download, so `premium` reads the video stream's note. `video_kbps` is `vbr`, else `tbr`. The Videos page filters on them, because reading the TOASTed `info` took about 2 s per query on 5,000 videos and the columns take about 1 ms.
+- Migration `0022` adds those generated columns. It rewrites the `video` table under an exclusive lock, about 40 s on 5,000 videos with 150 KB info dicts. Its downgrade drops them.
 - Migration `0021` sets each watch's `started_at` to its live's air time (live.md, Format watch). It cancels every queued replace job of an old watch, one whose live aired 7 or more days ago or has no air time, and every queued replace job of a recent watch without a manual pick, so the next probe queues again what still ranks above. A queued job whose procrastinate job a worker already took stays. It ends every open old watch, unless a replace job is still queued or running or an original sits in `.originals/`. The scheduler ends the latter and deletes the original, so the migration deletes no file. Its downgrade does nothing.
 - Migration `0020` adds `format_watch`, `job.format_id` and the job kind `replace`. It starts a watch for every `complete` live video whose `completed_at` is within 7 days, from its `completed_at`. Its downgrade deletes every replace job and drops both. Files a replace moved aside stay in `.originals/`.
 - Migration `0018` adds `cookie_profile.account_name`, `account_handle`, `account_digest` and `account_checked_at`, all null. Its downgrade drops them.
@@ -56,6 +58,7 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
 - Downloads land in `.incoming/` on the same dataset, so the final move is a rename and a half-written file never appears in the tree. With staging, archive downloads land on the staging volume instead (Staging). An archive download's directory is per video, so a retry resumes its parts (archive.md, Resuming and verifying downloads).
 - Titles pass through yt-dlp's filename sanitising and a length cap, because a title can exceed the 255-byte name limit in UTF-8.
 - Format: `bv*+ba/b`, merged to `mkv`, which holds any codec pair YouTube serves.
+- An archive download and a replace sort formats by resolution, then fps, then AV1 over VP9 over H.264 (`format_sort` `["res", "fps", "vcodec:av01"]`, `FORMAT_SORT` in `savetube.ytdl`). These fields go before the YouTube extractor's own, whose `source` field ranks Premium VP9 (`616`) above AV1. Audio-only formats tie on all three, so Opus `251` stays the audio pick. A replace names its format ids, so the sort changes nothing it downloads. A recording keeps yt-dlp's order.
 - Files inside a video directory are named `<video id>.<ext>`, so only directory names carry a title and need the byte cap.
 - yt-dlp's `.tmp` fragments directory is deleted before the rename. The cookie copy lives in a private temporary directory outside `.incoming/`, so it never moves into the tree.
 

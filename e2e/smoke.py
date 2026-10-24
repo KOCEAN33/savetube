@@ -84,7 +84,24 @@ def check_videos(page: Page) -> str:
     expect(table.locator("tbody a[href^='/videos/']").first).to_be_visible()
     settle(page)
     name = query_of(filtered.value.url)["channel_name"][0]
-    return f"filter sent channel_name={name!r}"
+
+    # The playable seed video is the one stored as H.264.
+    page.goto(BASE + "/videos")
+    expect(table).to_be_visible()
+    page.get_by_role("combobox", name="Video codec", exact=True).click()
+    with page.expect_response(
+        lambda r: path_of(r.url) == "/api/videos" and "vcodec" in query_of(r.url)
+    ) as by_codec:
+        page.get_by_role("listbox").get_by_role("option", name="H.264", exact=True).click()
+    assert by_codec.value.ok, f"codec-filtered /api/videos answered {by_codec.value.status}"
+    assert query_of(by_codec.value.url)["vcodec"] == ["h264"]
+    expect(page).to_have_url(re.compile(r"[?&]vcodec=h264"))
+    rows = table.locator("tbody tr")
+    expect(rows).to_have_count(1)
+    expect(rows.first.locator(f"a[href='/videos/{MANIFEST['video_id']}']")).to_be_visible()
+    expect(rows.first).to_contain_text("1080p30")
+    settle(page)
+    return f"filter sent channel_name={name!r}, vcodec=h264 listed 1 video"
 
 
 def check_live(page: Page) -> str:

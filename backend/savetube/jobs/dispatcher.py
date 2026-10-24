@@ -8,7 +8,7 @@ from datetime import datetime
 from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from savetube.db.models import Job, JobState
+from savetube.db.models import Job, JobKind, JobState
 from savetube.limits import (
     DOWNLOAD_KINDS,
     blocked,
@@ -64,9 +64,10 @@ class Dispatched:
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
-    """Put the oldest waiting archive and replace jobs on the queue, one per free slot, and
-    only inside the download window, outside a block pause, under the daily
-    cap, and while the user has not paused downloads. Commits.
+    """Put waiting archive jobs, oldest first, then waiting replace jobs on the
+    queue, one per free slot, and only inside the download window, outside a
+    block pause, under the daily cap, and while the user has not paused
+    downloads. Commits.
 
     A waiting job is a queued archive job with no queue job. A dispatched job
     holds its slot until a worker takes it or hands it back.
@@ -110,7 +111,8 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         waiting = await session.scalars(
             select(Job.id)
             .where(queued, Job.queue_job_id.is_(None))
-            .order_by(Job.id)
+            # New downloads first: a replace only improves a video already stored.
+            .order_by(Job.kind == JobKind.REPLACE, Job.id)
             .limit(max(free, 0))
         )
         for job_id in list(waiting):

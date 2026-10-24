@@ -104,6 +104,12 @@ export const api = {
     type?: string
     state?: string
     q?: string
+    // The stored streams. `other` is a known video codec outside the three.
+    vcodec?: string
+    acodec?: string
+    // A bucket of the video's short side: 2160, 1440, 1080, 720, below.
+    height?: string
+    premium?: boolean
     // By upload date. Default newest.
     order?: VideoOrder
     limit?: number

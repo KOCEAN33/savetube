@@ -5,10 +5,12 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from pydantic import BaseModel, field_validator
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
+from savetube import formats
 from savetube.db.models import Channel, Source, Video, VideoSource, VideoState
 from savetube.layout import VideoType
 from savetube.web.api.deps import Session, _of_channel
@@ -30,6 +32,38 @@ class VideoOut(_Out):
     # The integrity checks the stored download passed: size, probe, packets.
     verified_at: datetime | None
     verified_checks: list[str] | None
+    format_id: str | None
+    # The stored streams, named like the format watch: "AV1", "Opus".
+    video_codec: str | None
+    audio_codec: str | None
+    video_width: int | None
+    video_height: int | None
+    video_fps: float | None
+    video_kbps: float | None
+    premium: bool | None
+
+    @field_validator("video_codec")
+    @classmethod
+    def _video_name(cls, v: str | None) -> str | None:
+        return formats.video_codec(v)[1] if v else None
+
+    @field_validator("audio_codec")
+    @classmethod
+    def _audio_name(cls, v: str | None) -> str | None:
+        return formats.audio_codec(v)[1] if v else None
+
+
+# The prefixes savetube.formats.video_codec and audio_codec name.
+_VIDEO_CODECS = {"av1": ("av01",), "vp9": ("vp9", "vp09"), "h264": ("avc1", "h264")}
+_AUDIO_CODECS = {"opus": ("opus",), "aac": ("mp4a", "aac")}
+# Lower bound of each bucket on the short side, so a 1080x1920 short is 1080.
+_HEIGHTS = {"2160": 2160, "1440": 1440, "1080": 1080, "720": 720, "below": 0}
+
+
+def _codec_is(
+    column: InstrumentedAttribute[str | None], prefixes: tuple[str, ...]
+) -> ColumnElement[bool]:
+    return or_(*(column.ilike(f"{p}%") for p in prefixes))
 
 
 class VideoDetail(VideoOut):
@@ -60,6 +94,12 @@ async def videos(
     type: VideoType | None = None,
     state: VideoState | None = None,
     q: str | None = None,
+    # The stored video stream's codec. `other` is a known codec outside the three.
+    vcodec: Literal["av1", "vp9", "h264", "other"] | None = None,
+    acodec: Literal["opus", "aac"] | None = None,
+    # A bucket of the stored video's short side: 2160 and up, 1440-2159, and so on.
+    height: Literal["2160", "1440", "1080", "720", "below"] | None = None,
+    premium: bool | None = None,
     # By upload date. A video without one sorts last either way.
     order: Literal["newest", "oldest"] = "newest",
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -85,6 +125,21 @@ async def videos(
     if q:
         pattern = f"%{q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
         where.append(or_(Video.title.ilike(pattern), Video.id == q))
+    if vcodec == "other":
+        known = [p for prefixes in _VIDEO_CODECS.values() for p in prefixes]
+        where.append(~_codec_is(Video.video_codec, tuple(known)))
+    elif vcodec:
+        where.append(_codec_is(Video.video_codec, _VIDEO_CODECS[vcodec]))
+    if acodec:
+        where.append(_codec_is(Video.audio_codec, _AUDIO_CODECS[acodec]))
+    if height:
+        side = func.least(Video.video_width, Video.video_height)
+        where.append(side >= _HEIGHTS[height])
+        upper = [h for h in _HEIGHTS.values() if h > _HEIGHTS[height]]
+        if upper:
+            where.append(side < min(upper))
+    if premium is not None:
+        where.append(Video.premium.is_(premium))
     total = await session.scalar(select(func.count()).select_from(Video).where(*where))
     by_date = Video.upload_date.desc() if order == "newest" else Video.upload_date.asc()
     items = await session.scalars(

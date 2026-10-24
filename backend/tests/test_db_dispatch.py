@@ -95,6 +95,33 @@ async def test_dispatch_queues_the_oldest_waiting_archive_jobs_up_to_the_free_sl
 
 
 @pytest.mark.anyio
+async def test_a_waiting_archive_job_goes_before_an_older_replace_job(settings):
+    # One archive runs, so max_concurrent 2 leaves one slot.
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 2",
+        "INSERT INTO job (id, kind, state, video_id, attempts, format_id) VALUES"
+        " (9, 'replace', 'queued', 'live', 0, '251')",
+    )
+    enqueued, jobs = await _dispatch(settings)
+    assert enqueued == [12]
+    assert jobs[9].queue_job_id is None
+
+
+@pytest.mark.anyio
+async def test_a_replace_job_starts_when_no_archive_job_waits(settings):
+    _waiting_rows(
+        settings,
+        "UPDATE download_settings SET max_concurrent = 2",
+        "DELETE FROM job WHERE kind = 'archive' AND state = 'queued'",
+        "INSERT INTO job (id, kind, state, video_id, attempts, format_id) VALUES"
+        " (19, 'replace', 'queued', 'live', 0, '251')",
+    )
+    enqueued, _ = await _dispatch(settings)
+    assert enqueued == [19]
+
+
+@pytest.mark.anyio
 async def test_dispatch_with_max_concurrent_1_and_one_running_queues_nothing(settings):
     _waiting_rows(settings)
     enqueued, jobs = await _dispatch(settings)

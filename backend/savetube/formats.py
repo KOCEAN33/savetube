@@ -144,11 +144,18 @@ def pick_audio(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> 
     return Pick("audio", best, False, f"the stored {s_name} {kbps(s_abr)} is not below {kbps(abr)}")
 
 
+def is_premium(f: dict[str, Any]) -> bool:
+    """A YouTube Premium format. An info dict without `format_note` still
+    names itag 616."""
+    return "premium" in str(f.get("format_note") or "").lower() or f.get("format_id") == "616"
+
+
 def pick_video(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> Pick:
     """Among formats with height and fps at least the stored stream's, AV1
     over VP9 over H.264, then the higher `tbr` within one codec. Bitrates of
     different codecs are not compared. The stored format id never ranks
-    above itself: clients list different bitrates for one stream."""
+    above itself: clients list different bitrates for one stream. A stored
+    Premium format is never replaced."""
     s_height = (stored or {}).get("height")
     s_fps = (stored or {}).get("fps")
     candidates = [
@@ -167,6 +174,8 @@ def pick_video(formats: list[dict[str, Any]], stored: dict[str, Any] | None) -> 
     s_rank, s_name = video_codec(stored.get("vcodec"))
     if best.get("format_id") == stored.get("format_id"):
         return Pick("video", best, False, f"the stored {s_name} is this format")
+    if is_premium(stored):
+        return Pick("video", best, False, f"the stored {s_name} is a Premium format")
     if rank > s_rank:
         return Pick("video", best, True, f"{name} over the stored {s_name}")
     if rank < s_rank:

@@ -8,6 +8,7 @@ import {
   MEMBERS_ALL_HINT,
   MEMBERS_ALL_LABEL,
   PLAYLISTS_PASS_HINT,
+  PLAYLISTS_PASS_LABEL,
   VIDEO_TABS,
 } from "@/lib/channel"
 import { queryKeys } from "@/lib/query-keys"
@@ -85,7 +86,7 @@ export function WordsStep({
                 checked={playlistsPass}
                 onCheckedChange={(on) => onPlaylistsPassChange(on === true)}
               />
-              Keep every video in the chosen playlists
+              {PLAYLISTS_PASS_LABEL}
             </Label>
             <p className="text-xs text-muted-foreground">{PLAYLISTS_PASS_HINT}</p>
           </div>

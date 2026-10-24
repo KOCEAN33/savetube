@@ -119,6 +119,27 @@ def test_the_stored_video_format_never_replaces_itself_whatever_its_listed_tbr()
     assert pick.format["format_id"] == "399" and not pick.above
 
 
+def test_a_stored_premium_format_is_never_replaced_by_a_better_codec():
+    stored = {**_video("616", "vp09.00.40.08", 1080, 30, 4300.0), "format_note": "Premium"}
+
+    pick = formats.pick_video([_video("399", "av01.0.08M.08", 1080, 30, 583.0)], stored)
+
+    assert pick.format["format_id"] == "399" and not pick.above
+    assert "Premium" in pick.reason
+
+
+def test_itag_616_counts_as_premium_when_the_stored_info_has_no_format_note():
+    stored = _video("616", "vp09.00.40.08", 1080, 30, 4300.0)
+
+    assert not formats.pick_video([_video("399", "av01.0.08M.08", 1080, 30, 583.0)], stored).above
+
+
+def test_av1_still_replaces_a_stored_plain_vp9():
+    stored = {**_video("248", "vp09.00.40.08", 1080, 30, 1500.0), "format_note": "1080p"}
+
+    assert formats.pick_video([_video("399", "av01.0.08M.08", 1080, 30, 583.0)], stored).above
+
+
 def test_the_stored_audio_format_never_replaces_itself_whatever_its_listed_abr():
     stored = {"format_id": "251", "vcodec": "none", "acodec": "opus", "abr": 120.0}
     listed = {"format_id": "251", "vcodec": "none", "acodec": "opus", "abr": 135.0}

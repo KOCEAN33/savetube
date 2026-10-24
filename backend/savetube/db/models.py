@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Computed,
     DateTime,
     Enum,
     Float,
@@ -241,6 +242,25 @@ class ListingEntry(Base):
     title: Mapped[str] = mapped_column(Text)
 
 
+def _stream(codec: str) -> str:
+    """savetube.formats.stored_streams in SQL: the first requested format with
+    that stream, or the info dict itself without requested formats."""
+    return (
+        "(CASE WHEN info->'requested_formats'->0 IS NULL THEN info"
+        " ELSE jsonb_path_query_first(info,"
+        f" '$.requested_formats[*] ? (@.{codec} != null && @.{codec} != \"none\")') END)"
+    )
+
+
+def _number(stream: str, key: str) -> str:
+    # A non-number value reads as null, so no info dict fails the insert.
+    return f"jsonb_path_query_first({stream}, '$.{key} ? (@.type() == \"number\")')::numeric"
+
+
+_V = _stream("vcodec")
+_A = _stream("acodec")
+
+
 class Video(Base):
     __tablename__ = "video"
 
@@ -266,6 +286,34 @@ class Video(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     verified_checks: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # The stored streams' quality, generated from `info` (migration 0022), so
+    # the Videos page filters without reading the TOASTed info dict.
+    video_codec: Mapped[str | None] = mapped_column(
+        Text, Computed(f"NULLIF({_V}->>'vcodec', 'none')", persisted=True)
+    )
+    audio_codec: Mapped[str | None] = mapped_column(
+        Text, Computed(f"NULLIF({_A}->>'acodec', 'none')", persisted=True)
+    )
+    video_width: Mapped[int | None] = mapped_column(
+        Computed(f"round({_number(_V, 'width')})::integer", persisted=True)
+    )
+    video_height: Mapped[int | None] = mapped_column(
+        Computed(f"round({_number(_V, 'height')})::integer", persisted=True)
+    )
+    video_fps: Mapped[float | None] = mapped_column(
+        Computed(f"{_number(_V, 'fps')}::double precision", persisted=True)
+    )
+    # vbr, else tbr: a stream yt-dlp reports only one rate for.
+    video_kbps: Mapped[float | None] = mapped_column(
+        Computed(
+            f"COALESCE(NULLIF({_number(_V, 'vbr')}, 0), {_number(_V, 'tbr')})::double precision",
+            persisted=True,
+        )
+    )
+    # YouTube Premium's higher-bitrate format, such as itag 616.
+    premium: Mapped[bool | None] = mapped_column(
+        Computed(f"COALESCE({_V}->>'format_note' LIKE '%Premium%', false)", persisted=True)
+    )
 
 
 class VideoSource(Base):
