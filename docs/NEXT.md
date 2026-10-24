@@ -20,3 +20,7 @@ Confirm `v0.13.0` in production: the Downloads page, the `members_all` and `play
    - The onboarding call: `POST /api/channel-scan` calls the scheduler, which lists the tabs with the cookie profiles, checks membership on a members-only entry, stores `membership`, and answers within the scan's 120 s timeout. This lists with the real account, which `docs/plan/access.md` keeps for members-only downloads today, so that section changes.
    - Convert to HTTP: Move now (`POST /api/staging/move` sets `download_settings.move_requested_at`, read in `staging.py`), Poll now (`POST /api/sources/{id}/poll` clears `last_polled_at`), and turning `archiving` on in `PATCH /api/sources/{id}`, which also clears `last_polled_at`. Find any other such flag before building.
    - Update `docs/plan/access.md`, `docs/plan/frontend.md` (Add channel) and `docs/plan/operations.md` with the API.
+10. `9a21b21`, the manual format probe and replace for any complete video, is on develop only. The user ships it in one release with other features. After that deploy, check these things on a non-live video and on a live whose watch ended:
+    - Probe now on the Formats card answers within 120 s and logs `watch.probed` in the scheduler.
+    - A Use pick makes a replace job with `job.manual` true. The worker starts it ahead of the queued archive jobs.
+    - The swap sets `format_watch.original_until` to 7 days after the swap.
