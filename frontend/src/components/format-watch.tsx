@@ -55,11 +55,12 @@ function signedSeconds(diff: number | null): string {
 // The one-line state of the collapsed card: stored codecs, the upgrade the
 // last probe recommends, and when it ran.
 function summary(w: FormatWatch): string {
+  const storedRows = [...w.stored, ...w.formats.filter((r) => r.is_stored)]
   const stored = (["video", "audio"] as const)
-    .map((k) => w.stored.find((r) => r.kind === k)?.codec)
+    .map((k) => storedRows.find((r) => r.kind === k)?.codec)
     .filter(Boolean)
     .join(" + ")
-  const upgrades = w.formats.filter((r) => r.recommended)
+  const upgrades = w.formats.filter((r) => r.recommended && !r.is_stored)
   const upgrade = upgrades.length
     ? `upgrade: ${upgrades.map((r) => `${r.codec} (${r.format_id})`).join(", ")}`
     : w.formats.length
@@ -69,15 +70,20 @@ function summary(w: FormatWatch): string {
   return [`stored ${stored || "-"}`, upgrade, probed].join(" / ")
 }
 
-// The radio value of the stored row: keep the stored stream of that kind.
+// The radio value of the stored row, or of the YouTube row that is the
+// stored stream: keep the stored stream of that kind.
 const STORED = "stored"
+
+function value(row: FormatRow): string {
+  return row.stored || row.is_stored ? STORED : row.format_id
+}
 
 // The selected row of a kind: the user's choice while the table still lists
 // it, else the recommended upgrade, else the stored row.
 function selection(w: FormatWatch, kind: Kind, chosen: string | undefined): string {
   const offered = w.formats.filter((r) => r.kind === kind)
   if (chosen === STORED || offered.some((r) => r.format_id === chosen)) return chosen ?? STORED
-  return offered.find((r) => r.recommended)?.format_id ?? STORED
+  return offered.find((r) => r.recommended && !r.is_stored)?.format_id ?? STORED
 }
 
 // The stored file and the formats YouTube offers for it, best first. A live's
@@ -251,9 +257,10 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
 const TOP_FORMATS = 3
 
 // One kind's rows: the stored stream, then the offered formats in the API's
-// best-first order. The tail behind a toggle starts after the top formats and
-// the selected one. One radio per row picks the format, the stored row keeps
-// the stored stream.
+// best-first order. A stored YouTube stream has no stored row: its YouTube row
+// stands for it. The tail behind a toggle starts after the top formats, the
+// selected one and the stored one. One radio per row picks the format, the
+// stored row keeps the stored stream.
 function FormatSection({
   kind,
   watch: w,
@@ -270,10 +277,13 @@ function FormatSection({
   const [all, setAll] = useState(false)
   const stored = w.stored.filter((r) => r.kind === kind)
   const offered = w.formats.filter((r) => r.kind === kind)
-  const shown = Math.max(TOP_FORMATS, offered.findIndex((r) => r.format_id === selected) + 1)
+  const last = Math.max(
+    offered.findIndex((r) => value(r) === selected && selected !== STORED),
+    offered.findIndex((r) => r.is_stored),
+  )
+  const shown = Math.max(TOP_FORMATS, last + 1)
   const rest = offered.slice(shown)
   const rows = [...stored, ...(all ? offered : offered.slice(0, shown))]
-  const storedId = stored[0]?.format_id
   const label = `${KIND_LABEL[kind]} formats`
 
   return (
@@ -306,20 +316,32 @@ function FormatSection({
                     name={`format-${kind}`}
                     className="size-4 accent-primary"
                     aria-label={
-                      row.stored ? `Keep stored ${kind}` : `Select format ${row.format_id}`
+                      value(row) === STORED
+                        ? `Keep stored ${kind}`
+                        : `Select format ${row.format_id}`
                     }
-                    checked={selected === (row.stored ? STORED : row.format_id)}
-                    // The stored stream's id offered again is the same stream.
-                    disabled={disabled || (!row.stored && row.format_id === storedId)}
-                    onChange={() => onSelect(row.stored ? STORED : row.format_id)}
+                    checked={selected === value(row)}
+                    disabled={disabled}
+                    onChange={() => onSelect(value(row))}
                   />
                 </TableCell>
-                <TableCell>{row.stored ? "stored" : "YouTube"}</TableCell>
+                <TableCell>
+                  {row.stored
+                    ? row.recorded
+                      ? "recorded"
+                      : "stored"
+                    : row.is_stored
+                      ? "YouTube, stored"
+                      : "YouTube"}
+                </TableCell>
                 <TableCell className="font-mono">{row.format_id}</TableCell>
                 <TableCell>{row.codec}</TableCell>
                 <TableCell>{resolution(row)}</TableCell>
                 <TableCell>{formatKbps(row.bitrate)}</TableCell>
-                <TableCell>{row.stored ? "-" : formatBytes(row.size)}</TableCell>
+                <TableCell>
+                  {row.size_estimated ? "≈ " : ""}
+                  {formatBytes(row.size)}
+                </TableCell>
                 <TableCell>
                   {formatDuration(row.stored ? w.stored_duration : w.vod_duration)}
                 </TableCell>

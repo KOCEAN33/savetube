@@ -200,9 +200,17 @@ export interface FormatRow {
   fps: number | null
   // kbps: tbr for video, abr for audio.
   bitrate: number | null
-  // Null for the stored streams.
+  // The exact size, else yt-dlp's estimate. A stored stream without a size
+  // gets bitrate × stored duration, null without either.
   size: number | null
+  // `size` is that bitrate × duration estimate.
+  size_estimated: boolean
+  // A row of `stored`: a stored stream without its own row in `formats`.
   stored: boolean
+  // On a stored row: no YouTube https format, such as a live recording.
+  recorded: boolean
+  // On a formats row: the stored stream is this YouTube format.
+  is_stored: boolean
   // The pick of its kind when it ranks above the stored stream, else the stored stream.
   recommended: boolean
   reason: string | null

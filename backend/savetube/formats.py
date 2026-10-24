@@ -78,6 +78,32 @@ def stored_streams(info: dict[str, Any]) -> dict[Kind, dict[str, Any]]:
     return out
 
 
+def with_sizes(info: dict[str, Any], streams: list[dict[str, Any]]) -> dict[str, Any]:
+    """`info` with each downloaded stream's measured size as its format's
+    `filesize`. `streams` are the download's `stream` events
+    (savetube.jobs.runners.Report)."""
+    sizes = {s["format_id"]: s["size"] for s in streams if s.get("size") is not None}
+    requested = info.get("requested_formats")
+    if requested:
+        return {
+            **info,
+            "requested_formats": [
+                {**f, "filesize": sizes[f["format_id"]]} if f.get("format_id") in sizes else f
+                for f in requested
+            ],
+        }
+    if info.get("format_id") in sizes:
+        return {**info, "filesize": sizes[info["format_id"]]}
+    return info
+
+
+def recorded(f: dict[str, Any]) -> bool:
+    """Whether a stored stream is no YouTube `https` format: a live
+    recording's `http_dash_segments_generator` stream, or an info dict
+    without a protocol. A VOD download and a replace store `https` formats."""
+    return f.get("protocol") != "https"
+
+
 def video_codec(vcodec: str | None) -> tuple[int, str]:
     """AV1 over VP9 over H.264, and a display name."""
     v = (vcodec or "").lower()
