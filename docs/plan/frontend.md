@@ -43,6 +43,7 @@
 - `/downloads` lists archive jobs across every channel, in the layout of a channel page's job lists.
 - Running downloads come first, each with its uploader channel and its progress. The queued jobs follow in the order the worker takes them, from `GET /api/jobs` with `order=dispatch`. The finished runs come last, newest first.
 - The queued and finished lists each show 10 jobs, and "Show more" adds 10. Both tables have a channel column.
+- Outside the title, every column of a job table has a fixed width, so the queued and finished tables line up. A long channel name truncates, with the full name on hover. The live table keeps widths from its content.
 - The finished list has a state select: All, succeeded, failed, interrupted, or cancelled. `?state=` holds it.
 - "Hide resolved" starts on and sends `unresolved`. Turning it off sets `?resolved=show`.
 - A click on a failed or interrupted row opens its full `log_tail` in a row below it, and a second click closes it. A closed row stays one line.

@@ -16,6 +16,7 @@ import { recorderOf } from "@/hooks/use-pods"
 import type { Job, JobState, MissReason, Pods } from "@/lib/api"
 import { JOB_STATES, jobStateVariant } from "@/lib/channel"
 import { formatClock, formatDateTime, formatLength } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 const MISS_REASON_LABEL: Record<MissReason, string> = {
   dvr_off: "DVR off",
@@ -105,13 +106,16 @@ export function JobsTable({
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set())
   const columns = (live ? 6 : 5) + (channelName ? 1 : 0)
+  // Fixed widths outside the title, so the queued and finished tables of one
+  // page line up whatever their rows hold. A narrow screen scrolls sideways.
+  const fixed = !live
   return (
-    <Table>
+    <Table className={fixed ? "min-w-5xl table-fixed" : undefined}>
       <TableHeader className="bg-muted">
         <TableRow>
           <TableHead>Video</TableHead>
-          {channelName && <TableHead>Channel</TableHead>}
-          <TableHead>State</TableHead>
+          {channelName && <TableHead className={fixed ? "w-40" : undefined}>Channel</TableHead>}
+          <TableHead className={fixed ? "w-60" : undefined}>State</TableHead>
           {live ? (
             <>
               <TableHead>Start</TableHead>
@@ -120,9 +124,9 @@ export function JobsTable({
             </>
           ) : (
             <>
-              <TableHead>Queued</TableHead>
-              <TableHead>Started</TableHead>
-              <TableHead>Finished</TableHead>
+              <TableHead className="w-28">Queued</TableHead>
+              <TableHead className="w-28">Started</TableHead>
+              <TableHead className="w-28">Finished</TableHead>
             </>
           )}
         </TableRow>
@@ -173,7 +177,12 @@ export function JobsTable({
                 {channelName && (
                   <TableCell>
                     {j.channel_id ? (
-                      <span className="inline-flex max-w-48 items-center gap-1.5">
+                      <span
+                        className={cn(
+                          "inline-flex max-w-full items-center gap-1.5",
+                          !fixed && "max-w-48",
+                        )}
+                      >
                         <Link
                           className="min-w-0 truncate hover:underline"
                           title={channelName.get(j.channel_id) ?? j.channel_id}
@@ -217,7 +226,11 @@ export function JobsTable({
                     // No handler of its own: the click reaches the row's toggle.
                     <button
                       type="button"
-                      className="ml-2 inline-block max-w-56 truncate align-middle text-xs text-muted-foreground hover:underline"
+                      className={cn(
+                        "ml-2 inline-block truncate align-middle text-xs text-muted-foreground hover:underline",
+                        // The fixed State column holds the widest badge, an attempt count and this.
+                        fixed ? "max-w-32" : "max-w-56",
+                      )}
                       aria-expanded={expanded}
                       title={j.log_tail ?? undefined}
                     >
@@ -246,13 +259,13 @@ export function JobsTable({
                   </>
                 ) : (
                   <>
-                    <TableCell className="tabular-nums">
+                    <TableCell className="truncate tabular-nums">
                       <Clock iso={j.created_at} />
                     </TableCell>
-                    <TableCell className="tabular-nums">
+                    <TableCell className="truncate tabular-nums">
                       <Clock iso={j.started_at} />
                     </TableCell>
-                    <TableCell className="tabular-nums">
+                    <TableCell className="truncate tabular-nums">
                       <Clock iso={j.finished_at} />
                     </TableCell>
                   </>
