@@ -23,14 +23,9 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { api, mutations, type FormatRow, type FormatWatch } from "@/lib/api"
-import { formatBytes, formatDateTime, formatDuration } from "@/lib/format"
+import { formatBytes, formatDateTime, formatDuration, formatKbps } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
-
-function bitrate(kbps: number | null): string {
-  if (kbps == null) return "-"
-  return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${Math.round(kbps)} kbps`
-}
 
 function resolution(row: FormatRow): string {
   if (row.kind === "audio") return "audio"
@@ -107,7 +102,7 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
                   <TableCell className="font-mono">{row.format_id}</TableCell>
                   <TableCell>{row.codec}</TableCell>
                   <TableCell>{resolution(row)}</TableCell>
-                  <TableCell>{bitrate(row.bitrate)}</TableCell>
+                  <TableCell>{formatKbps(row.bitrate)}</TableCell>
                   <TableCell>{row.stored ? "-" : formatBytes(row.size)}</TableCell>
                   <TableCell>
                     {formatDuration(row.stored ? w.stored_duration : w.vod_duration)}

@@ -21,13 +21,44 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
-import { api, type VideoType } from "@/lib/api"
-import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
+import { api, type Video, type VideoType } from "@/lib/api"
+import {
+  formatBytes,
+  formatCount,
+  formatDuration,
+  formatKbps,
+  formatUploadDate,
+} from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 
 const PAGE_SIZE = 50
 const ALL = "all"
 const TYPES: VideoType[] = ["videos", "shorts", "lives", "members"]
+// The `vcodec`, `acodec` and `height` values GET /api/videos takes.
+const VIDEO_CODECS = [
+  ["av1", "AV1"],
+  ["vp9", "VP9"],
+  ["h264", "H.264"],
+  ["other", "Other codecs"],
+] as const
+const AUDIO_CODECS = [
+  ["opus", "Opus"],
+  ["aac", "AAC"],
+] as const
+const HEIGHTS = [
+  ["2160", "2160p+"],
+  ["1440", "1440p"],
+  ["1080", "1080p"],
+  ["720", "720p"],
+  ["below", "Below 720p"],
+] as const
+
+/** The short side and frame rate, "1080p60", so a vertical short reads 1080p. */
+function resolution(v: Video): string {
+  const side = Math.min(v.video_width ?? Infinity, v.video_height ?? Infinity)
+  if (side === Infinity) return "-"
+  return `${side}p${v.video_fps ? Math.round(v.video_fps) : ""}`
+}
 
 export function VideosPage() {
   const [params, setParams] = useSearchParams()
@@ -38,11 +69,27 @@ export function VideosPage() {
   const channelNameParam = params.get("channel_name") ?? undefined
   // From a channel page: its uploads and the videos its sources list.
   const listedBy = params.get("listed_by") ?? undefined
+  const vcodec = params.get("vcodec") ?? undefined
+  const acodec = params.get("acodec") ?? undefined
+  const height = params.get("height") ?? undefined
+  // "true" or "false".
+  const premium = params.get("premium") ?? undefined
   const offset = Number(params.get("offset") ?? 0)
 
   const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
   const videos = useQuery({
-    queryKey: queryKeys.videos({ q, type, channelId, channelNameParam, listedBy, offset }),
+    queryKey: queryKeys.videos({
+      q,
+      type,
+      channelId,
+      channelNameParam,
+      listedBy,
+      vcodec,
+      acodec,
+      height,
+      premium,
+      offset,
+    }),
     queryFn: () =>
       api.videos({
         q,
@@ -50,6 +97,10 @@ export function VideosPage() {
         channel_id: channelId,
         channel_name: channelNameParam,
         listed_by: listedBy,
+        vcodec,
+        acodec,
+        height,
+        premium: premium === undefined ? undefined : premium === "true",
         limit: PAGE_SIZE,
         offset,
       }),
@@ -116,6 +167,55 @@ export function VideosPage() {
           ))}
         </SelectContent>
       </Select>
+      <Select value={vcodec ?? ALL} onValueChange={(v) => update({ vcodec: v })}>
+        <SelectTrigger size="sm" className="w-32" aria-label="Video codec">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL}>All codecs</SelectItem>
+          {VIDEO_CODECS.map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={height ?? ALL} onValueChange={(v) => update({ height: v })}>
+        <SelectTrigger size="sm" className="w-36" aria-label="Resolution">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL}>All resolutions</SelectItem>
+          {HEIGHTS.map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={premium ?? ALL} onValueChange={(v) => update({ premium: v })}>
+        <SelectTrigger size="sm" className="w-32" aria-label="Premium">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL}>Any format</SelectItem>
+          <SelectItem value="true">Premium</SelectItem>
+          <SelectItem value="false">Not Premium</SelectItem>
+        </SelectContent>
+      </Select>
+      <Select value={acodec ?? ALL} onValueChange={(v) => update({ acodec: v })}>
+        <SelectTrigger size="sm" className="w-28" aria-label="Audio codec">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL}>All audio</SelectItem>
+          {AUDIO_CODECS.map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </form>
   )
 
@@ -133,6 +233,10 @@ export function VideosPage() {
                     <TableHead>Type</TableHead>
                     <TableHead>Uploaded</TableHead>
                     <TableHead className="text-right">Duration</TableHead>
+                    <TableHead>Codec</TableHead>
+                    <TableHead>Resolution</TableHead>
+                    <TableHead className="text-right">Video bitrate</TableHead>
+                    <TableHead>Format</TableHead>
                     <TableHead className="text-right">Size</TableHead>
                     <TableHead>State</TableHead>
                   </TableRow>
@@ -160,7 +264,23 @@ export function VideosPage() {
                       <TableCell>{v.type}</TableCell>
                       <TableCell>{formatUploadDate(v.upload_date)}</TableCell>
                       <TableCell className="text-right">{formatDuration(v.duration)}</TableCell>
-                      <TableCell className="text-right">{formatBytes(v.size_bytes)}</TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                          {v.video_codec ?? "-"}
+                          {v.audio_codec && (
+                            <span className="text-muted-foreground">{v.audio_codec}</span>
+                          )}
+                          {v.premium && <Badge variant="secondary">Premium</Badge>}
+                        </span>
+                      </TableCell>
+                      <TableCell>{resolution(v)}</TableCell>
+                      <TableCell className="text-right whitespace-nowrap">
+                        {formatKbps(v.video_kbps)}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{v.format_id ?? "-"}</TableCell>
+                      <TableCell className="text-right whitespace-nowrap">
+                        {formatBytes(v.size_bytes)}
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline">{v.state}</Badge>
                       </TableCell>
@@ -168,7 +288,7 @@ export function VideosPage() {
                   ))}
                   {page.items.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={7} className="h-24 text-center">
+                      <TableCell colSpan={11} className="h-24 text-center">
                         No videos.
                       </TableCell>
                     </TableRow>

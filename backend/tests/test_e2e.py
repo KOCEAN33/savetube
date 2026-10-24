@@ -459,6 +459,8 @@ def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):
         {"listed_by": CHANNEL_ID},
         {"source_id": seeded["source"]},
         {"type": "videos", "state": "complete", "q": "first", "order": "oldest"},
+        # INFO's mpeg4 video and Opus audio, without a height.
+        {"vcodec": "other", "acodec": "opus", "premium": "false"},
     ):
         r = server.get("/api/videos", params={**query, "limit": 10, "offset": 0})
         assert r.status_code == 200, query
