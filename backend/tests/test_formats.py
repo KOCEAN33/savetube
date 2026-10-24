@@ -50,9 +50,11 @@ def test_the_two_lives_replace_only_their_audio_with_251(video_id, stored):
 def test_wbj_keeps_its_recorded_video_over_the_thinner_vod_stream():
     picks = formats.picks(formats.counted(_vod("WBJeEquyZ2s")["formats"]), WBJ_RECORDING)
 
-    # The VOD's 137 is the same codec and size at 476 kbps against 1.1 Mbps.
+    # The VOD's 137 is the stored format id, so its listed 476 kbps against
+    # the stored 1.1 Mbps is not compared.
     assert picks["video"].format["format_id"] == "137"
-    assert "1.1 Mbps" in picks["video"].reason
+    assert not picks["video"].above
+    assert picks["video"].reason == "the stored H.264 is this format"
 
 
 def test_hu7_keeps_its_vp9_over_a_faster_h264():
@@ -104,9 +106,24 @@ def test_a_better_codec_below_the_stored_height_or_fps_does_not_count():
 
 
 def test_a_higher_bitrate_of_the_same_codec_replaces():
-    pick = formats.pick_video([_video("137", "avc1.640028", 1080, 30, 1500.0)], H264_1080P30)
+    pick = formats.pick_video([_video("270", "avc1.640028", 1080, 30, 1500.0)], H264_1080P30)
 
     assert pick.above
+
+
+def test_the_stored_video_format_never_replaces_itself_whatever_its_listed_tbr():
+    stored = _video("399", "av01.0.08M.08", 1080, 30, 583.0)
+
+    pick = formats.pick_video([_video("399", "av01.0.08M.08", 1080, 30, 1000.0)], stored)
+
+    assert pick.format["format_id"] == "399" and not pick.above
+
+
+def test_the_stored_audio_format_never_replaces_itself_whatever_its_listed_abr():
+    stored = {"format_id": "251", "vcodec": "none", "acodec": "opus", "abr": 120.0}
+    listed = {"format_id": "251", "vcodec": "none", "acodec": "opus", "abr": 135.0}
+
+    assert not formats.pick_audio([listed], stored).above
 
 
 def test_opus_ranks_over_aac_then_the_higher_abr():
