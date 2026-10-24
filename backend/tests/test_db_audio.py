@@ -230,3 +230,78 @@ async def test_the_audio_backfill_writes_missing_copies_once(settings):
     assert sorted(p.name for p in a1.iterdir()) == ["a1.info.json", "a1.mkv", "a1.opus"]
     [(size,)] = _sql_rows(settings, "SELECT size_bytes FROM video WHERE id = 'a1'")
     assert size == sum(p.stat().st_size for p in a1.iterdir())
+
+
+def _stored_recordings(settings, make_media):
+    """r1 a recording to verify, r2 one a replace verified, r3 an archive
+    download, r4 a recording that fails its checks."""
+    root = settings.archive_root / "A [UC1]" / "lives"
+    for vid in ("r1", "r2", "r3", "r4"):
+        (root / vid).mkdir(parents=True)
+    make_media(root / "r1" / "r1.mkv")
+    make_media(root / "r2" / "r2.mkv")
+    make_media(root / "r3" / "r3.mkv")
+    (root / "r4" / "r4.mkv").write_bytes(b"recording")
+    rows = ", ".join(
+        f"('{vid}', 'UC1', 'lives', 't', 'complete', 'A [UC1]/lives/{vid}', 20,"
+        f""" '{{"ext": "mkv", "vcodec": "mpeg4", "acodec": "opus"}}', {verified})"""
+        for vid, verified in [
+            ("r1", "NULL"),
+            ("r2", "'2026-10-01T00:00:00Z'"),
+            ("r3", "NULL"),
+            ("r4", "NULL"),
+        ]
+    )
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state, dir_path, size_bytes, info,"
+        f" verified_at) VALUES {rows}",
+        "INSERT INTO job (kind, state, video_id, attempts) VALUES"
+        " ('record', 'succeeded', 'r1', 1), ('record', 'succeeded', 'r2', 1),"
+        " ('archive', 'succeeded', 'r3', 1), ('record', 'succeeded', 'r4', 1)",
+    )
+    return root
+
+
+@pytest.mark.anyio
+async def test_the_recording_backfill_verifies_each_unverified_recording_once(settings):
+    from test_audio import make_media, needs_ffmpeg
+
+    from savetube.audio import verify_recordings
+    from savetube.integrity import Tools
+
+    if needs_ffmpeg.args[0]:
+        pytest.skip("ffmpeg or ffprobe not on PATH")
+    root = _stored_recordings(settings, make_media)
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    dry, first, second = [], [], []
+    run = verify_recordings
+    await run(sessionmaker, settings.archive_root, tools=Tools(), dry_run=True, out=dry.append)
+    unchanged = _sql_rows(settings, "SELECT id FROM video WHERE verified_at IS NULL ORDER BY id")
+    await run(sessionmaker, settings.archive_root, tools=Tools(), out=first.append)
+    await run(sessionmaker, settings.archive_root, tools=Tools(), out=second.append)
+    await engine.dispose()
+
+    assert dry == [
+        "r1 would verify A [UC1]/lives/r1/r1.mkv",
+        "r4 would verify A [UC1]/lives/r4/r4.mkv",
+        "would verify 2, failed 0",
+    ]
+    assert unchanged == [("r1",), ("r3",), ("r4",)]
+    assert first[0] == "r1 verified probe,packets"
+    assert first[1].startswith("r4 failed: probe ")
+    assert first[2] == "verified 1, failed 1"
+    # r1 is done. r4 stays unverified, so each run tries it again.
+    assert [line.split(":")[0] for line in second] == ["r4 failed", "verified 0, failed 1"]
+    assert sorted(p.name for p in (root / "r1").iterdir()) == ["r1.mkv", "r1.opus"]
+    assert sorted(p.name for p in (root / "r2").iterdir()) == ["r2.mkv"]
+    rows = _sql_rows(settings, "SELECT id, verified_checks, size_bytes FROM video ORDER BY id")
+    r1_size = sum(p.stat().st_size for p in (root / "r1").iterdir())
+    assert rows == [
+        ("r1", ["probe", "packets"], r1_size),
+        ("r2", None, 20),
+        ("r3", None, 20),
+        ("r4", None, 20),
+    ]

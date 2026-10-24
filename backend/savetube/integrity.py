@@ -1,5 +1,5 @@
-"""Integrity checks of a finished archive download, before it moves into the tree
-(docs/plan/archive.md, Resuming and verifying downloads)."""
+"""Integrity checks of a finished archive download or recording, before it
+moves into the tree (docs/plan/archive.md, Resuming and verifying downloads)."""
 
 import json
 import logging
@@ -143,3 +143,11 @@ def verify(
         else:
             checks.append("packets")
     return checks
+
+
+def verify_recording(media: Path, info: dict[str, Any], tools: Tools) -> list[str]:
+    """The checks a live recording can take: probe and packets. A live has no
+    stream sizes or duration to expect. The format watch compares the
+    duration with the VOD later."""
+    streams = {"vcodec": info.get("vcodec"), "acodec": info.get("acodec")}
+    return verify(media, streams, [], resumed=True, tools=tools)

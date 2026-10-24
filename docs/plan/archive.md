@@ -161,6 +161,7 @@
 - Without `ffprobe` or `ffmpeg` on the path, probe and packets are skipped with a DEBUG line. The image carries both.
 - A failed check logs `download.integrity_failed` at WARNING with the check and its numbers. The run deletes the directory and the pin and downloads from zero once, in the same attempt. A second failure fails the job with `log_tail` "integrity check failed: <check> ...", which counts as an attempt.
 - A passed download logs `download.verified` with the checks that ran. `video.verified_at` and `video.verified_checks` hold the result, and `GET /api/videos` and `GET /api/videos/{id}` carry both.
+- A recording gets probe, without the duration, and packets in the recorder pod before the move. A live has no stream sizes or duration to expect, and the format watch compares the duration with the VOD later. A failed check, or an error in one, logs `record.integrity_failed` at WARNING with the check and keeps the recording: it moves into the tree `complete` with `verified_at` null, because it is the only copy of the live.
 - The channel's Downloads list shows `interrupted` rows among the finished jobs.
 
 ## Audio copy
@@ -172,8 +173,9 @@
 - The copy is written in `.incoming/<video id>/` before the move, so it moves into the tree with the video. `video.size_bytes` counts it (frontend.md).
 - A file with no video stream, such as a `ba/b` download, or with no audio stream gets no copy. The worker logs `audio.skipped` at DEBUG.
 - A failed copy logs `audio.failed` at WARNING with the reason. The job still succeeds and the video stays `complete`.
-- A live recording gets no copy.
-- `savetube extract-audio` writes the missing copy of every `complete` video, except a video with a succeeded `record` job. It finds the video file as `<dir_path>/<video id>.<info ext>` under the archive root.
+- A finished recording gets its copy after its checks, passed or not.
+- `savetube extract-audio` writes the missing copy of every `complete` video, except a video with a succeeded `record` job, which `savetube verify-recordings` serves. It finds the video file as `<dir_path>/<video id>.<info ext>` under the archive root.
 - A video that already has a `.opus`, `.m4a` or `.mka` file beside its video file is skipped, so a second run writes nothing.
 - The command prints one line per video and a summary line, and continues past a failed video. It updates `video.size_bytes` after each copy. It exits 1 when any video failed.
 - `--dry-run` probes each video and prints the file it would write, and writes no file and no row.
+- `savetube verify-recordings` takes every `complete` video with a succeeded `record` job and a null `verified_at`, one at a time. It runs the recording checks, writes the missing audio copy, and sets `verified_at`, `verified_checks` and `size_bytes`. A recording a replace swapped has `verified_at` and is skipped. A failed recording stays unverified, so the next run tries it again. It prints one line per video and a summary line, and exits 1 when any video failed. `--dry-run` prints each video file it would check and writes nothing.

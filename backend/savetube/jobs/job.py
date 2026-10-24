@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import audio, cookies, integrity, logs, watch
+from savetube import audio, cookies, formats, integrity, logs, watch
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import Job, JobKind, JobState, Video, VideoState
@@ -447,10 +447,38 @@ async def _download(
         info, checks = await download(profile)
         # The general profile's refusal proves the video members-only.
         info = {**info, "availability": "subscriber_only"}
-    if not r.live:
-        await r.step("audio")
-        await audio.add(_media_path(info), tools or integrity.Tools())
+    tools = tools or integrity.Tools()
+    media = _media_path(info) or r.workdir / "missing"
+    if r.live:
+        await r.step("verifying")
+        checks = await _verify_recording(media, info, tools)
+    await r.step("audio")
+    await audio.add(media, tools)
     return info, checks
+
+
+async def _verify_recording(
+    media: Path, info: dict[str, Any], tools: integrity.Tools
+) -> list[str] | None:
+    """The recording's checks, None when one fails. A failure keeps the
+    recording: it is the only copy of the live, so it is stored unverified."""
+    try:
+        checks = await asyncio.to_thread(integrity.verify_recording, media, info, tools)
+    except integrity.IntegrityFailed as e:
+        emit(log, logging.WARNING, "record.integrity_failed", check=e.check, **e.numbers)
+        return None
+    except Exception as e:
+        # Any other error would fail the job, which deletes the recording.
+        emit(
+            log,
+            logging.WARNING,
+            "record.integrity_failed",
+            check="error",
+            reason=f"{type(e).__name__}: {e}",
+        )
+        return None
+    emit(log, logging.INFO, "download.verified", checks=",".join(checks) or "none")
+    return checks
 
 
 async def _mark_members(
@@ -526,6 +554,10 @@ async def _finish(
         if await r.disowned(session):
             return
         job = await session.get(Job, r.job_id)
+        if r.live:
+            # The recorder gets no stream sizes from YouTube. The video page
+            # shows the measured ones.
+            info = formats.with_sizes(info, r.streams)
         video = await store(
             session,
             job=job,
