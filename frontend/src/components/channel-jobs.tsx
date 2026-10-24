@@ -11,7 +11,7 @@ import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
 // The running download first, then the queued jobs in the order the
-// dispatcher takes them (oldest first), then the latest finished jobs.
+// worker takes them, then the latest finished jobs.
 export function ChannelJobs({ channelId }: { channelId: string }) {
   const [queuedShown, setQueuedShown] = useState(JOB_PAGE)
   const [recentLimit, setRecentLimit] = useState(JOB_PAGE)
@@ -22,6 +22,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
         kind: "archive",
         channel_id: channelId,
         state: ["running", "queued"],
+        order: "dispatch",
         limit: MAX_JOB_LIMIT,
       }),
     refetchInterval: (q) => refetchMs(q.state.data?.some((j) => j.state === "running")),
@@ -52,7 +53,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
       <QueryState query={active}>
         {(jobs) => {
           const running = jobs.filter((j) => j.state === "running")
-          const queued = jobs.filter((j) => j.state === "queued").sort((a, b) => a.id - b.id)
+          const queued = jobs.filter((j) => j.state === "queued")
           const queuedTotal = counts.data?.queued ?? queued.length
           return (
             <>

@@ -8,8 +8,9 @@ from datetime import datetime
 from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from savetube.db.models import Job, JobKind, JobState
+from savetube.db.models import Job, JobState
 from savetube.limits import (
+    DISPATCH_ORDER,
     DOWNLOAD_KINDS,
     blocked,
     capped,
@@ -112,9 +113,7 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         waiting = await session.scalars(
             select(Job.id)
             .where(queued, Job.queue_job_id.is_(None))
-            # A pick is the user waiting on the video page. Otherwise new
-            # downloads first: a replace only improves a video already stored.
-            .order_by(Job.manual.desc(), Job.kind == JobKind.REPLACE, Job.id)
+            .order_by(*DISPATCH_ORDER)
             .limit(max(free, 0))
         )
         for job_id in list(waiting):

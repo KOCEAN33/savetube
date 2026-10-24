@@ -45,7 +45,12 @@ export function DownloadsPage() {
   const active = useQuery({
     queryKey: queryKeys.allActiveJobs(),
     queryFn: () =>
-      api.jobs({ kind: "archive", state: ["running", "queued"], limit: MAX_JOB_LIMIT }),
+      api.jobs({
+        kind: "archive",
+        state: ["running", "queued"],
+        order: "dispatch",
+        limit: MAX_JOB_LIMIT,
+      }),
     refetchInterval: (q) => refetchMs(q.state.data?.some((j) => j.state === "running")),
   })
   const busy = active.data?.some((j) => j.state === "running") ?? false
@@ -81,7 +86,7 @@ export function DownloadsPage() {
       <QueryState query={active}>
         {(jobs) => {
           const running = jobs.filter((j) => j.state === "running")
-          const queued = jobs.filter((j) => j.state === "queued").sort((a, b) => a.id - b.id)
+          const queued = jobs.filter((j) => j.state === "queued")
           const queuedTotal = counts.data?.queued ?? queued.length
           return (
             <>

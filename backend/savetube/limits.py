@@ -14,6 +14,9 @@ BLOCK_BACKOFF = timedelta(minutes=30)
 # The jobs the limits govern. A replace job downloads a stream like an archive
 # job, so it waits for the same slots, window and pauses.
 DOWNLOAD_KINDS = (JobKind.ARCHIVE, JobKind.REPLACE)
+# The order waiting jobs leave in. A pick is the user waiting on the video
+# page. Otherwise new downloads first: a replace only improves a video already stored.
+DISPATCH_ORDER = (Job.manual.desc(), Job.kind == JobKind.REPLACE, Job.id)
 BLOCK_BACKOFF_MAX = timedelta(hours=12)
 
 

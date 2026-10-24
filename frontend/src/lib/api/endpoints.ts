@@ -89,6 +89,8 @@ export const api = {
     // Drop a failed or interrupted archive run once a later run of its video succeeded.
     unresolved?: boolean
     limit?: number
+    // newest by default. dispatch: running first, then the order the worker takes the queue.
+    order?: "newest" | "dispatch"
   }) => get<Job[]>("/api/jobs", query),
   // Every state is present, zero when no job holds it.
   jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>

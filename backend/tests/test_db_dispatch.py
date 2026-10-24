@@ -197,3 +197,26 @@ def test_api_download_settings_and_job_deferral(settings):
 
         [job] = client.get("/api/jobs").json()
         assert job["deferred_until"] == "2026-10-21T14:00:00Z"
+
+
+def test_api_lists_active_jobs_in_the_order_the_worker_takes_them(settings):
+    # Job 1 is queued with a queue job: the worker takes it next.
+    _job_rows(
+        settings,
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v3', 'UC1', 'videos', 't', 'pending'), ('v4', 'UC1', 'videos', 't', 'pending'),"
+        " ('v5', 'UC1', 'videos', 't', 'pending'), ('v6', 'UC1', 'videos', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts, manual) VALUES"
+        " (2, 'archive', 'running', 'busy1', 1, false),"
+        " (3, 'archive', 'queued', 'v3', 0, false),"
+        " (4, 'replace', 'queued', 'v4', 0, true),"
+        " (5, 'replace', 'queued', 'v5', 0, false),"
+        " (6, 'archive', 'queued', 'v6', 0, false)",
+    )
+    with _api(settings) as client:
+        params = {"state": ["running", "queued"], "order": "dispatch"}
+        ids = [j["id"] for j in client.get("/api/jobs", params=params).json()]
+        assert ids == [2, 1, 4, 3, 6, 5]
+        # Two rows stop at the running job and the next one, not the newest ones.
+        params["limit"] = 2
+        assert [j["id"] for j in client.get("/api/jobs", params=params).json()] == [2, 1]

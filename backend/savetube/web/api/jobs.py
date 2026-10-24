@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
 from sqlalchemy import and_, exists, func, select
@@ -8,6 +8,7 @@ from sqlalchemy.orm import aliased
 
 from savetube.db.models import Channel, Job, JobKind, JobState, Video
 from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, NO_MEMBER, SHUTDOWN_LOG, STALLED_LOG
+from savetube.limits import DISPATCH_ORDER
 from savetube.web.api.deps import Session, _of_channel
 from savetube.web.api.schemas import _Out
 from savetube.ytdl import members_only, network_error, youtube_block
@@ -82,12 +83,19 @@ async def jobs(
     # Drop a failed or interrupted archive run once a later run of its video succeeded.
     unresolved: bool = False,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    # newest: latest first. dispatch: the order the worker takes them, running
+    # first, then jobs on the procrastinate queue, then the dispatcher's order.
+    order: Literal["newest", "dispatch"] = "newest",
 ) -> list[JobOut]:
+    if order == "dispatch":
+        by = (Job.state != JobState.RUNNING, Job.queue_job_id.is_(None), *DISPATCH_ORDER)
+    else:
+        by = (Job.id.desc(),)
     q = (
         select(Job, Video.title, Video.channel_id, Channel.name)
         .outerjoin(Video, Video.id == Job.video_id)
         .outerjoin(Channel, Channel.id == Video.channel_id)
-        .order_by(Job.id.desc())
+        .order_by(*by)
         .limit(limit)
     )
     if kind:
