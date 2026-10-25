@@ -20,6 +20,10 @@ from savetube.logs import emit
 SCOPE = "openid profile email"
 SESSION_USER = "user"
 SESSION_NEXT = "next"
+SESSION_COOKIE = "savetube_session"
+# Authlib keeps each pending login's state under this key prefix in the session.
+STATE_PREFIX = "_state_zitadel_"
+AUTH_ERROR = "auth_error"
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +68,7 @@ def install(app: FastAPI, settings: Settings) -> None:
     app.add_middleware(
         SessionMiddleware,
         secret_key=settings.session_secret.get_secret_value(),
-        session_cookie="savetube_session",
+        session_cookie=SESSION_COOKIE,
         max_age=settings.session_max_age,
         same_site="lax",
         https_only=public_url.startswith("https://"),
@@ -83,8 +87,24 @@ def install(app: FastAPI, settings: Settings) -> None:
         try:
             token = await client.authorize_access_token(request)
         except OAuthError as e:
-            emit(log, logging.WARNING, "auth.failed", error=e.error, description=e.description)
-            return PlainTextResponse(f"login failed: {e.error}", status_code=400)
+            # `cookie` and `states` tell a lost session cookie from one a later
+            # login overwrote. `signed_in` marks a repeated callback after a success.
+            emit(
+                log,
+                logging.WARNING,
+                "auth.failed",
+                error=e.error,
+                description=e.description,
+                cookie="yes" if SESSION_COOKIE in request.cookies else "no",
+                states=sum(k.startswith(STATE_PREFIX) for k in request.session),
+                signed_in="yes" if SESSION_USER in request.session else "no",
+                agent=request.headers.get("user-agent", ""),
+            )
+            # The login wall shows the error and offers a new login. A signed-in
+            # session just lands on the app.
+            return RedirectResponse(
+                f"/?{urlencode({AUTH_ERROR: e.error or 'unknown'})}", status_code=303
+            )
         claims = token["userinfo"]
         # Zitadel's flat `groups` claim comes from an Action on the userinfo
         # trigger. The userinfo endpoint carries it whatever the ID token settings.

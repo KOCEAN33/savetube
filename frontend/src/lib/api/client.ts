@@ -7,18 +7,19 @@ export class ApiError extends Error {
   }
 }
 
+// The callback sends a failed login back with this parameter.
+export const AUTH_ERROR_PARAM = "auth_error"
+
 export function loginUrl(): string {
-  const next = window.location.pathname + window.location.search
+  const search = new URLSearchParams(window.location.search)
+  search.delete(AUTH_ERROR_PARAM)
+  const qs = search.toString()
+  const next = window.location.pathname + (qs ? `?${qs}` : "")
   return `/auth/login?next=${encodeURIComponent(next)}`
 }
 
 // An array repeats the parameter, once per value.
 type Query = Record<string, string | number | boolean | string[] | undefined>
-
-// Parallel requests that all get 401 must start one login, not one each: every
-// /auth/login rewrites the session cookie with a new state and PKCE verifier,
-// so concurrent logins break each other's callback.
-let redirectingToLogin = false
 
 // FastAPI puts a message in `detail`: a string from the app, or a list of
 // validation errors from pydantic.
@@ -51,13 +52,10 @@ export async function request<T>(method: string, path: string, body?: unknown): 
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (res.status === 401) {
-    if (!redirectingToLogin) {
-      redirectingToLogin = true
-      window.location.assign(loginUrl())
-    }
-    throw new ApiError(401, "Not signed in")
-  }
+  // No redirect here: the login wall starts a login on the user's click. Every
+  // /auth/login rewrites the session cookie with a new state and PKCE verifier,
+  // so logins that start on their own, one per tab, break each other's callback.
+  if (res.status === 401) throw new ApiError(401, "Not signed in")
   if (!res.ok) {
     throw new ApiError(res.status, await errorMessage(res, path))
   }

@@ -1,11 +1,32 @@
-import type { CSSProperties } from "react"
-import { Link, Outlet, useRouteError } from "react-router"
+import { useEffect, type CSSProperties } from "react"
+import { useQuery } from "@tanstack/react-query"
+import { Link, Outlet, useRouteError, useSearchParams } from "react-router"
 
 import { AppSidebar } from "@/components/app-sidebar"
+import { LoginWall } from "@/components/login-wall"
 import { SiteHeader } from "@/components/site-header"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
+import { api, ApiError, AUTH_ERROR_PARAM } from "@/lib/api"
+import { queryKeys } from "@/lib/query-keys"
 
 export function AppLayout() {
+  const me = useQuery({ queryKey: queryKeys.me(), queryFn: api.me })
+  const [search, setSearch] = useSearchParams()
+  const signedIn = me.isSuccess
+
+  // A repeated callback after a successful login lands here signed in, with an
+  // error the user need not see.
+  useEffect(() => {
+    if (signedIn && search.has(AUTH_ERROR_PARAM)) {
+      search.delete(AUTH_ERROR_PARAM)
+      setSearch(search, { replace: true })
+    }
+  }, [signedIn, search, setSearch])
+
+  if (me.error instanceof ApiError && me.error.status === 401) return <LoginWall />
+  // The pages would only show their own "Not signed in" errors meanwhile.
+  if (me.isPending) return null
+
   return (
     <SidebarProvider
       style={
