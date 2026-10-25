@@ -9,6 +9,8 @@
 - Redirect URI `https://savetube.lab.hiriri.com/auth/callback`. Post Logout URI `https://savetube.lab.hiriri.com/`. Logout is a POST that clears the session and sends the browser to `end_session` with `client_id`.
 - Redirect URIs and the cookie's Secure flag come from `SAVETUBE_PUBLIC_URL`. Uvicorn runs with proxy headers off, so no forwarded header is trusted.
 - `/api/*` answers 401 without a session. `/healthz`, the static bundle, and the metrics port need none.
+- Without a session the frontend shows a login wall in place of the app. Any 401 refetches `/api/me`, and its 401 shows the wall. A login starts only from the wall's button: each `/auth/login` rewrites the session cookie's state, so logins that start on their own, one per tab, break each other's callback.
+- A failed callback redirects to `/?auth_error=<error>`, and the wall shows the error. A session that is already signed in lands on the app. `auth.failed` logs `cookie` (the session cookie arrived), `states` (pending logins in it), `signed_in` and `agent`, which tell a lost cookie from an overwritten one.
 
 ## Cookies and account
 

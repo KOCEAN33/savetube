@@ -1,9 +1,11 @@
 import base64
+import logging
 import time
 from urllib.parse import parse_qs, urlsplit
 
 import httpx2
 import pytest
+from conftest import _events, _fields
 from fastapi.testclient import TestClient
 from joserfc import jwt
 from joserfc.jwk import RSAKey
@@ -172,11 +174,58 @@ def test_no_required_group_admits_any_issued_user(issuer):
         assert client.get("/api/me").json()["groups"] == []
 
 
-def test_callback_with_forged_state_is_rejected(issuer):
+def test_callback_with_forged_state_is_rejected(issuer, caplog):
     with _client() as client:
         client.get("/auth/login", follow_redirects=False)
-        r = client.get("/auth/callback", params={"code": "c1", "state": "forged"})
-        assert r.status_code == 400
+        with caplog.at_level(logging.WARNING, logger="savetube"):
+            r = client.get(
+                "/auth/callback",
+                params={"code": "c1", "state": "forged"},
+                headers={"user-agent": "Firefox/1"},
+                follow_redirects=False,
+            )
+        assert r.status_code == 303
+        assert r.headers["location"] == "/?auth_error=mismatching_state"
+        assert client.get("/api/me").status_code == 401
+    [line] = _events(caplog, "auth.failed")
+    assert _fields(line) == {
+        "error": "mismatching_state",
+        "description": "CSRF Warning! State not equal in request and response.",
+        "cookie": "yes",
+        "states": 1,
+        "signed_in": "no",
+        "agent": "Firefox/1",
+    }
+
+
+def test_callback_without_session_cookie_logs_no_cookie(issuer, caplog):
+    with _client() as client:
+        r = client.get("/auth/login", follow_redirects=False)
+        state = parse_qs(urlsplit(r.headers["location"]).query)["state"][0]
+        client.cookies.clear()
+        with caplog.at_level(logging.WARNING, logger="savetube"):
+            r = client.get(
+                "/auth/callback",
+                params={"code": "c1", "state": state},
+                follow_redirects=False,
+            )
+        assert r.headers["location"] == "/?auth_error=mismatching_state"
+    [line] = _events(caplog, "auth.failed")
+    assert (_fields(line)["cookie"], _fields(line)["states"]) == ("no", 0)
+
+
+def test_repeated_callback_keeps_the_session(issuer, caplog):
+    with _client() as client:
+        r, _ = _login(client, issuer, ["savetube-admin"])
+        assert r.status_code == 303
+        with caplog.at_level(logging.WARNING, logger="savetube"):
+            r = client.get(
+                "/auth/callback", params={"code": "c1", "state": "used"}, follow_redirects=False
+            )
+        assert r.headers["location"] == "/?auth_error=mismatching_state"
+        assert client.get("/api/me").status_code == 200
+    [line] = _events(caplog, "auth.failed")
+    assert _fields(line)["signed_in"] == "yes"
 
 
 @pytest.mark.parametrize(
