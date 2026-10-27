@@ -5,6 +5,9 @@ metadata:
   labels:
     {{- include "savetube.labels" . | nindent 4 }}
     app.kubernetes.io/component: worker
+    {{- with .Values.workloadLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   replicas: {{ .Values.worker.replicas }}
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}

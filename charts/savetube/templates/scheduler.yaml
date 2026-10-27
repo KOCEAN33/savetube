@@ -43,6 +43,9 @@ metadata:
   labels:
     {{- include "savetube.labels" . | nindent 4 }}
     app.kubernetes.io/component: scheduler
+    {{- with .Values.workloadLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   # One scheduler, and Recreate so a rollout never runs two: it is also the only
   # role that migrates, so two migrations never race.

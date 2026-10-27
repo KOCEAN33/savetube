@@ -44,6 +44,9 @@ metadata:
   labels:
     {{- include "savetube.labels" . | nindent 4 }}
     app.kubernetes.io/component: web
+    {{- with .Values.workloadLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   replicas: {{ .Values.web.replicas }}
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
