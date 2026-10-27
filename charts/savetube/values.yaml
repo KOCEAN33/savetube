@@ -9,6 +9,10 @@ imagePullSecrets: []
 # Old ReplicaSets each Deployment keeps for rollback.
 revisionHistoryLimit: 3
 
+# Extra labels on the metadata of every Deployment and the recorder CronJob,
+# not on their pods, Services or other objects.
+workloadLabels: {}
+
 # The PO token provider runs as a native sidecar beside every yt-dlp container.
 # Keep its tag equal to the bgutil-ytdlp-pot-provider plugin version in uv.lock.
 potProvider:
