@@ -7,6 +7,8 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - Members-only videos get a Members tab only while the channel has some. The user has not confirmed this.
 - Does a rate limit raise googlevideo drops? Drops cluster at fixed byte offsets of one video (`JXx51sPgPCs`: 42.1 MiB, 1.15 GiB, 1.59 GiB), with and without the limit. Answering it needs a run with the limit on, compared per video with these offsets.
 
+- Do the database connections need tuning? pgbouncer `show pools` lists 21 savetube clients but only 5 server connections. The clients are SQLAlchemy pools held open by the web, scheduler, worker and recorder pods, and transaction pooling keeps the server side small.
+
 ## Needs the user
 
 - Format watch video pick: the codec rule ranks AV1 `399` above the premium VP9 `616`, which has a higher bitrate. A live stored as `616` would be replaced by `399`. Whether `616` wins needs the user's call.
