@@ -57,6 +57,7 @@ export const JOB_STATES: JobState[] = [
 
 export function jobStateVariant(state: JobState) {
   if (state === "failed" || state === "missed") return "destructive" as const
+  if (state === "interrupted") return "warning" as const
   if (state === "succeeded") return "secondary" as const
   return "outline" as const
 }

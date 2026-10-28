@@ -167,7 +167,6 @@ export function DownloadsPage() {
               <JobsTable
                 jobs={jobs}
                 channelName={channelNames(jobs)}
-                expandLog
                 empty="No finished job."
               />
               {/* A full page means more may exist. */}
