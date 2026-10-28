@@ -5,7 +5,7 @@ Failures paid for once that the code does not show.
 ## Permission classifier
 
 - `.claude/settings.local.json` allows `gh pr merge`, `git rebase`, `git merge`, `git pull`, and `git push origin develop`. Without these entries the auto mode classifier blocks them as "Merge Without Review".
-- A production `psql` read passes only with one query per call. See `docs/guides/testing.md` for the command.
+- The classifier denies the elevated production `psql` read until the user approves elevation in the session. See `docs/guides/testing.md` for the command.
 - Copying an archive file out of the worker pod with `kubectl exec ... cat` is denied as "Production Reads". Download the same video with the local `savetube:after` image instead.
 - A kubectl loop that watches a deploy is denied as "Production Deploy", and an Argo CD refresh annotation is denied too. Neither is needed: Argo CD deploys a release through webhooks, and the user does not want a deploy polled.
 
@@ -23,5 +23,6 @@ Failures paid for once that the code does not show.
 
 - `web/api/` and `jobs/` are packages whose `__init__.py` re-exports the old public names. A test patches a name on the submodule whose call site reads it, such as `jobs.runners.download`, `jobs.guards.PAUSE_POLL_SECONDS` or `web.api.scan.CHANNEL_PLAYLISTS_TIMEOUT`. Patching the package name has no effect.
 - `ytdl.read_account` uses yt-dlp's private `YoutubeTab` methods `_download_webpage`, `extract_ytcfg`, `_extract_response` and `generate_api_headers`. A yt-dlp upgrade can break it, and then every profile shows "account unknown" with `cookies.account_failed` in the log.
+- A per-channel aggregate joins `deps._channel_videos()`. `_of_channel(Channel.id)` in a join condition reruns its subquery per channel and video row and took 6.7 s on production. With a literal channel id it stays fast.
 - `cli.py` keeps lazy imports on purpose: `savetube.queue` reads Settings at import, and the rest are role-specific heavy packages.
 - `savetube_proto` on pg-dev holds seeded demo data. Its complete videos have no `dir_path` or `info`, so a playback test points a row at files and reverts it after.

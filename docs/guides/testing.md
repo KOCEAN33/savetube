@@ -33,9 +33,15 @@ docker run --rm --entrypoint sh -v <empty dir>:/out savetube:after -c "cd /out &
 
 ## Production reads
 
+The guard `postgres-admin-guard` refuses `kubectl exec` into the database pod. Ask the user to approve elevation, run `make -C ~/codes/kocean33/homelab/proxmox-talos-lab kube-elevate`, and read through the elevated kubeconfig until its `Valid until` time:
+
 ```sh
-kubectl --context homelab-tailnet -n postgres exec postgres-2 -c postgres -- psql -d savetube -c "set default_transaction_read_only=on;" -c "<one query>"
+P=$(kubectl --context homelab-tailnet -n postgres get cluster postgres -o jsonpath='{.status.currentPrimary}')
+KUBECONFIG=~/.kube/elevated/kubeconfig kubectl -n postgres exec -i "$P" -c postgres -- \
+  env PGOPTIONS='-c default_transaction_read_only=on' psql -d savetube -X < queries.sql
 ```
+
+To time an API query, print its SQL with `str(q.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))` and prefix it with `EXPLAIN (ANALYZE, BUFFERS)`.
 
 `kubectl exec deploy/savetube-worker -c worker -- <cmd>` runs commands such as `find /archive`, `savetube extract-audio` and `savetube verify-recordings`.
 

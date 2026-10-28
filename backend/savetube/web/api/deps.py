@@ -82,6 +82,21 @@ def _of_channel(channel_id: str | ColumnElement[str]) -> ColumnElement[bool]:
     return (Video.channel_id == channel_id) | Video.id.in_(listed)
 
 
+def _channel_videos():
+    """(channel_id, video_id) for every stored video under `_of_channel`'s rule,
+    each pair once. Join it to group by channel: `_of_channel(Channel.id)` in a
+    join condition reruns its subquery per channel and video row, 6.7 s for 73
+    channels and 1,447 videos against 5 ms for this union."""
+    uploaded = select(Video.channel_id, Video.id.label("video_id")).where(_stored)
+    listed = (
+        select(Source.channel_id, VideoSource.video_id)
+        .join(VideoSource, VideoSource.source_id == Source.id)
+        .join(Video, Video.id == VideoSource.video_id)
+        .where(_stored)
+    )
+    return uploaded.union(listed).subquery()
+
+
 def _logged(fields: dict[str, Any]) -> dict[str, Any]:
     """Settings fields for a log line: a word list as its count."""
     out = {}

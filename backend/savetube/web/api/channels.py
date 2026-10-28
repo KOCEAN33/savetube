@@ -16,11 +16,10 @@ from savetube.sources import parse as parse_source_url
 from savetube.web.api.deps import (
     Session,
     _channel_base,
+    _channel_videos,
     _logged,
     _normalize,
-    _of_channel,
     _size,
-    _stored,
     _tracked,
     log,
 )
@@ -71,6 +70,7 @@ class ChannelPatch(BaseModel):
 
 
 def _channels_query():
+    pairs = _channel_videos()
     return (
         select(
             Channel.id,
@@ -91,7 +91,8 @@ def _channels_query():
             _tracked.label("tracked"),
         )
         # The channel page's rule: uploaded by the channel or listed by its sources.
-        .outerjoin(Video, _of_channel(Channel.id) & _stored)
+        .outerjoin(pairs, pairs.c.channel_id == Channel.id)
+        .outerjoin(Video, Video.id == pairs.c.video_id)
         .group_by(Channel.id)
     )
 
