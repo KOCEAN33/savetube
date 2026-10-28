@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from savetube.db.models import Channel, StorageSample, Video
 from savetube.layout import VideoType
-from savetube.web.api.deps import Session, _of_channel, _size, _stored, _tracked
+from savetube.web.api.deps import Session, _channel_videos, _size, _stored, _tracked
 from savetube.web.api.schemas import _Out
 
 router = APIRouter()
@@ -52,6 +52,7 @@ async def summary(session: Session) -> Summary:
         .where(_stored)
         .group_by(Video.type)
     )
+    pairs = _channel_videos()
     by_channel = await session.execute(
         select(
             Channel.id.label("channel_id"),
@@ -61,7 +62,8 @@ async def summary(session: Session) -> Summary:
         )
         # The channel list's rule: tracked channels only, and a video counts
         # when the channel uploaded it or one of its sources lists it.
-        .join(Video, _of_channel(Channel.id) & _stored)
+        .join(pairs, pairs.c.channel_id == Channel.id)
+        .join(Video, Video.id == pairs.c.video_id)
         .where(_tracked)
         .group_by(Channel.id)
         .order_by(_size.desc())
