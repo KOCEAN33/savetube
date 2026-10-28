@@ -89,7 +89,6 @@ export function JobsTable({
   channelName,
   live = false,
   pods,
-  expandLog = false,
   empty,
 }: {
   jobs: Job[]
@@ -100,8 +99,6 @@ export function JobsTable({
   live?: boolean
   // The recorder Jobs for the live table's Recorder column.
   pods?: Pods
-  // A click on a failed or interrupted row opens its full log_tail below it.
-  expandLog?: boolean
   empty: string
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set())
@@ -115,7 +112,7 @@ export function JobsTable({
         <TableRow>
           <TableHead>Video</TableHead>
           {channelName && <TableHead className={fixed ? "w-40" : undefined}>Channel</TableHead>}
-          <TableHead className={fixed ? "w-60" : undefined}>State</TableHead>
+          <TableHead className={fixed ? "w-48" : undefined}>State</TableHead>
           {live ? (
             <>
               <TableHead>Start</TableHead>
@@ -140,7 +137,8 @@ export function JobsTable({
           </TableRow>
         )}
         {jobs.map((j) => {
-          const expandable = expandLog && hasFailureReason(j) && j.log_tail !== null
+          // A click on a failed or interrupted row opens its reason and log_tail below it.
+          const expandable = hasFailureReason(j)
           const expanded = expandable && open.has(j.id)
           function toggle(e: MouseEvent) {
             if ((e.target as HTMLElement).closest("a")) return
@@ -200,10 +198,15 @@ export function JobsTable({
                     )}
                   </TableCell>
                 )}
-                {/* The reason wraps, so a long one does not take the title's width.
-                    With expandLog it truncates instead, so a closed row stays one line. */}
-                <TableCell className={expandLog ? "whitespace-nowrap" : "min-w-40 whitespace-normal"}>
-                  <Badge variant={jobStateVariant(j.state)}>{j.state}</Badge>
+                {/* The reason shows on hover and in the opened row, so a closed row stays one line. */}
+                <TableCell className="whitespace-nowrap">
+                  <Badge
+                    variant={jobStateVariant(j.state)}
+                    aria-expanded={expandable ? expanded : undefined}
+                    title={j.reason ?? undefined}
+                  >
+                    {j.state}
+                  </Badge>
                   {j.attempts > 1 && (
                     <span
                       className="ml-2 text-xs text-muted-foreground"
@@ -213,38 +216,17 @@ export function JobsTable({
                     </span>
                   )}
                   {j.state === "queued" && j.deferred_until && (
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      waits until {formatClock(j.deferred_until)}
+                    <span
+                      className="ml-2 text-xs text-muted-foreground"
+                      title={`Waits until ${formatDateTime(j.deferred_until)}`}
+                    >
+                      until {formatClock(j.deferred_until)}
                     </span>
                   )}
                   {j.miss_reason && (
                     <span className="ml-2 text-xs text-muted-foreground">
                       {MISS_REASON_LABEL[j.miss_reason]}
                     </span>
-                  )}
-                  {expandable ? (
-                    // No handler of its own: the click reaches the row's toggle.
-                    <button
-                      type="button"
-                      className={cn(
-                        "ml-2 inline-block truncate align-middle text-xs text-muted-foreground hover:underline",
-                        // The fixed State column holds the widest badge, an attempt count and this.
-                        fixed ? "max-w-32" : "max-w-56",
-                      )}
-                      aria-expanded={expanded}
-                      title={j.log_tail ?? undefined}
-                    >
-                      {j.reason}
-                    </button>
-                  ) : (
-                    hasFailureReason(j) && (
-                      <span
-                        className="ml-2 text-xs text-muted-foreground"
-                        title={j.log_tail ?? undefined}
-                      >
-                        {j.reason}
-                      </span>
-                    )
                   )}
                 </TableCell>
                 {live ? (
@@ -273,10 +255,13 @@ export function JobsTable({
               </TableRow>
               {expanded && (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={columns} className="max-w-0">
-                    <pre className="max-h-60 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap break-all">
-                      {j.log_tail}
-                    </pre>
+                  <TableCell colSpan={columns} className="max-w-0 whitespace-normal">
+                    <p className="mb-1 text-sm font-medium">{j.reason}</p>
+                    {j.log_tail && (
+                      <pre className="max-h-60 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap break-all">
+                        {j.log_tail}
+                      </pre>
+                    )}
                   </TableCell>
                 </TableRow>
               )}
