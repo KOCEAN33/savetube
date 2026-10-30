@@ -114,4 +114,10 @@ jobs:
           git config user.name "$BOT"
           git config user.email "$(gh api "/users/${BOT}" --jq .id)+${BOT}@users.noreply.github.com"
           git commit -am "chore(savetube): deploy ${TAG::12}"
-          git push
+          # Another repo's deploy can push between our checkout and push. Rebase and retry.
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            sleep $((i * 2))
+            git pull --rebase
+          done
+          exit 1
