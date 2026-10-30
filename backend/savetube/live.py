@@ -62,6 +62,7 @@ _KEPT = (
     "uploader",
     "uploader_id",
     "live_status",
+    "media_type",
     "release_timestamp",
     "availability",
 )
@@ -110,9 +111,19 @@ async def _wanted(session: AsyncSession, channel_id: str, info: dict[str, Any]) 
     return False
 
 
+def _premiere(info: dict[str, Any]) -> bool:
+    """An upcoming or running premiere. yt-dlp gives it the `live_status` of a
+    stream, but `media_type` `video` instead of `livestream`. A `live_seen` row
+    stored before `media_type` was kept has none and counts as a stream."""
+    return info.get("live_status") in _DETECTED and info.get("media_type") not in (
+        None,
+        "livestream",
+    )
+
+
 async def _record(session: AsyncSession, info: dict[str, Any]) -> Job | None:
     """A queued record job for an upcoming or live stream, unless one exists."""
-    if info.get("live_status") not in _DETECTED:
+    if info.get("live_status") not in _DETECTED or _premiere(info):
         return None
     video_id = info["id"]
     existing = await session.scalar(
@@ -241,7 +252,8 @@ async def check_channel(
     lines = []
     async with sessionmaker() as session:
         for info in found:
-            if not await _wanted(session, channel_id, info):
+            premiere = _premiere(info)
+            if premiere or not await _wanted(session, channel_id, info):
                 if info.get("live_status") in _DETECTED and info["id"] not in _skip_logged:
                     _skip_logged.add(info["id"])
                     emit(
@@ -251,7 +263,7 @@ async def check_channel(
                         video=info["id"],
                         channel=name,
                         title=logs.cut(info.get("title"), 80),
-                        reason="words",
+                        reason="premiere" if premiere else "words",
                     )
                 continue
             job = await _record(session, info)

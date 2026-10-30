@@ -91,6 +91,7 @@ UPCOMING = {
     "channel_id": NASA,
     "channel": "NASA",
     "live_status": "is_upcoming",
+    "media_type": "livestream",
     "release_timestamp": 1792778400,
 }
 LIVE_NOW = {
@@ -99,6 +100,7 @@ LIVE_NOW = {
     "channel_id": NASA,
     "channel": "NASA",
     "live_status": "is_live",
+    "media_type": "livestream",
     "release_timestamp": 1785417281,
 }
 

@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -100,6 +101,45 @@ async def test_uploads_and_finished_streams_get_no_record_job(settings):
     assert created == []
     assert await _record_jobs(sessionmaker) == []
     await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_premieres_get_no_record_job(settings):
+    """yt-dlp gives a premiere a stream's `live_status`, with `media_type` `video`."""
+    from savetube.live import check_channel
+
+    _watch(settings)
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    created = await check_channel(
+        sessionmaker,
+        NASA,
+        fetch_feed=lambda c: _feed("QHJTl3cC1r8"),
+        probe=lambda v: {**UPCOMING, "id": v, "media_type": "video"},
+        probe_live=lambda c: {**LIVE_NOW, "id": "playing", "media_type": "video"},
+        list_streams=_no_streams,
+    )
+    assert created == []
+    assert await _record_jobs(sessionmaker) == []
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_an_upcoming_stream_probed_before_media_type_was_kept_gets_its_record_job(
+    settings,
+):
+    _watch(settings)
+    stored = {k: v for k, v in UPCOMING.items() if k != "media_type"}
+    _sql(
+        settings,
+        "INSERT INTO live_seen (video_id, info, probed_at, listed_at)"
+        f" VALUES ('{UPCOMING['id']}', '{json.dumps(stored)}', now(), now())",
+    )
+    created = await _check_once(settings, [UPCOMING["id"]], _counting([], {}))
+    engine = make_engine(settings.sqlalchemy_url)
+    jobs = await _record_jobs(make_sessionmaker(engine))
+    await engine.dispose()
+    assert [(j.id, j.video_id) for j in jobs] == [(created[0], UPCOMING["id"])]
 
 
 @pytest.mark.anyio
