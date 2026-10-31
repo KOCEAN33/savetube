@@ -22,12 +22,9 @@ The profile choice rests on a measured 10-minute clip of `hSLDqEi-yCE` (1080p60 
 
 ## Shares
 
-| Share | Path | Encoder access |
-| --- | --- | --- |
-| archive | `tank/youtube` | read-only. Sources are read here |
-| encode | `tank/youtube/.encode` | read-write, files owned by uid 1000 like the rest of the archive |
+The encoder reaches `tank/youtube` as one Samba share, `\\192.168.69.31\youtube`, with the login `encoder`. The share is read-only except `.encode/`, where files land owned by uid 1000 like the rest of the archive. Sources are read from the share, and job files move inside `.encode/`. proxmox-talos-lab ADR encoder-share sets this up.
 
-One Samba account serves the encoder. savetube sees the same folder as `/archive/.encode`. Every walk of the archive tree skips `.encode`, as it skips `.incoming` and `.originals`.
+savetube sees the same folder as `/archive/.encode`. Every walk of the archive tree skips `.encode`, as it skips `.incoming` and `.originals`. Samba's trash for the share is `.encode/.recycle`, which holds files the encoder deleted for 30 days.
 
 ## Job files
 
@@ -35,7 +32,7 @@ Each job is a file that moves between folders under `.encode/`. A move is a rena
 
 | Folder | Written by | Holds |
 | --- | --- | --- |
-| `queue/<job id>.json` | savetube | `{job_id, video_id, source, profile, created_at}`. `source` is the path of the stored file relative to the archive share, with `/` separators |
+| `queue/<job id>.json` | savetube | `{job_id, video_id, source, profile, created_at}`. `source` is the path of the stored file relative to the `youtube` share root, which is the archive root, with `/` separators |
 | `claimed/<job id>.json` | encoder, by renaming the queue file | the job the encoder works on. A paused or restarted encoder resumes its claimed jobs first |
 | `work/<job id>.mkv` | encoder | the finished output while it is copied in. The encoder encodes on its local disk and copies only the complete file here. savetube never reads `work/` |
 | `done/<job id>.mkv` and `done/<job id>.json` | encoder | the result, moved from `work/` when complete, then the job file with `{profile, encoder, ffmpeg_version, sha256, size, duration, finished_at}` added. The `.json` is written last, so its presence means the `.mkv` is complete |
