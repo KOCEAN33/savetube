@@ -209,6 +209,8 @@ export interface FormatRow {
   stored: boolean
   // On a stored row: no YouTube https format, such as a live recording.
   recorded: boolean
+  // On a stored row: savetube's re-encode (docs/plan/encode.md).
+  encoded: boolean
   // On a formats row: the stored stream is this YouTube format.
   is_stored: boolean
   // The pick of its kind when it ranks above the stored stream, else the stored stream.
@@ -248,6 +250,8 @@ export interface FormatWatch {
     created_at: string
     finished_at: string | null
   } | null
+  // The re-encode the stored video stream came from. Sizes of the whole files.
+  encode: { profile: string; source_size: number; result_size: number | null } | null
 }
 
 // A stored `<video id>.<lang>.vtt`. The label is yt-dlp's track name, else the code.

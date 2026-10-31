@@ -967,6 +967,33 @@ def test_api_a_recorded_stream_keeps_its_stored_row_beside_its_youtube_row(setti
     assert {"137", "140"} <= {r["format_id"] for r in body["formats"]}
 
 
+def test_api_a_re_encoded_stream_is_encoded_and_sized_from_the_result(settings):
+    # wPJeDtdhpuc in production: the encode's stored stream as encode.py
+    # writes it, with the audio stream's measured size.
+    video = {"format_id": "vtuber-av1-cq46", "format_note": "re-encoded", "protocol": "encode",
+             "vcodec": "av01", "acodec": "none", "tbr": 2213.664, "vbr": 2213.664}  # fmt: skip
+    audio = {"protocol": "https", "filesize": 265_736_997}
+    _watched_with_formats(settings, info=_stored_with(video, audio))
+    _sql(
+        settings,
+        "INSERT INTO encode_job (video_id, state, profile, source_path, source_size, result_size)"
+        " VALUES ('v1', 'succeeded', 'vtuber-av1-cq46', 'x', 11887951299, 5207195692)",
+    )
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    [row] = [r for r in body["stored"] if r["kind"] == "video"]
+    # 5,207,195,692 result bytes minus 265,736,997 audio bytes.
+    assert (row["encoded"], row["recorded"]) == (True, False)
+    assert (row["size"], row["size_estimated"]) == (4_941_458_695, False)
+    assert body["encode"] == {
+        "profile": "vtuber-av1-cq46",
+        "source_size": 11_887_951_299,
+        "result_size": 5_207_195_692,
+    }
+
+
 def test_api_a_stored_youtube_stream_the_probe_does_not_list_keeps_its_stored_row(settings):
     https = {"protocol": "https"}
     _watched_with_formats(settings, info=_stored_with({**https, "format_id": "999"}, https))

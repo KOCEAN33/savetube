@@ -13,7 +13,16 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import formats
-from savetube.db.models import FormatWatch, Job, JobKind, JobState, Video, VideoState
+from savetube.db.models import (
+    EncodeJob,
+    EncodeState,
+    FormatWatch,
+    Job,
+    JobKind,
+    JobState,
+    Video,
+    VideoState,
+)
 from savetube.limits import lock
 from savetube.logs import emit
 from savetube.watch import ends_at, replace_active
@@ -45,6 +54,9 @@ class FormatRow(BaseModel):
     # On a `stored` row: the stream is no YouTube `https` format, such as a
     # live recording's DASH stream. A VOD with that id is another encode.
     recorded: bool
+    # On a `stored` row: the stream is savetube's re-encode
+    # (docs/plan/encode.md), not a recording.
+    encoded: bool
     # On a `formats` row: the stored stream is this YouTube format, so it has
     # no `stored` row. Picking it keeps the stored stream.
     is_stored: bool
@@ -63,6 +75,13 @@ class ReplaceOut(BaseModel):
     reason: str | None
     created_at: datetime
     finished_at: datetime | None
+
+
+class EncodeOut(BaseModel):
+    profile: str
+    # The whole files, before and after.
+    source_size: int
+    result_size: int | None
 
 
 class FormatWatchOut(BaseModel):
@@ -88,6 +107,8 @@ class FormatWatchOut(BaseModel):
     formats: list[FormatRow]
     # The latest replace job.
     replace: ReplaceOut | None
+    # The re-encode the stored video stream came from.
+    encode: EncodeOut | None
 
 
 class PickIn(BaseModel):
@@ -124,7 +145,8 @@ def _row(
         size=size,
         size_estimated=estimated,
         stored=stored,
-        recorded=stored and formats.recorded(f),
+        recorded=stored and formats.recorded(f) and not formats.encoded(f),
+        encoded=stored and formats.encoded(f),
         is_stored=is_stored,
         recommended=key in recommended,
         reason=recommended.get(key),
@@ -141,6 +163,19 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
     listed = watch.formats or []
     info = video.info or {}
     stored = formats.stored_streams(info)
+    encode = None
+    if "video" in stored and formats.encoded(stored["video"]):
+        encode = await session.scalar(
+            select(EncodeJob)
+            .where(EncodeJob.video_id == video.id, EncodeJob.state == EncodeState.SUCCEEDED)
+            .order_by(EncodeJob.id.desc())
+            .limit(1)
+        )
+        audio_size = stored.get("audio", {}).get("filesize")
+        if encode is not None and encode.result_size is not None and audio_size is not None:
+            # The result holds the video and the copied audio, so the video
+            # stream is the rest, give or take the container's few KB.
+            stored["video"] = {**stored["video"], "filesize": encode.result_size - audio_size}
     # The stored YouTube streams the last probe lists: their listed row stands
     # for them.
     merged = _merged(stored, listed)
@@ -210,6 +245,13 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
             reason=job_reason(job.log_tail),
             created_at=job.created_at,
             finished_at=job.finished_at,
+        ),
+        encode=None
+        if encode is None
+        else EncodeOut(
+            profile=encode.profile,
+            source_size=encode.source_size,
+            result_size=encode.result_size,
         ),
     )
 

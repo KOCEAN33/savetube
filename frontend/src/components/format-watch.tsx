@@ -52,6 +52,12 @@ function signedSeconds(diff: number | null): string {
   return `${diff > 0 ? "+" : ""}${diff.toFixed(1)} s`
 }
 
+// The whole file before and after a re-encode, such as "file 11.1 GiB → 4.8 GiB (-56%)".
+function encodeSaving(sourceSize: number, resultSize: number): string {
+  const saved = Math.round((1 - resultSize / sourceSize) * 100)
+  return `file ${formatBytes(sourceSize)} → ${formatBytes(resultSize)} (-${saved}%)`
+}
+
 // The one-line state of the collapsed card: stored codecs, the upgrade the
 // last probe recommends, and when it ran.
 function summary(w: FormatWatch): string {
@@ -327,9 +333,11 @@ function FormatSection({
                 </TableCell>
                 <TableCell>
                   {row.stored
-                    ? row.recorded
-                      ? "recorded"
-                      : "stored"
+                    ? row.encoded
+                      ? "encoded"
+                      : row.recorded
+                        ? "recorded"
+                        : "stored"
                     : row.is_stored
                       ? "YouTube, stored"
                       : "YouTube"}
@@ -353,6 +361,11 @@ function FormatSection({
                     )}
                     {row.recommended && row.reason && (
                       <span className="text-xs text-muted-foreground">{row.reason}</span>
+                    )}
+                    {row.encoded && w.encode?.result_size != null && (
+                      <span className="text-xs text-muted-foreground">
+                        {encodeSaving(w.encode.source_size, w.encode.result_size)}
+                      </span>
                     )}
                   </div>
                 </TableCell>
