@@ -16,6 +16,7 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - Smaller image: ffmpeg is about 180-210 MB of it. A smaller one means a static 8.x or 9.x build or a slim build from source, both with fewer codecs. Needs the user's approval.
 - Safari playback: out of scope until the user asks. The plan then is a cached mp4 remux with AAC audio, chosen by `canPlayType('video/x-matroska')`.
 - i18n with Korean beside English.
+- Quality tiers. The user wants 1080p as the default, AV1 first, and the highest resolution only for 3D lives and concert-style "LIVE" events, not for every past stream. This changes requirement 1 in `docs/plan/README.md`. Two code paths pick by resolution first: `FORMAT_SORT` in `ytdl.py` (a default tier would use `res:1080`) and `pick_video` in `formats.py`, which only counts formats at least as tall as the stored one, so the watch never swaps a 1440p file for a 1080p AV1. The default tier needs the watch to treat a stored file above 1080p as replaceable, which re-downloads the few WQHD singing streams. How a video joins the max tier is open: title words like the include words, a per-video switch, or both. The user wants to study real titles first. Recordings keep yt-dlp's order.
 
 ## Bugs and gaps
 
