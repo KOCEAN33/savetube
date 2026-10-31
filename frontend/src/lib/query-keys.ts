@@ -34,25 +34,25 @@ export const queryKeys = {
     acodec: string | undefined
     height: string | undefined
     premium: string | undefined
-    offset: number
+    page: number
   }) => ["videos", filter] as const,
   typeTotal: (filter: { listedBy: string; type: VideoType; state: "complete"; limit: 1 }) =>
     ["videos", filter] as const,
-  videoPages: (
+  videoPage: (
     filter: ({ source_id: number } | { listed_by: string; type: VideoType }) & {
       q: string
       order: VideoOrder
+      page: number
     }
-  ) => ["videos", "pages", filter] as const,
+  ) => ["videos", "page", filter] as const,
   // `scope` is a channel id, or "all" for every channel.
   archiveJobCounts: (scope: string) => ["jobs", "archive", scope, "counts"] as const,
-  channelActiveJobs: (channelId: string) => ["jobs", "archive", channelId, "active"] as const,
-  channelRecentJobs: (channelId: string, limit: number) =>
-    ["jobs", "archive", channelId, "recent", limit] as const,
-  runningJobs: () => ["jobs", "archive", "all", "running"] as const,
+  runningJobs: (scope = "all") => ["jobs", "archive", scope, "running"] as const,
+  queuedJobs: (scope: string, page: number) => ["jobs", "archive", scope, "queued", page] as const,
+  channelRecentJobs: (channelId: string, page: number) =>
+    ["jobs", "archive", channelId, "recent", page] as const,
   problemJobs: () => ["jobs", "archive", "all", "problems"] as const,
-  allActiveJobs: () => ["jobs", "archive", "all", "active"] as const,
-  allRecentJobs: (filter: { state: JobState | undefined; unresolved: boolean; limit: number }) =>
+  allRecentJobs: (filter: { state: JobState | undefined; unresolved: boolean; page: number }) =>
     ["jobs", "archive", "all", "recent", filter] as const,
   recordJobs: (state: JobState | undefined) => ["jobs", "record", state] as const,
   recordingNow: () => ["jobs", "record", "now"] as const,

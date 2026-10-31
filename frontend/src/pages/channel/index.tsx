@@ -35,6 +35,16 @@ const TAB_TYPE: Partial<Record<ChannelTab, VideoType>> = {
 }
 const isTab = (v: string | null): v is ChannelTab => TABS.includes(v as ChannelTab)
 
+// The page parameter of every list on a channel page: a tab's videos, each
+// playlist fold, and the queued and finished jobs.
+const PAGE_PARAM = /^(page|pl\d+|qpage|fpage)$/
+
+function withoutPages(params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params)
+  for (const key of [...next.keys()]) if (PAGE_PARAM.test(key)) next.delete(key)
+  return next
+}
+
 // Complete videos per type by the channel list rule, for the tab counts.
 function useTypeTotals(channelId: string): Partial<Record<VideoType, number>> {
   const types = Object.values(TAB_TYPE)
@@ -68,10 +78,16 @@ function ChannelView({ channel, sources }: { channel: Channel; sources: Source[]
   }
 
   function selectTab(next: ChannelTab) {
-    const updated = new URLSearchParams(params)
+    const updated = withoutPages(params)
     if (next === "videos") updated.delete("tab")
     else updated.set("tab", next)
     setParams(updated)
+  }
+
+  // A search or sort change starts every list over at its first page.
+  function resetPages() {
+    const updated = withoutPages(params)
+    if (updated.size !== params.size) setParams(updated, { replace: true })
   }
 
   return (
@@ -112,13 +128,19 @@ function ChannelView({ channel, sources }: { channel: Channel; sources: Source[]
                 placeholder={tab === "playlists" ? "Filter playlists" : `Search ${TAB_LABEL[tab]}`}
                 className="w-56 pl-8"
                 value={q}
-                onChange={(e) => setSearch({ ...search, [tab]: e.target.value })}
+                onChange={(e) => {
+                  setSearch({ ...search, [tab]: e.target.value })
+                  resetPages()
+                }}
               />
             </div>
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setOrder(order === "newest" ? "oldest" : "newest")}
+              onClick={() => {
+                setOrder(order === "newest" ? "oldest" : "newest")
+                resetPages()
+              }}
             >
               {order === "newest" ? <ArrowDownIcon /> : <ArrowUpIcon />}
               {order === "newest" ? "Newest first" : "Oldest first"}

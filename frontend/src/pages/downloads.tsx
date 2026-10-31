@@ -1,11 +1,10 @@
-import { useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { useSearchParams } from "react-router"
 
 import { RunningJob } from "@/components/job-row"
 import { JobsTable } from "@/components/jobs-table"
+import { Pagination } from "@/components/pagination"
 import { Page, PageSection, QueryState } from "@/components/query-state"
-import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import {
@@ -15,8 +14,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { usePageParam } from "@/hooks/use-page-param"
 import { api, type Job, type JobState } from "@/lib/api"
-import { JOB_PAGE, MAX_JOB_LIMIT } from "@/lib/constants"
+import { JOB_PAGE } from "@/lib/constants"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
@@ -39,97 +39,90 @@ export function DownloadsPage() {
   const state = stateParam && FINISHED.includes(stateParam) ? stateParam : undefined
   // Hiding resolved failures is the default, so only showing them takes a param.
   const unresolved = params.get("resolved") !== "show"
-  const [queuedShown, setQueuedShown] = useState(JOB_PAGE)
-  const [recentLimit, setRecentLimit] = useState(JOB_PAGE)
+  const [queuedPage, setQueuedPage] = usePageParam("qpage")
+  const [recentPage, setRecentPage] = usePageParam("fpage")
 
-  const active = useQuery({
-    queryKey: queryKeys.allActiveJobs(),
-    queryFn: () =>
-      api.jobs({
-        kind: "archive",
-        state: ["running", "queued"],
-        order: "dispatch",
-        limit: MAX_JOB_LIMIT,
-      }),
-    refetchInterval: (q) => refetchMs(q.state.data?.some((j) => j.state === "running")),
+  const running = useQuery({
+    queryKey: queryKeys.runningJobs(),
+    queryFn: () => api.jobs({ kind: "archive", state: ["running"] }),
+    refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),
   })
-  const busy = active.data?.some((j) => j.state === "running") ?? false
-  // The active list stops at MAX_JOB_LIMIT, so the queued count comes from the server.
-  const counts = useQuery({
-    queryKey: queryKeys.archiveJobCounts("all"),
-    queryFn: () => api.jobCounts({ kind: "archive" }),
+  const busy = (running.data?.length ?? 0) > 0
+  const queued = useQuery({
+    queryKey: queryKeys.queuedJobs("all", queuedPage),
+    queryFn: () =>
+      api.jobPage({
+        kind: "archive",
+        state: ["queued"],
+        order: "dispatch",
+        limit: JOB_PAGE,
+        offset: (queuedPage - 1) * JOB_PAGE,
+      }),
+    placeholderData: keepPreviousData,
     refetchInterval: refetchMs(busy),
   })
   const recent = useQuery({
-    queryKey: queryKeys.allRecentJobs({ state, unresolved, limit: recentLimit }),
+    queryKey: queryKeys.allRecentJobs({ state, unresolved, page: recentPage }),
     queryFn: () =>
-      api.jobs({
+      api.jobPage({
         kind: "archive",
         state: state ? [state] : FINISHED,
         unresolved: unresolved || undefined,
-        limit: recentLimit,
+        limit: JOB_PAGE,
+        offset: (recentPage - 1) * JOB_PAGE,
       }),
-    placeholderData: (previous) => previous,
+    placeholderData: keepPreviousData,
     refetchInterval: refetchMs(busy),
   })
 
+  // A filter change starts the finished list over at its first page.
   function update(key: string, value: string | undefined) {
     const next = new URLSearchParams(params)
     if (value === undefined) next.delete(key)
     else next.set(key, value)
+    next.delete("fpage")
     setParams(next)
-    setRecentLimit(JOB_PAGE)
   }
 
   return (
     <Page>
-      <QueryState query={active}>
-        {(jobs) => {
-          const running = jobs.filter((j) => j.state === "running")
-          const queued = jobs.filter((j) => j.state === "queued")
-          const queuedTotal = counts.data?.queued ?? queued.length
-          return (
+      <PageSection title="Downloading now">
+        <QueryState query={running}>
+          {(jobs) =>
+            jobs.length === 0 ? (
+              <p className="p-3 text-sm text-muted-foreground">Nothing is downloading.</p>
+            ) : (
+              <ul className="flex flex-col divide-y">
+                {jobs.map((j) => (
+                  <RunningJob key={j.id} job={j} withChannel />
+                ))}
+              </ul>
+            )
+          }
+        </QueryState>
+      </PageSection>
+      <PageSection
+        title={`Queued${queued.data ? ` (${queued.data.total})` : ""}, next first`}
+      >
+        <QueryState query={queued}>
+          {(page) => (
             <>
-              <PageSection title="Downloading now">
-                {running.length === 0 ? (
-                  <p className="p-3 text-sm text-muted-foreground">Nothing is downloading.</p>
-                ) : (
-                  <ul className="flex flex-col divide-y">
-                    {running.map((j) => (
-                      <RunningJob key={j.id} job={j} withChannel />
-                    ))}
-                  </ul>
-                )}
-              </PageSection>
-              <PageSection title={`Queued (${queuedTotal}), next first`}>
-                {queued.length === 0 ? (
-                  <p className="p-3 text-sm text-muted-foreground">Nothing waits.</p>
-                ) : (
-                  <JobsTable
-                    jobs={queued.slice(0, queuedShown)}
-                    channelName={channelNames(queued)}
-                    empty=""
-                  />
-                )}
-                {queued.length > queuedShown && (
-                  <div className="flex items-center gap-3 border-t p-3">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setQueuedShown(queuedShown + JOB_PAGE)}
-                    >
-                      Show more
-                    </Button>
-                    <span className="text-xs text-muted-foreground">
-                      {queuedTotal - queuedShown} more wait after these.
-                    </span>
-                  </div>
-                )}
-              </PageSection>
+              {page.total === 0 ? (
+                <p className="p-3 text-sm text-muted-foreground">Nothing waits.</p>
+              ) : (
+                <JobsTable jobs={page.items} channelName={channelNames(page.items)} empty="" />
+              )}
+              <Pagination
+                page={queuedPage}
+                total={page.total}
+                pageSize={JOB_PAGE}
+                onPage={setQueuedPage}
+                label="Queued pages"
+              />
             </>
-          )
-        }}
-      </QueryState>
+          )}
+        </QueryState>
+      </PageSection>
       <PageSection
         title="Finished"
         actions={
@@ -162,25 +155,20 @@ export function DownloadsPage() {
         }
       >
         <QueryState query={recent}>
-          {(jobs) => (
+          {(page) => (
             <>
               <JobsTable
-                jobs={jobs}
-                channelName={channelNames(jobs)}
+                jobs={page.items}
+                channelName={channelNames(page.items)}
                 empty="No finished job."
               />
-              {/* A full page means more may exist. */}
-              {jobs.length >= recentLimit && recentLimit < MAX_JOB_LIMIT && (
-                <div className="border-t p-3">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setRecentLimit(Math.min(recentLimit + JOB_PAGE, MAX_JOB_LIMIT))}
-                  >
-                    Show more
-                  </Button>
-                </div>
-              )}
+              <Pagination
+                page={recentPage}
+                total={page.total}
+                pageSize={JOB_PAGE}
+                onPage={setRecentPage}
+                label="Finished pages"
+              />
             </>
           )}
         </QueryState>

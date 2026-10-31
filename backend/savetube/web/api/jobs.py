@@ -2,7 +2,7 @@ import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from sqlalchemy import and_, exists, func, select
 from sqlalchemy.orm import aliased
 
@@ -76,6 +76,7 @@ class JobOut(_Out):
 @router.get("/jobs")
 async def jobs(
     session: Session,
+    response: Response,
     kind: JobKind | None = None,
     # Repeat the parameter for several states.
     state: Annotated[list[JobState] | None, Query()] = None,
@@ -83,27 +84,23 @@ async def jobs(
     # Drop a failed or interrupted archive run once a later run of its video succeeded.
     unresolved: bool = False,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
     # newest: latest first. dispatch: the order the worker takes them, running
     # first, then jobs on the procrastinate queue, then the dispatcher's order.
     order: Literal["newest", "dispatch"] = "newest",
 ) -> list[JobOut]:
+    """A page of jobs. X-Total-Count counts every matching job, so the body stays a list."""
     if order == "dispatch":
         by = (Job.state != JobState.RUNNING, Job.queue_job_id.is_(None), *DISPATCH_ORDER)
     else:
         by = (Job.id.desc(),)
-    q = (
-        select(Job, Video.title, Video.channel_id, Channel.name)
-        .outerjoin(Video, Video.id == Job.video_id)
-        .outerjoin(Channel, Channel.id == Video.channel_id)
-        .order_by(*by)
-        .limit(limit)
-    )
+    where = []
     if kind:
-        q = q.where(Job.kind == kind)
+        where.append(Job.kind == kind)
     if state:
-        q = q.where(Job.state.in_(state))
+        where.append(Job.state.in_(state))
     if channel_id:
-        q = q.where(_of_channel(channel_id))
+        where.append(_of_channel(channel_id))
     if unresolved:
         later = aliased(Job)
         resolved = exists().where(
@@ -112,13 +109,29 @@ async def jobs(
             later.state == JobState.SUCCEEDED,
             later.finished_at > Job.finished_at,
         )
-        q = q.where(
+        where.append(
             ~and_(
                 Job.kind == JobKind.ARCHIVE,
                 Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),
                 resolved,
             )
         )
+    total = await session.scalar(
+        select(func.count())
+        .select_from(Job)
+        .outerjoin(Video, Video.id == Job.video_id)
+        .where(*where)
+    )
+    response.headers["X-Total-Count"] = str(total or 0)
+    q = (
+        select(Job, Video.title, Video.channel_id, Channel.name)
+        .outerjoin(Video, Video.id == Job.video_id)
+        .outerjoin(Channel, Channel.id == Video.channel_id)
+        .where(*where)
+        .order_by(*by)
+        .limit(limit)
+        .offset(offset)
+    )
     own = JobOut.model_fields.keys() - {"title", "channel_id", "channel_name", "reason"}
     return [
         JobOut(
