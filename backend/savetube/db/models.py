@@ -10,11 +10,13 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Index,
     MetaData,
     String,
     Text,
     false,
     func,
+    text,
     true,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -408,6 +410,71 @@ class LiveSeen(Base):
     # The last check whose feed or Live tab listed the id. The hourly cleanup
     # deletes the row LIVE_SEEN_DAYS later (savetube.cleanup).
     listed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EncodeState(enum.StrEnum):
+    # The job file waits in `.encode/queue/`.
+    QUEUED = "queued"
+    # The encoder renamed it into `.encode/claimed/`.
+    CLAIMED = "claimed"
+    SUCCEEDED = "succeeded"
+    # The encoder failed it, or its result failed the check. The video is not
+    # queued again until a user requeues it.
+    FAILED = "failed"
+    # A user deleted the queue file.
+    CANCELLED = "cancelled"
+    # A failure the user requeued: the video may be queued again.
+    REQUEUED = "requeued"
+    # Its file is in no folder for LOST_AFTER (savetube.encode), so the video
+    # may be queued again.
+    LOST = "lost"
+
+
+class EncodeSettings(Base):
+    """The one row of external re-encoding (docs/plan/encode.md)."""
+
+    __tablename__ = "encode_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="single_row"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1, autoincrement=False)
+    enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
+    profile: Mapped[str] = mapped_column(Text, server_default="vtuber-av1-cq46")
+
+
+class EncodeJob(Base):
+    """One job file under `.encode/` (docs/plan/encode.md, Job files). The
+    scheduler moves `state` along as it finds the file in each folder."""
+
+    __tablename__ = "encode_job"
+    __table_args__ = (
+        Index(
+            "uq_encode_job_open_video",
+            "video_id",
+            unique=True,
+            postgresql_where=text("state IN ('queued', 'claimed')"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    video_id: Mapped[str] = mapped_column(ForeignKey("video.id"), index=True)
+    state: Mapped[EncodeState] = mapped_column(
+        _enum(EncodeState), default=EncodeState.QUEUED, index=True
+    )
+    profile: Mapped[str] = mapped_column(Text)
+    # The stored file at queueing, relative to the archive root. The swap
+    # refuses a stored file that changed since.
+    source_path: Mapped[str] = mapped_column(Text)
+    source_size: Mapped[int] = mapped_column(BigInteger)
+    # From the done or failed job file.
+    encoder: Mapped[str | None] = mapped_column(Text)
+    ffmpeg_version: Mapped[str | None] = mapped_column(Text)
+    result_size: Mapped[int | None] = mapped_column(BigInteger)
+    reason: Mapped[str | None] = mapped_column(Text)
+    log_tail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # The last scan that found the job file in queue/, claimed/ or work/.
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class StorageSample(Base):

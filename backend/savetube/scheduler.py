@@ -16,7 +16,7 @@ from pathlib import Path
 from procrastinate.jobs import Status
 from sqlalchemy import func, select
 
-from savetube import cookies, k8s, scheduler_api
+from savetube import cookies, encode, k8s, scheduler_api
 from savetube.cleanup import clean_database
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
@@ -290,6 +290,10 @@ async def format_watch(settings: Settings, probes: asyncio.Lock) -> None:
     )
 
 
+async def reencode(settings: Settings, lock: asyncio.Lock, skipped: set[str]) -> None:
+    await encode.step(default_sessionmaker(), settings, tools=Tools(), lock=lock, skipped=skipped)
+
+
 async def move_requested(settings: Settings, requests: scheduler_api.Requests) -> None:
     """Take the user's Move now before the move, so one asked during a long
     move runs another after it: it may name a video staged meanwhile."""
@@ -330,6 +334,8 @@ async def run(settings: Settings) -> None:
     # The format watch and the user's probes take turns: every listing counts
     # against YouTube's request limits.
     probes = asyncio.Lock()
+    # The encode loop and a cancel from the API take turns on the job files.
+    encodes = asyncio.Lock()
     requests = scheduler_api.Requests()
     api = scheduler_api.create_app(
         settings,
@@ -338,6 +344,7 @@ async def run(settings: Settings) -> None:
         probe=probe_formats,
         tools=Tools(),
         requests=requests,
+        encodes=encodes,
     )
     async with app.open_async():
         # Separate loops, so a long first listing of a big channel never delays
@@ -382,6 +389,8 @@ async def run(settings: Settings) -> None:
                 )
             )
             tg.create_task(_every("format watch", lambda: format_watch(settings, probes)))
+            skipped: set[str] = set()
+            tg.create_task(_every("re-encoding", lambda: reencode(settings, encodes, skipped)))
             tg.create_task(scheduler_api.serve(api, settings.scheduler_api_port))
             tg.create_task(_every("live detection", lambda: detect_lives(settings)))
             # Kubernetes sets this in every pod. A scheduler outside a cluster,

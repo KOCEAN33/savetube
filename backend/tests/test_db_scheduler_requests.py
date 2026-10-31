@@ -49,6 +49,7 @@ async def _scheduler_post(settings, path, requests):
         probe=_never_probe,
         tools=Tools(),
         requests=requests,
+        encodes=asyncio.Lock(),
     )
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=app), base_url="http://scheduler"
@@ -204,6 +205,7 @@ class _Scheduler:
             probe=_never_probe,
             tools=Tools(),
             requests=self.requests,
+            encodes=asyncio.Lock(),
         )
         self.urls = []
 

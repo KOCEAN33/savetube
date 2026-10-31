@@ -8,7 +8,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Response
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from savetube import watch
+from savetube import encode, watch
 from savetube.config import Settings
 from savetube.db.models import Source
 from savetube.integrity import Tools
@@ -56,6 +56,7 @@ def create_app(
     probe: watch.Probe,
     tools: Tools,
     requests: Requests,
+    encodes: asyncio.Lock,
 ) -> FastAPI:
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
@@ -93,6 +94,17 @@ def create_app(
             raise HTTPException(status_code=409, detail="no staging volume")
         requests.ask_move()
         return Response(status_code=202)
+
+    @app.post("/encode/{job_id}/cancel", status_code=204)
+    async def cancel_encode(job_id: int) -> Response:
+        """Delete a queued encode job's file, unless the encoder claimed it."""
+        try:
+            await encode.cancel(sessionmaker, settings, job_id, lock=encodes)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="no such encode job") from None
+        except encode.NotCancellable as e:
+            raise HTTPException(status_code=409, detail=f"the job is {e}") from None
+        return Response(status_code=204)
 
     return app
 
