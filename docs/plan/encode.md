@@ -37,7 +37,7 @@ Each job is a file that moves between folders under `.encode/`. A move is a rena
 | --- | --- | --- |
 | `queue/<job id>.json` | savetube | `{job_id, video_id, source, profile, created_at}`. `source` is the path of the stored file relative to the archive share, with `/` separators |
 | `claimed/<job id>.json` | encoder, by renaming the queue file | the job the encoder works on. A paused or restarted encoder resumes its claimed jobs first |
-| `work/<job id>.mkv` | encoder | the output while it is written. savetube never reads `work/` |
+| `work/<job id>.mkv` | encoder | the finished output while it is copied in. The encoder encodes on its local disk and copies only the complete file here. savetube never reads `work/` |
 | `done/<job id>.mkv` and `done/<job id>.json` | encoder | the result, moved from `work/` when complete, then the job file with `{profile, encoder, ffmpeg_version, sha256, size, duration, finished_at}` added. The `.json` is written last, so its presence means the `.mkv` is complete |
 | `failed/<job id>.json` | encoder | the job file with `{reason, log_tail, failed_at}` added. The video is not queued again until a user requeues it |
 
