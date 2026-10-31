@@ -9,6 +9,8 @@ import type {
   DailyStat,
   DownloadSettings,
   DownloadSettingsIn,
+  Encode,
+  EncodeSettingsIn,
   FormatWatch,
   Job,
   JobKind,
@@ -47,6 +49,11 @@ export const mutations = {
   setDownloadsPaused: (paused: boolean) =>
     request<DownloadSettings>("PUT", "/api/download-settings/paused", { paused }),
   replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
+  replaceEncodeSettings: (body: EncodeSettingsIn) => request<Encode>("PUT", "/api/encode", body),
+  // Queued jobs only: 409 once the encoder claimed the job.
+  cancelEncodeJob: (id: number) => request<Encode>("POST", `/api/encode/jobs/${id}/cancel`),
+  // Failed jobs only: the video may be queued again.
+  requeueEncodeJob: (id: number) => request<Encode>("POST", `/api/encode/jobs/${id}/requeue`),
   // Queues a replace with one video and one audio format at most, ends the
   // automatic replaces, and cancels a queued automatic one. A held video needs
   // `confirm`.
@@ -71,6 +78,7 @@ export const api = {
   globalWords: () => get<TitleWords>("/api/words"),
   downloadSettings: () => get<DownloadSettings>("/api/download-settings"),
   cookieProfiles: () => get<CookieProfile[]>("/api/cookie-profiles"),
+  encode: () => get<Encode>("/api/encode"),
   // A POST that writes nothing: it lists live through yt-dlp, which can answer 502 or 504.
   channelPlaylists: (url: string) =>
     request<ChannelPlaylist[]>("POST", "/api/channel-playlists", { url }),
