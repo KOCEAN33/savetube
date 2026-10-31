@@ -1,8 +1,8 @@
 # Re-encoding
 
-An external encoder on the owner's Windows PC (RTX 5080) re-encodes stored H.264 videos to AV1 to save space. savetube stays the only writer of `tank/youtube`: the encoder pulls a job over HTTP, downloads the source, encodes it, and uploads the result. savetube checks and swaps the file.
+An external encoder on the owner's Windows PC (RTX 5080) re-encodes stored H.264 videos to AV1 to save space. The encoder reads the source over Samba, encodes it, and drops the result in a folder inside `tank/youtube`. savetube checks the result and swaps it in, so savetube stays the only writer of the archive tree.
 
-The encoder is its own private repo, `KOCEAN33/media-encoder`, at `/Users/kocean/codes/kocean33/media-encoder`. It serves other sources too. This file is the contract between the two. savetube owns it: the encoder side reads it, and a breaking change to a route or field needs the owner's approval first. Adding an optional field needs none.
+The encoder is its own private repo, `KOCEAN33/media-encoder`, at `/Users/kocean/codes/kocean33/media-encoder`. It serves other sources too. This file is the contract between the two. savetube owns it: the encoder side reads it, and a breaking change to a folder, file name or field needs the owner's approval first. Adding an optional field needs none.
 
 ## Which videos
 
@@ -20,24 +20,32 @@ A profile names a fixed encode. The encoder repo owns each profile's ffmpeg argu
 
 The profile choice rests on a measured 10-minute clip of `hSLDqEi-yCE` (1080p60 H.264, 3.3 Mbps): 24% of the source's video bytes at VMAF 91.6.
 
-## Routes
+## Shares
 
-The encoder authenticates with `Authorization: Bearer <token>`. The token is a savetube setting, not a Zitadel login. These routes accept only the token, and the token opens no other route.
+| Share | Path | Encoder access |
+| --- | --- | --- |
+| archive | `tank/youtube` | read-only. Sources are read here |
+| encode | `tank/youtube/.encode` | read-write, files owned by uid 1000 like the rest of the archive |
 
-| Route | Does |
-| --- | --- |
-| `POST /api/encode/claim` | body `{worker, profiles}`, the worker's name and the profiles it can run. Answers 200 `{job_id, video_id, profile, source: {url, size, sha256}, lease_seconds}` for the next video, or 204 when none waits. The claim holds the video for `lease_seconds` |
-| `GET <source.url>` | the stored file, with `Range` support so a broken download resumes. Opened with the same token |
-| `POST /api/encode/{job_id}/heartbeat` | body `{state, progress}`, state `downloading`, `encoding`, `uploading` or `paused`, progress 0-1. Renews the lease. 409 when the job is no longer this worker's |
-| `POST /api/encode/{job_id}/release` | gives the job back without blame, such as a pause that lasts too long. The video waits for the next claim |
-| `POST /api/encode/{job_id}/fail` | body `{reason, log_tail}`. Ends the job failed. The video is not offered again until a user requeues it |
-| `PUT /api/encode/{job_id}/result` | body: the encoded file. Headers `X-Encode-Profile`, `X-Encoder` (ffmpeg version and encoder name) and `X-Content-SHA256`. Answers 200 `{status: "swapped", size}` after the swap, or 422 `{reason}` when the check fails |
+One Samba account serves the encoder. savetube sees the same folder as `/archive/.encode`. Every walk of the archive tree skips `.encode`, as it skips `.incoming` and `.originals`.
 
-- A lease that runs out without a heartbeat returns the job to the queue. The encoder sends a heartbeat at least every 60 s, also while paused.
-- A result upload is about a quarter of the source, near 600 MB for a 100-minute 1080p stream. The ingress and the web pod must take a body that size.
+## Job files
+
+Each job is a file that moves between folders under `.encode/`. A move is a rename on one share, so a job is in exactly one folder.
+
+| Folder | Written by | Holds |
+| --- | --- | --- |
+| `queue/<job id>.json` | savetube | `{job_id, video_id, source, profile, created_at}`. `source` is the path of the stored file relative to the archive share, with `/` separators |
+| `claimed/<job id>.json` | encoder, by renaming the queue file | the job the encoder works on. A paused or restarted encoder resumes its claimed jobs first |
+| `work/<job id>.mkv` | encoder | the output while it is written. savetube never reads `work/` |
+| `done/<job id>.mkv` and `done/<job id>.json` | encoder | the result, moved from `work/` when complete, then the job file with `{profile, encoder, ffmpeg_version, sha256, size, duration, finished_at}` added. The `.json` is written last, so its presence means the `.mkv` is complete |
+| `failed/<job id>.json` | encoder | the job file with `{reason, log_tail, failed_at}` added. The video is not queued again until a user requeues it |
+
+- savetube queues a bounded number of jobs, so the queue never holds the whole backlog.
+- A user can cancel a queued job, which deletes its queue file. A claimed job is the encoder's until it moves on.
 
 ## Checking and swapping a result
 
-- The upload lands in staging first. savetube checks the SHA-256, then probes the file: the profile's codec, the source's duration within 1 s, and a video and an audio stream.
-- The swap reuses the replace job's swap (live.md, Format watch): the stored file is kept in `.originals/<video id>/` until `original_until`, 7 days later, then deleted. `video.info`, `format_id` and `size_bytes` take the new streams.
-- The video records that it was re-encoded, with the profile, so a later format probe or a second claim never treats it as a fresh H.264 download.
+- The scheduler looks in `done/` every minute. For each `.json` it checks the SHA-256 and probes the `.mkv`: the profile's codec, the source's duration within 1 s, and a video and an audio stream. A failed check moves both files to `failed/` with the reason.
+- The swap reuses the replace job's swap (live.md, Format watch): the stored file is kept in `.originals/<video id>/` until `original_until`, 7 days later, then deleted. The result moves into the video directory by rename. `video.info`, `format_id` and `size_bytes` take the new streams.
+- The video records that it was re-encoded, with the profile, so a later format probe or queueing never treats it as a fresh H.264 download.
