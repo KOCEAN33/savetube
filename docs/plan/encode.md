@@ -8,7 +8,9 @@ The encoder is its own private repo, `KOCEAN33/media-encoder`, at `/Users/kocean
 
 - A `complete` video whose stored video stream is H.264, outside the max quality tier once tiers exist (candidates.md, Quality tiers), and whose last format probe offers no AV1 at the stored height or above. A video YouTube still serves as AV1 is downloaded again instead.
 - Settings turn re-encoding on or off and pick the profile. The default profile is `vtuber-av1-cq46`.
-- A video with a queued or running replace job, an open live recording, or an original already kept aside is skipped.
+- A video with a queued or running replace job, an open live recording, an open format watch, or an original already kept aside is skipped. So is a video with an encode job queued, claimed, failed or succeeded.
+- The last format probe is the format watch's stored list, else the format list of the download's info dict. A video with neither counts as offered AV1.
+- The largest stored videos queue first.
 
 ## Profiles
 
@@ -38,11 +40,18 @@ Each job is a file that moves between folders under `.encode/`. A move is a rena
 | `done/<job id>.mkv` and `done/<job id>.json` | encoder | the result, moved from `work/` when complete, then the job file with `{profile, encoder, ffmpeg_version, sha256, size, duration, finished_at}` added. The `.json` is written last, so its presence means the `.mkv` is complete |
 | `failed/<job id>.json` | encoder | the job file with `{reason, log_tail, failed_at}` added. The video is not queued again until a user requeues it |
 
-- savetube queues a bounded number of jobs, so the queue never holds the whole backlog.
+- savetube keeps up to 3 jobs in `queue/`, so the queue never holds the whole backlog.
+- savetube writes a job file under a temporary name in the same folder, then renames it. Only a name ending in `.json` is a job file.
+- A queued or claimed job whose file no folder holds for 10 minutes is lost, and its video may queue again.
+- A user can requeue a failed job. savetube then deletes its files in `failed/`, and the video may queue again.
 - A user can cancel a queued job, which deletes its queue file. A claimed job is the encoder's until it moves on.
 
 ## Checking and swapping a result
 
-- The scheduler looks in `done/` every minute. For each `.json` it checks the SHA-256 and probes the `.mkv`: the profile's codec, the source's duration within 1 s, and a video and an audio stream. A failed check moves both files to `failed/` with the reason.
+- The scheduler looks in `done/` every minute. For each `.json` it checks the profile, the size and the SHA-256 against the job file, then probes the `.mkv` and the stored file. The profile's codec, bit depth and frame rate, the source's resolution, the source's audio stream count, the source's duration within 1 s, and a clean packet pass must hold.
+- The result must be smaller than the source, and the stored file must still be the one the job named, with the same size.
+- A failed check moves both files to `failed/` with the reason, the `.mkv` first.
+- While a replace job or a recording is queued or running for the video, the result waits in `done/`.
 - The swap reuses the replace job's swap (live.md, Format watch): the stored file is kept in `.originals/<video id>/` until `original_until`, 7 days later, then deleted. The result moves into the video directory by rename. `video.info`, `format_id` and `size_bytes` take the new streams.
-- The video records that it was re-encoded, with the profile, so a later format probe or queueing never treats it as a fresh H.264 download.
+- The video records that it was re-encoded, with the profile, so a later format probe or queueing never treats it as a fresh H.264 download. The stored video stream in `video.info` takes the profile name as `format_id`, `re-encoded` as `format_note` and `av01` as `vcodec`. The audio streams keep their YouTube formats.
+- Settings, Re-encoding holds the on/off switch, the profile, and the job list with Cancel on a queued job and Requeue on a failed one. Turning re-encoding off queues no more jobs and leaves the queued ones.

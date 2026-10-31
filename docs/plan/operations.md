@@ -39,6 +39,7 @@
 - A membership check logs `membership.checked` at INFO with the channel, the profile, the video, and `member` yes or no. A check that ends in neither logs `membership.check_failed` at WARNING with the reason, and the previous result stays.
 - An account read logs `cookies.account` at INFO with the profile, the account name and the handle. A failed read logs `cookies.account_failed` at WARNING with the profile and the reason, with a traceback only for an unexpected error. A replaced file logs `cookies.changed` at INFO with the profile and `memberships`, the deleted membership results.
 - `job.start` logs `cookies` as the profile name, or `none`. No log line holds cookie content.
+- Re-encoding logs `encode.queued`, `encode.claimed`, `encode.swapped` with the source and result sizes, `encode.cancelled` and `encode.requeued` at INFO. `encode.failed` (the encoder's failure), `encode.rejected` (a failed check) and `encode.lost` log at WARNING with `reason`. A swap that raises logs `encode.swap_failed` at ERROR, and the result waits in `done/` for the next minute. A missing archive root logs `encode.unmounted` at ERROR. A failed scheduler call for Cancel logs `encode.cancel_request_failed` at WARNING from the web.
 
 ## Homelab deployment
 

@@ -15,7 +15,7 @@ Read this file, then only the files your task touches.
 | `archive.md` | polling sources, playlists, title words, pausing downloads, download limits, resuming and verifying downloads |
 | `live.md` | live detection, recording, the VOD |
 | `access.md` | login through Zitadel, YouTube cookies |
-| `encode.md` | re-encoding stored videos on the external Windows encoder, its HTTP contract |
+| `encode.md` | re-encoding stored videos on the external Windows encoder, its Samba shares and job-file contract |
 | `operations.md` | Discord notifications, metrics, build, release, Kubernetes deployment |
 
 ## Requirements
