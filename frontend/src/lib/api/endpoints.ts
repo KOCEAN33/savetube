@@ -74,6 +74,10 @@ export const mutations = {
       `/api/videos/${encodeURIComponent(videoId)}/formats/pick`,
       body,
     ),
+  // Deletes a complete or staged video's files. The row stays as `deleted`, so
+  // no poll downloads it again. 409 while a job or an encode holds the video.
+  deleteVideo: (videoId: string) =>
+    request<void>("DELETE", `/api/videos/${encodeURIComponent(videoId)}`),
   // The scheduler probes the formats now. Up to 120 s while the format watch
   // probes another video first.
   probeFormats: (videoId: string) =>

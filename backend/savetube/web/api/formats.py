@@ -279,6 +279,8 @@ async def pick_format(session: Session, video_id: str, body: PickIn) -> FormatWa
     if found is None:
         raise HTTPException(status_code=404, detail="the video has no format watch")
     watch, video = found
+    if video.state is not VideoState.COMPLETE:
+        raise HTTPException(status_code=409, detail="the video is not complete")
     listed = {str(f.get("format_id")): f for f in watch.formats or []}
     missing = [i for i in body.format_ids if i not in listed]
     if missing:

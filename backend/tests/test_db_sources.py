@@ -393,6 +393,7 @@ async def test_poll_done_counts_each_skip_reason(settings, caplog):
         "stored": 0,
         "in_flight": 0,
         "gave_up": 0,
+        "deleted": 0,
         "cancelled": 0,
         "skip_words": 1,
         "skip_members": 1,

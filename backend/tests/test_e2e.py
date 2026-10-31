@@ -442,6 +442,9 @@ def test_a_video_that_is_no_live_has_no_format_watch(server, downloaded):
     # No scheduler runs here, so the probe cannot reach it.
     r = server.post(f"/api/videos/{VIDEO_ID}/formats/probe", headers=WRITE)
     assert r.status_code == 502 and "unreachable" in r.json()["detail"]
+    # The same holds for a delete, so the video stays for the tests after this one.
+    r = server.delete(f"/api/videos/{VIDEO_ID}", headers=WRITE)
+    assert r.status_code == 502 and "unreachable" in r.json()["detail"]
 
 
 def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):

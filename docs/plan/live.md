@@ -15,7 +15,7 @@
 - The `/live` page probe takes the general profile only.
 - The `/live` page finds a stream with no waiting room. "The channel is not currently live" is the normal answer and is not an error.
 - No Data API key is used. The probe reads the scheduled start that `videos.list` would.
-- A detection is a queued `record` job. `scheduled_at` comes from `release_timestamp` for an upcoming stream and is null for a stream found live. The record job keeps a video to one detection.
+- A detection is a queued `record` job. `scheduled_at` comes from `release_timestamp` for an upcoming stream and is null for a stream found live. The record job keeps a video to one detection. A video the user deleted gets no record job (storage.md, Deleting a video).
 - The first check of a newly watched channel probes up to 15 feed ids and takes about a minute. Later checks take seconds.
 - A queued record job does not stop the archive poll from queuing the VOD. The poll skips a live until it ends, so the VOD is queued only when the recording has not stored the video.
 - WebSub push needs a public HTTPS callback, which the tailnet-only cluster lacks. Not used.

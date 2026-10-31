@@ -846,6 +846,17 @@ def test_api_pick_queues_a_replace_and_ends_the_automatic_ones(settings):
     assert again.status_code == 409
 
 
+def test_api_pick_refuses_a_deleted_video(settings):
+    _watched_with_formats(settings)
+    _sql(settings, "UPDATE video SET state = 'deleted', dir_path = NULL WHERE id = 'v1'")
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["243"]})
+
+    assert r.status_code == 409
+    assert _sql_rows(settings, "SELECT kind FROM job") == []
+
+
 def test_api_pick_of_a_held_video_needs_a_confirm(settings):
     _watched_with_formats(settings, stored_duration=8300.0)
     with _api(settings) as api:
@@ -1111,6 +1122,7 @@ class _Scheduler:
             tools=_Tools(8312.0),
             requests=Requests(),
             encodes=asyncio.Lock(),
+            moves=asyncio.Lock(),
         )
         self.urls = []
 

@@ -21,7 +21,9 @@
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
+- `video.state` is `pending`, `downloading`, `complete`, `failed`, `staged` (Staging), or `deleted` (Deleting a video).
 - `video.video_codec`, `audio_codec`, `video_width`, `video_height`, `video_fps`, `video_kbps` and `premium` are stored generated columns over `info`. They read the stored streams the way `savetube.formats.stored_streams` does: the first requested format with that stream, else the info dict itself. A replace keeps the top-level `format_note` of the first download, so `premium` reads the video stream's note. `video_kbps` is `vbr`, else `tbr`. The Videos page filters on them, because reading the TOASTed `info` took about 2 s per query on 5,000 videos and the columns take about 1 ms.
+- Migration `0027` adds the video state `deleted`. Its downgrade turns every `deleted` video into `complete` with no `dir_path`, the one old state the poll never queues, so the old code downloads none of them again.
 - Migration `0026` adds `encode_settings`, with its row off and profile `vtuber-av1-cq46`, and `encode_job`, empty. Its downgrade drops both. Files under `.encode/` stay.
 - Migration `0025` adds `live_seen`, empty, so the first check after it probes every candidate id once more. Its downgrade drops it.
 - Migration `0024` drops `download_settings.move_requested_at`, the Move now flag before the Scheduler API (runtime.md). Its downgrade adds it back, null.
@@ -93,3 +95,15 @@ The archive's disks are loud while a download writes to them for hours. With `SA
 - A replace job (live.md, Format watch) downloads its stream into `<staging>/incoming/<job id>/` and writes the remux into the archive's `.incoming/<job id>/`, because the result renames over a file in the tree. It never waits for a batch move, and its video stays `complete` throughout.
 - In production, staging is the 100Gi PVC `savetube-staging` of StorageClass `nvme`, on the `rpool` NVMe mirror. The worker and the scheduler mount it at `/staging`. A new volume's root belongs to root, so an init container running as root with only `CHOWN` gives it to uid 1000. A pod-level `fsGroup` would also chown the archive's local PV recursively.
 - Switching staging on leaves the parts already in the archive's `.incoming/`. Their videos download again from zero on staging, and the hourly cleanup deletes the old parts after 7 days.
+
+## Deleting a video
+
+The user deletes a stored video from its video page, such as a stream a title word let through by substring.
+
+- The scheduler deletes (`DELETE /videos/{video_id}`, runtime.md, Scheduler API), because the web pod mounts the archive read-only and no staging volume. `savetube.removal` does the work.
+- Only a `complete` or `staged` video is deleted. It removes the video's directory under `dir_path`, `.originals/<video id>/`, and for a `staged` video `<staging>/ready/<video id>/`. A path that resolves outside the archive root, or outside staging's `ready/`, is refused with 409 and nothing is removed.
+- The row stays as a tombstone in state `deleted`, with `dir_path`, `size_bytes`, `completed_at`, `verified_at`, `verified_checks` and `resume_format` cleared. `info`, `video_source` and `listing_entry` rows stay. Its `format_watch` row ends and drops `original_path` and `original_until`. No list, statistic or channel count shows it, and `GET /api/videos/{id}` still returns it.
+- A `deleted` video is never queued again: the poll counts it as `deleted` and queues no archive job (archive.md), live detection creates no record job for it (live.md), and the format watch, a manual pick and re-encoding take only `complete` videos.
+- A queued or running archive, record or replace job, or a queued or claimed encode job, refuses the delete with 409 and its reason. Nothing is cancelled for the user. A `staged` video is refused while a staging move runs, because a move can last an hour. The delete holds the format-probe and encode locks, so neither loop queues work for the video in between.
+- Files go first, then the row changes in one transaction under a row lock. A failed removal leaves the row stored, so a retry removes what is left.
+- It logs `video.deleted` with the video and the freed size. No undelete exists. The poll never downloads a `deleted` video again, even when a source lists it.

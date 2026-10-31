@@ -294,10 +294,13 @@ async def reencode(settings: Settings, lock: asyncio.Lock, skipped: set[str]) ->
     await encode.step(default_sessionmaker(), settings, tools=Tools(), lock=lock, skipped=skipped)
 
 
-async def move_requested(settings: Settings, requests: scheduler_api.Requests) -> None:
+async def move_requested(
+    settings: Settings, requests: scheduler_api.Requests, moves: asyncio.Lock
+) -> None:
     """Take the user's Move now before the move, so one asked during a long
     move runs another after it: it may name a video staged meanwhile."""
-    await move_staged(default_sessionmaker(), settings, requested=requests.take_move())
+    async with moves:
+        await move_staged(default_sessionmaker(), settings, requested=requests.take_move())
 
 
 async def _every(
@@ -336,6 +339,8 @@ async def run(settings: Settings) -> None:
     probes = asyncio.Lock()
     # The encode loop and a cancel from the API take turns on the job files.
     encodes = asyncio.Lock()
+    # The staging move and a delete of a staged video take turns on its files.
+    moves = asyncio.Lock()
     requests = scheduler_api.Requests()
     api = scheduler_api.create_app(
         settings,
@@ -345,6 +350,7 @@ async def run(settings: Settings) -> None:
         tools=Tools(),
         requests=requests,
         encodes=encodes,
+        moves=moves,
     )
     async with app.open_async():
         # Separate loops, so a long first listing of a big channel never delays
@@ -377,7 +383,7 @@ async def run(settings: Settings) -> None:
                 tg.create_task(
                     _every(
                         "staging move",
-                        lambda: move_requested(settings, requests),
+                        lambda: move_requested(settings, requests, moves),
                         wake=requests.move_wake,
                     )
                 )

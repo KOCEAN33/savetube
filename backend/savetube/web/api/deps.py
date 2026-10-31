@@ -39,14 +39,19 @@ def require_csrf_header(request: Request) -> None:
 
 
 async def call_scheduler(
-    request: Request, path: str, *, seconds: float, failed: Callable[[int, str], None]
+    request: Request,
+    path: str,
+    *,
+    seconds: float,
+    failed: Callable[[int, str], None],
+    method: str = "POST",
 ) -> None:
-    """POST `path` on the scheduler's internal API (savetube.scheduler_api).
+    """Call `path` on the scheduler's internal API (savetube.scheduler_api).
     Its 404 and 409 pass through with its detail. A timeout answers 504 and any
     other failure 502, after `failed(status, reason)` logs it."""
     try:
         async with httpx2.AsyncClient(timeout=seconds) as client:
-            r = await client.post(f"{request.app.state.scheduler_url}{path}")
+            r = await client.request(method, f"{request.app.state.scheduler_url}{path}")
     except httpx2.TimeoutException:
         failed(504, "timed out")
         raise HTTPException(

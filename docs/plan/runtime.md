@@ -29,13 +29,14 @@ One image, three roles, plus a recorder Job per live.
 - No auth: the API is cluster-internal, and the chart's NetworkPolicy `savetube-scheduler` lets only the web pods reach port 8082. The health port 8081 and the metrics port 9090 stay open to every source, so the kubelet's liveness probe passes. Every port the scheduler container serves needs a rule there, because the policy denies a port it does not name. Production runs Cilium, which enforces the policy.
 - On SIGTERM uvicorn closes the server, waiting up to 5 s for a running request, then raises the signal again, so the process stops as it did without the server.
 - A route that starts long work answers before it. It hands the request to its loop through `scheduler_api.Requests` and sets the loop's wake event, so the loop runs at once instead of after its 60 s sleep. Requests live in memory, and a restart drops them: the source polls at its interval, and the staged videos move by the other rules.
-- The web calls every route through `call_scheduler` (`web/api/deps.py`). It passes the scheduler's 404 and 409 on with their detail, answers 504 on a timeout and 502 on any other failure, and logs the failure.
+- The web calls every route through `call_scheduler` (`web/api/deps.py`), with POST unless the route names another method. It passes the scheduler's 404 and 409 on with their detail, answers 504 on a timeout and 502 on any other failure, and logs the failure.
 
 | Route | Does |
 | --- | --- |
 | `POST /probe/{video_id}` | probes a `complete` video's formats now and stores them in `format_watch` (live.md, Format watch). It waits for the format watch's probe in progress. 204 when stored, a failed probe included, 404 for an unknown video, 409 for one not `complete` |
 | `POST /poll/{source_id}` | puts the source's poll ahead of the due sources, even when it is not due. Polls stay one at a time, so it waits for a running poll. A source polls once per round, so a request for one the round already polled runs in the next round, which starts at once. 202, 404 for an unknown source, 409 for a disabled source or a playlist of a disabled `playlists` source |
 | `POST /staging/move` | runs the staging check now as a Move now (storage.md, Staging). 202, 409 when no staging volume is set |
+| `DELETE /videos/{video_id}` | deletes a `complete` or `staged` video's files and marks it `deleted` (storage.md, Deleting a video). It waits for the format watch's probe and the encode loop's step in progress. 204, 404 for an unknown video, 409 for a video not `complete` or `staged`, a path outside the archive root, an open job or encode job, or a staging move running for a `staged` video |
 | `POST /encode/{job_id}/cancel` | deletes a queued re-encoding job's file in `.encode/queue/` (encode.md). It waits for the encode loop's step in progress. 204, 404 for an unknown job, 409 for a job not queued or one the encoder already claimed |
 
 ## Embedding yt-dlp

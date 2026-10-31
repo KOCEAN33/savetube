@@ -38,6 +38,8 @@ class VideoState(enum.StrEnum):
     FAILED = "failed"
     # Downloaded and verified, waiting on staging for the move into the tree.
     STAGED = "staged"
+    # The user deleted its files. The row stays, so nothing downloads it again.
+    DELETED = "deleted"
 
 
 class JobKind(enum.StrEnum):

@@ -57,7 +57,7 @@ async def test_the_staging_loop_moves_at_once_on_a_request_and_again_for_one_mad
     loop = asyncio.create_task(
         scheduler._every(
             "staging move",
-            lambda: scheduler.move_requested(None, requests),
+            lambda: scheduler.move_requested(None, requests, asyncio.Lock()),
             3600,
             wake=requests.move_wake,
         )
