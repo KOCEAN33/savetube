@@ -683,6 +683,27 @@ def test_staging_move_request(server):
     assert r.status_code == 502 and "unreachable" in r.json()["detail"]
 
 
+def test_encode_settings_round_trip(server):
+    r = server.get("/api/encode")
+    assert r.status_code == 200
+    assert r.json() == {
+        "enabled": False,
+        "profile": "vtuber-av1-cq46",
+        "profiles": ["vtuber-av1-cq46"],
+        "jobs": [],
+    }
+    body = {"enabled": True, "profile": "vtuber-av1-cq46"}
+    assert server.put("/api/encode", json=body, headers=WRITE).json()["enabled"] is True
+    unknown = {"enabled": True, "profile": "x"}
+    assert server.put("/api/encode", json=unknown, headers=WRITE).status_code == 422
+    body["enabled"] = False
+    assert server.put("/api/encode", json=body, headers=WRITE).json()["enabled"] is False
+    assert server.post("/api/encode/jobs/1/requeue", headers=WRITE).status_code == 404
+    # No scheduler runs here, so the request cannot reach it.
+    r = server.post("/api/encode/jobs/1/cancel", headers=WRITE)
+    assert r.status_code == 502 and "unreachable" in r.json()["detail"]
+
+
 def test_pods_are_unavailable_outside_a_cluster(server):
     r = server.get("/api/pods")
     assert r.status_code == 200

@@ -7,7 +7,7 @@ One image, three roles, plus a recorder Job per live.
 | Role | Kind | Does |
 | --- | --- | --- |
 | `web` | Deployment | API and the built frontend |
-| `scheduler` | Deployment, 1 replica | polls sources on their schedules, detects lives, creates recorder Jobs, serves the internal API |
+| `scheduler` | Deployment, 1 replica | polls sources on their schedules, detects lives, creates recorder Jobs, queues re-encoding jobs and swaps their results (encode.md), serves the internal API |
 | `worker` | Deployment | archive downloads from the Postgres queue |
 | recorder | Job per live | `--live-from-start` on one video, then post-processing |
 
@@ -36,6 +36,7 @@ One image, three roles, plus a recorder Job per live.
 | `POST /probe/{video_id}` | probes a `complete` video's formats now and stores them in `format_watch` (live.md, Format watch). It waits for the format watch's probe in progress. 204 when stored, a failed probe included, 404 for an unknown video, 409 for one not `complete` |
 | `POST /poll/{source_id}` | puts the source's poll ahead of the due sources, even when it is not due. Polls stay one at a time, so it waits for a running poll. A source polls once per round, so a request for one the round already polled runs in the next round, which starts at once. 202, 404 for an unknown source, 409 for a disabled source or a playlist of a disabled `playlists` source |
 | `POST /staging/move` | runs the staging check now as a Move now (storage.md, Staging). 202, 409 when no staging volume is set |
+| `POST /encode/{job_id}/cancel` | deletes a queued re-encoding job's file in `.encode/queue/` (encode.md). It waits for the encode loop's step in progress. 204, 404 for an unknown job, 409 for a job not queued or one the encoder already claimed |
 
 ## Embedding yt-dlp
 

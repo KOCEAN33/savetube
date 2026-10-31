@@ -355,11 +355,12 @@ def _remux(stored: Path, downloaded: Path, out: Path, *, video: bool, audio: boo
 def _swap(
     archive_root: Path, video_id: str, stored: Path, out: Path, *, keep_original: bool
 ) -> Path | None:
-    """Put `out` in the stored file's place. With `keep_original`, the stored
-    file first gets a hard link in the originals directory, which this
-    returns. Otherwise the stored file came from an earlier replace and goes.
-    The link comes before the rename, so no step leaves the tree without the
-    file. An old audio copy goes too: the caller writes a new one."""
+    """Put `out` in the stored file's place, named `<video id><out's suffix>`.
+    With `keep_original`, the stored file first gets a hard link in the
+    originals directory, which this returns. Otherwise the stored file came
+    from an earlier replace and goes. The link comes before the rename, so no
+    step leaves the tree without the file. An old audio copy goes too: the
+    caller writes a new one."""
     aside = None
     if keep_original:
         aside = originals_dir(archive_root, video_id) / stored.name
@@ -367,7 +368,7 @@ def _swap(
         # A link left by a run cut off before its commit is the original.
         if not aside.exists():
             os.link(stored, aside)
-    final = stored.with_name(out.name)
+    final = stored.with_name(f"{video_id}{out.suffix}")
     os.replace(out, final)
     if stored != final:
         stored.unlink(missing_ok=True)

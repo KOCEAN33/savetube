@@ -380,3 +380,37 @@ export interface DownloadSettings extends DownloadSettingsIn {
   // Archive downloads succeeded today, plus running ones. Read-only.
   downloaded_today: number
 }
+
+export type EncodeState =
+  | "queued"
+  | "claimed"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "requeued"
+  | "lost"
+
+export interface EncodeJob {
+  id: number
+  video_id: string
+  title: string
+  state: EncodeState
+  profile: string
+  source_size: number
+  // Null until the encoder's result passes the check.
+  result_size: number | null
+  reason: string | null
+  created_at: string
+  finished_at: string | null
+}
+
+export interface EncodeSettingsIn {
+  enabled: boolean
+  profile: string
+}
+
+export interface Encode extends EncodeSettingsIn {
+  profiles: string[]
+  // Queued, claimed and failed jobs first, then the 20 latest others.
+  jobs: EncodeJob[]
+}

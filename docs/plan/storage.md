@@ -16,10 +16,13 @@
 | `format_watch` | per stored live, or per video a user's probe listed: the live's air time as `started_at`, null for a row without an automatic watch, when the watch ended, the last probe's time, counted formats, VOD duration and error, the stored file's duration, the manual-pick flag, the path of the original moved aside while it is kept, and `original_until`, when an original kept outside an open watch is deleted |
 | `live_seen` | per video id live detection probed: the probe's fields as JSONB, null for a probe that failed, `probed_at`, the last probe, and `listed_at`, the last check that listed the id (live.md, Live detection) |
 | `storage_sample` | hourly free and used bytes of the dataset |
+| `encode_settings` | one row: re-encoding on or off and its profile (encode.md) |
+| `encode_job` | per job file under `.encode/`: video, state (queued, claimed, succeeded, failed, cancelled, requeued, lost), profile, the stored file's path and size at queueing, the encoder, ffmpeg version and result size from the job file, the failure reason and log tail, when the scheduler last saw the file |
 | `video.info` | the full yt-dlp info dict as JSONB |
 
 - `channel.avatar_url` is the smallest square thumbnail of a tab listing, else its `avatar_uncropped` original. The scan finds it for a new channel, and every tab poll refreshes it. A playlist listing carries the playlist's thumbnails, so a playlist poll leaves it alone.
 - `video.video_codec`, `audio_codec`, `video_width`, `video_height`, `video_fps`, `video_kbps` and `premium` are stored generated columns over `info`. They read the stored streams the way `savetube.formats.stored_streams` does: the first requested format with that stream, else the info dict itself. A replace keeps the top-level `format_note` of the first download, so `premium` reads the video stream's note. `video_kbps` is `vbr`, else `tbr`. The Videos page filters on them, because reading the TOASTed `info` took about 2 s per query on 5,000 videos and the columns take about 1 ms.
+- Migration `0026` adds `encode_settings`, with its row off and profile `vtuber-av1-cq46`, and `encode_job`, empty. Its downgrade drops both. Files under `.encode/` stay.
 - Migration `0025` adds `live_seen`, empty, so the first check after it probes every candidate id once more. Its downgrade drops it.
 - Migration `0024` drops `download_settings.move_requested_at`, the Move now flag before the Scheduler API (runtime.md). Its downgrade adds it back, null.
 - Migration `0023` makes `format_watch.started_at` nullable and adds `format_watch.original_until` and `job.manual`. It clears `original_path` of every ended watch, whose end deleted the original, and marks the queued or running replace of a picked watch `manual`. Its downgrade deletes the rows without `started_at`.
@@ -52,7 +55,8 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
   members/ <YYYY-MM-DD> <title> [<video id>]/
 .incoming/<video id>/   archive downloads without staging
 .incoming/<job id>/     recordings, and replace jobs' remux output
-.originals/<video id>/  the file a replace moved aside, until the open watch ends, or 7 days after a swap outside one
+.originals/<video id>/  the file a replace or a re-encode moved aside, until the open watch ends, or 7 days after a swap outside one
+.encode/                job files and results of the external encoder (encode.md), also a Samba share
 ```
 
 - Each video directory holds the media, its audio-only copy (archive.md, Audio copy), `.info.json`, the thumbnail, subtitles, and the chat replay when YouTube offers one.

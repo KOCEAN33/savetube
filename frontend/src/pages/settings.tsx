@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -33,8 +34,12 @@ import {
   type DownloadSettings,
   type CookieProfile,
   type DownloadSettingsIn,
+  type Encode,
+  type EncodeState,
   type TitleWords,
 } from "@/lib/api"
+import { IDLE_REFETCH_MS } from "@/lib/constants"
+import { formatBytes } from "@/lib/format"
 import { profileLabel } from "@/lib/profiles"
 import { queryKeys } from "@/lib/query-keys"
 import { COMMON_SUBTITLE_LANGS, getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
@@ -354,6 +359,134 @@ function SubtitleLangForm() {
   )
 }
 
+function encodeStateVariant(state: EncodeState) {
+  if (state === "failed") return "destructive" as const
+  if (state === "lost") return "warning" as const
+  if (state === "succeeded") return "secondary" as const
+  return "outline" as const
+}
+
+// The switch and the select save on change, like the download pause.
+function EncodeCard({ encode }: { encode: Encode }) {
+  const queryClient = useQueryClient()
+  const onSuccess = (updated: Encode) => queryClient.setQueryData(queryKeys.encode(), updated)
+  const save = useMutation({ mutationFn: mutations.replaceEncodeSettings, onSuccess })
+  const cancel = useMutation({ mutationFn: mutations.cancelEncodeJob, onSuccess })
+  const requeue = useMutation({ mutationFn: mutations.requeueEncodeJob, onSuccess })
+  const busy = cancel.isPending || requeue.isPending
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <p className="text-sm text-muted-foreground">
+        Queues stored H.264 videos for the external AV1 encoder.
+      </p>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <div className="flex items-center gap-2">
+          <Switch
+            id="encode-enabled"
+            checked={encode.enabled}
+            disabled={save.isPending}
+            onCheckedChange={(enabled) => save.mutate({ enabled, profile: encode.profile })}
+          />
+          <Label htmlFor="encode-enabled">Re-encode</Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="encode-profile">Profile</Label>
+          <Select
+            value={encode.profile}
+            disabled={save.isPending}
+            onValueChange={(profile) => save.mutate({ enabled: encode.enabled, profile })}
+          >
+            <SelectTrigger id="encode-profile" className="w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {encode.profiles.map((p) => (
+                <SelectItem key={p} value={p}>
+                  {p}
+                </SelectItem>
+              ))}
+              {!encode.profiles.includes(encode.profile) && (
+                <SelectItem value={encode.profile}>{encode.profile} (missing)</SelectItem>
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      {save.isError && <ErrorBox error={save.error} />}
+      {cancel.isError && <ErrorBox error={cancel.error} />}
+      {requeue.isError && <ErrorBox error={requeue.error} />}
+      <Table>
+        <TableHeader className="bg-muted">
+          <TableRow>
+            <TableHead>Video</TableHead>
+            <TableHead>State</TableHead>
+            <TableHead>Size</TableHead>
+            <TableHead>Reason</TableHead>
+            <TableHead className="text-right" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {encode.jobs.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={5} className="text-center text-muted-foreground">
+                No encode job yet.
+              </TableCell>
+            </TableRow>
+          )}
+          {encode.jobs.map((j) => (
+            <TableRow key={j.id}>
+              <TableCell className="w-full max-w-0 min-w-48">
+                <Link
+                  className="block truncate hover:underline"
+                  title={j.title}
+                  to={`/videos/${encodeURIComponent(j.video_id)}`}
+                >
+                  {j.title}
+                </Link>
+              </TableCell>
+              <TableCell>
+                <Badge variant={encodeStateVariant(j.state)}>{j.state}</Badge>
+              </TableCell>
+              <TableCell className="whitespace-nowrap tabular-nums">
+                {formatBytes(j.source_size)} &rarr; {formatBytes(j.result_size)}
+              </TableCell>
+              <TableCell
+                className="max-w-64 truncate text-xs text-muted-foreground"
+                title={j.reason ?? undefined}
+              >
+                {j.reason ?? ""}
+              </TableCell>
+              <TableCell className="text-right">
+                {j.state === "queued" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => cancel.mutate(j.id)}
+                  >
+                    Cancel
+                  </Button>
+                )}
+                {j.state === "failed" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => requeue.mutate(j.id)}
+                  >
+                    Requeue
+                  </Button>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
 // Every membership result across channels, one column per present profile.
 // The channel page shows the same results for one channel.
 function MembershipTable({ channels, profiles }: { channels: Channel[]; profiles: CookieProfile[] }) {
@@ -419,6 +552,12 @@ export function SettingsPage() {
   const profiles = useQuery({ queryKey: queryKeys.cookieProfiles(), queryFn: api.cookieProfiles })
   const words = useQuery({ queryKey: queryKeys.words(), queryFn: api.globalWords })
   const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
+  // The interval shows jobs the scheduler and the encoder move.
+  const encode = useQuery({
+    queryKey: queryKeys.encode(),
+    queryFn: api.encode,
+    refetchInterval: IDLE_REFETCH_MS,
+  })
   return (
     <Page>
       <PageSection title="Global title words">
@@ -435,6 +574,9 @@ export function SettingsPage() {
             </QueryState>
           )}
         </QueryState>
+      </PageSection>
+      <PageSection title="Re-encoding">
+        <QueryState query={encode}>{(data) => <EncodeCard encode={data} />}</QueryState>
       </PageSection>
       <PageSection title="Memberships">
         <QueryState query={channels}>

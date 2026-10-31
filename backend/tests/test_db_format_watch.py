@@ -1110,6 +1110,7 @@ class _Scheduler:
             probe=probe,
             tools=_Tools(8312.0),
             requests=Requests(),
+            encodes=asyncio.Lock(),
         )
         self.urls = []
 
