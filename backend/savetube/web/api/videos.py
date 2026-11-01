@@ -55,7 +55,7 @@ class VideoOut(_Out):
     @field_validator("origin", mode="before")
     @classmethod
     def _origin(cls, protocol: str | None) -> str | None:
-        if protocol is None or protocol == "https":
+        if protocol is None or protocol in formats.DOWNLOADED:
             return None
         return "encoded" if protocol == "encode" else "recorded"
 

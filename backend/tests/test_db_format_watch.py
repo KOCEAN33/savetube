@@ -1022,6 +1022,17 @@ def test_api_a_recorded_stream_keeps_its_stored_row_beside_its_youtube_row(setti
     assert {"137", "140"} <= {r["format_id"] for r in body["formats"]}
 
 
+def test_api_a_premium_hls_download_is_a_stored_row_not_recorded(settings):
+    # YouTube serves the Premium 616 over HLS only, and the probe counts no HLS.
+    hls = {"format_id": "616", "format_note": "Premium", "protocol": "m3u8_native"}
+    _watched_with_formats(settings, info=_stored_with(hls, {"protocol": "https"}))
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    assert _rows(body)[0] == [("616", False)]
+
+
 def test_api_a_re_encoded_stream_is_encoded_and_sized_from_the_result(settings):
     # wPJeDtdhpuc in production: the encode's stored stream as encode.py
     # writes it, with the audio stream's measured size.

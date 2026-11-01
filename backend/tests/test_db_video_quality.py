@@ -242,9 +242,13 @@ def test_a_measured_stream_shows_its_measured_bitrate_and_origin(settings):
             "acodec": "none", "vbr": 2213.664, "tbr": 2213.664, "protocol": "encode"},
             duration=17858)  # fmt: skip
     _stored(settings, "vod", {**RECORDED, "protocol": "https"}, duration=None)
+    # YouTube serves the Premium 616 over HLS only.
+    _stored(settings, "hls", {**RECORDED, "format_id": "616", "protocol": "m3u8_native"},
+            duration=None)  # fmt: skip
 
     with _api(settings) as client:
         assert _row(client, "rec") == (2000.0, "recorded")
         assert _row(client, "nodur") == (1402.0, "recorded")
         assert _row(client, "enc") == (2213.664, "encoded")
         assert _row(client, "vod") == (1402.0, None)
+        assert _row(client, "hls") == (1402.0, None)
