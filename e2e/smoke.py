@@ -101,7 +101,10 @@ def check_videos(page: Page) -> str:
     expect(rows.first.locator(f"a[href='/videos/{MANIFEST['video_id']}']")).to_be_visible()
     expect(rows.first).to_contain_text("1080p30")
     settle(page)
-    return f"filter sent channel_name={name!r}, vcodec=h264 listed 1 video"
+    # A cell outside the links opens the video too, for a video with no title.
+    rows.first.get_by_role("cell", name="1080p30", exact=True).click()
+    expect(page).to_have_url(BASE + f"/videos/{MANIFEST['video_id']}")
+    return f"filter sent channel_name={name!r}, vcodec=h264 listed 1 video, row click opened it"
 
 
 def check_live(page: Page) -> str:

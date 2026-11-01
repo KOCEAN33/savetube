@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
-import { Link, useSearchParams } from "react-router"
+import { Link, useNavigate, useSearchParams } from "react-router"
 
 import { Pagination } from "@/components/pagination"
 import { Page, PageSection, QueryState } from "@/components/query-state"
@@ -68,6 +68,7 @@ function resolution(v: Video): string {
 
 export function VideosPage() {
   const [params, setParams] = useSearchParams()
+  const navigate = useNavigate()
   const q = params.get("q") ?? ""
   const type = params.get("type") ?? undefined
   const channelId = params.get("channel_id") ?? undefined
@@ -249,14 +250,22 @@ export function VideosPage() {
                 </TableHeader>
                 <TableBody>
                   {page.items.map((v) => (
-                    <TableRow key={v.id}>
+                    <TableRow
+                      key={v.id}
+                      className="cursor-pointer"
+                      onClick={(e) => {
+                        // The title and channel links navigate on their own.
+                        if ((e.target as HTMLElement).closest("a")) return
+                        navigate(`/videos/${encodeURIComponent(v.id)}`)
+                      }}
+                    >
                       <TableCell className="max-w-96 font-medium">
                         <div className="flex items-center gap-2">
                           <Link
                             className="min-w-0 truncate hover:underline"
                             to={`/videos/${encodeURIComponent(v.id)}`}
                           >
-                            {v.title}
+                            {v.title || v.id}
                           </Link>
                           <VideoYouTubeLink id={v.id} title={v.title} iconOnly />
                         </div>
