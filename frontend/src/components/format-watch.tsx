@@ -58,21 +58,59 @@ function encodeSaving(sourceSize: number, resultSize: number): string {
   return `file ${formatBytes(sourceSize)} → ${formatBytes(resultSize)} (-${saved}%)`
 }
 
-// The one-line state of the collapsed card: stored codecs, the upgrade the
-// last probe recommends, and when it ran.
+const KIND_ORDER: Kind[] = ["video", "audio"]
+
+// "AV1 (399) + Opus (251)": video first, an id the probe no longer lists as is.
+function formatList(ids: string[], formats: FormatRow[]): string {
+  return ids
+    .map(
+      (id) =>
+        formats.find((r) => r.format_id === id) ?? { format_id: id, codec: id, kind: "video" as Kind },
+    )
+    .sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind))
+    .map((r) => (r.codec === r.format_id ? r.format_id : `${r.codec} (${r.format_id})`))
+    .join(" + ")
+}
+
+// The one-line state of the collapsed card: stored codecs, then the replace
+// queued or running, else the upgrade the last probe recommends and whether
+// it needs a pick, and when the probe ran.
 function summary(w: FormatWatch): string {
   const storedRows = [...w.stored, ...w.formats.filter((r) => r.is_stored)]
-  const stored = (["video", "audio"] as const)
-    .map((k) => storedRows.find((r) => r.kind === k)?.codec)
+  const stored = KIND_ORDER.map((k) => storedRows.find((r) => r.kind === k)?.codec)
     .filter(Boolean)
     .join(" + ")
-  const upgrades = w.formats.filter((r) => r.recommended && !r.is_stored)
-  const upgrade = upgrades.length
-    ? `upgrade: ${upgrades.map((r) => `${r.codec} (${r.format_id})`).join(", ")}`
-    : w.formats.length
-      ? "no upgrade"
-      : "no formats listed"
   const probed = w.checked_at ? `probed ${formatClock(w.checked_at)}` : "never probed"
+  const r = w.replace
+  if (r && (r.state === "queued" || r.state === "running")) {
+    // A replace downloads only the streams that change: the other keeps its stored codec.
+    const ids = r.format_id?.split("+") ?? []
+    const target = KIND_ORDER.map((k) => {
+      const id = ids.find((i) => w.formats.find((row) => row.format_id === i)?.kind === k)
+      return id ? formatList([id], w.formats) : storedRows.find((row) => row.kind === k)?.codec
+    })
+      .filter(Boolean)
+      .join(" + ")
+    // An automatic replace starts only once no download waits (archive.md, Download limits).
+    const when =
+      r.state === "running"
+        ? "replacing now"
+        : r.manual
+          ? "replace queued"
+          : "replace queued, starts once no download waits"
+    return [`stored ${stored || "-"} → ${target}, ${when}`, probed].join(" / ")
+  }
+  const upgrades = w.formats.filter((row) => row.recommended && !row.is_stored)
+  let upgrade = w.formats.length ? "no upgrade" : "no formats listed"
+  if (upgrades.length) {
+    upgrade = `upgrade: ${formatList(
+      upgrades.map((row) => row.format_id),
+      w.formats,
+    )}`
+    const automatic = w.started_at != null && w.ended_at == null && !w.manual
+    if (w.held) upgrade += `, held (${signedSeconds(w.duration_diff)}), pick to replace`
+    else if (!automatic) upgrade += ", pick to replace"
+  }
   return [`stored ${stored || "-"}`, upgrade, probed].join(" / ")
 }
 
