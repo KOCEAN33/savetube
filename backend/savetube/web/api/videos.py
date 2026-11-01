@@ -1,11 +1,14 @@
 import glob
+import logging
 from datetime import date, datetime
+from functools import partial
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
@@ -13,10 +16,14 @@ from sqlalchemy.orm import InstrumentedAttribute
 from savetube import formats
 from savetube.db.models import Channel, Source, Video, VideoSource, VideoState
 from savetube.layout import VideoType
-from savetube.web.api.deps import Session, _of_channel
+from savetube.logs import emit
+from savetube.web.api.deps import Session, _of_channel, call_scheduler, log
 from savetube.web.api.schemas import _Out
 
 router = APIRouter()
+
+# The scheduler waits for a format probe or an encode step in progress first.
+DELETE_TIMEOUT = 120
 
 
 class VideoOut(_Out):
@@ -41,6 +48,16 @@ class VideoOut(_Out):
     video_fps: float | None
     video_kbps: float | None
     premium: bool | None
+    # Where the stored video stream came from: a live recording, savetube's
+    # re-encode, or null for a YouTube download.
+    origin: Literal["recorded", "encoded"] | None = Field(validation_alias="video_protocol")
+
+    @field_validator("origin", mode="before")
+    @classmethod
+    def _origin(cls, protocol: str | None) -> str | None:
+        if protocol is None or protocol == "https":
+            return None
+        return "encoded" if protocol == "encode" else "recorded"
 
     @field_validator("video_codec")
     @classmethod
@@ -122,6 +139,8 @@ async def videos(
         where.append(Video.type == type)
     if state:
         where.append(Video.state == state)
+    else:
+        where.append(Video.state != VideoState.DELETED)
     if q:
         pattern = f"%{q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')}%"
         where.append(or_(Video.title.ilike(pattern), Video.id == q))
@@ -158,6 +177,30 @@ async def video(session: Session, video_id: str) -> VideoDetail:
     if v is None:
         raise HTTPException(status_code=404)
     return VideoDetail.model_validate(v)
+
+
+@router.delete("/videos/{video_id}", status_code=204)
+async def delete_video(request: Request, video_id: str) -> None:
+    """Ask the scheduler to delete the video's files. The web pod mounts the
+    archive read-only. The row stays as `deleted`."""
+    await call_scheduler(
+        request,
+        f"/videos/{quote(video_id, safe='')}",
+        seconds=DELETE_TIMEOUT,
+        failed=partial(_delete_failed, video_id),
+        method="DELETE",
+    )
+
+
+def _delete_failed(video_id: str, status: int, reason: str) -> None:
+    emit(
+        log,
+        logging.WARNING,
+        "video.delete_request_failed",
+        video=video_id,
+        status=status,
+        reason=reason,
+    )
 
 
 async def _video_dir(request: Request, session: AsyncSession, video_id: str) -> tuple[Video, Path]:

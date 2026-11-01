@@ -24,7 +24,6 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - A recorder whose stream stays upcoming past `scheduled_at`, such as a cancelled waiting room, waits with `wait_for_video` until someone deletes its Job.
 - When the poll queues the VOD while a recording still merges, both target one tree directory, and the second `finalize` fails with `FileExistsError`.
 - A failed audio extraction after a download is not retried. Only a rerun of `savetube extract-audio` through `kubectl exec` fills it, with `print` output invisible in Loki and tied to the caller's connection.
-- The channel page hides "Show more" once all 500 listed queued jobs show, even when more wait.
 - `GET /api/sources` sends `last_error` raw. The Home card cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
 - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
 - `PUT /api/download-settings` defaults `window_enabled` to false, so a client that omits it turns the window off. The Settings page always sends it.

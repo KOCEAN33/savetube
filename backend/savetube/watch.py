@@ -241,6 +241,9 @@ async def check(
             except IntegrityFailed as e:
                 emit(log, logging.WARNING, "watch.ffprobe_failed", video=video_id, reason=str(e))
             watch.stored_duration = stored_duration
+            if stored_duration is not None:
+                # A recording's info dict has no duration.
+                (await session.get(Video, video_id)).duration = round(stored_duration)
         watch.probe_error = None
         watch.formats = formats.counted(info.get("formats") or [])
         watch.vod_duration = float(info["duration"]) if info.get("duration") else None

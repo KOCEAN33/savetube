@@ -485,6 +485,8 @@ async def _swap_in(
             watch.stored_duration = await asyncio.to_thread(probe_duration, final, tools)
         except IntegrityFailed:
             watch.stored_duration = None
+        if watch.stored_duration is not None:
+            video.duration = round(watch.stored_duration)
         row = await session.get(EncodeJob, job.id)
         row.state = EncodeState.SUCCEEDED
         row.finished_at = now

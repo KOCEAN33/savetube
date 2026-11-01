@@ -1,4 +1,4 @@
-import { get, request } from "@/lib/api/client"
+import { get, getPage, request } from "@/lib/api/client"
 import type {
   Channel,
   ChannelIn,
@@ -32,6 +32,17 @@ import type {
   VideoPage,
 } from "@/lib/api/types"
 
+type JobQuery = {
+  kind?: JobKind
+  state?: JobState[]
+  channel_id?: string
+  // Drop a failed or interrupted archive run once a later run of its video succeeded.
+  unresolved?: boolean
+  limit?: number
+  // newest by default. dispatch: running first, then the order the worker takes the queue.
+  order?: "newest" | "dispatch"
+}
+
 export const mutations = {
   createSources: (body: SourceIn) => request<Source[]>("POST", "/api/sources", body),
   updateSource: (id: number, body: SourcePatch) =>
@@ -63,6 +74,10 @@ export const mutations = {
       `/api/videos/${encodeURIComponent(videoId)}/formats/pick`,
       body,
     ),
+  // Deletes a complete or staged video's files. The row stays as `deleted`, so
+  // no poll downloads it again. 409 while a job or an encode holds the video.
+  deleteVideo: (videoId: string) =>
+    request<void>("DELETE", `/api/videos/${encodeURIComponent(videoId)}`),
   // The scheduler probes the formats now. Up to 120 s while the format watch
   // probes another video first.
   probeFormats: (videoId: string) =>
@@ -91,16 +106,9 @@ export const api = {
   // A POST that writes nothing: titles that are not stored, such as a scan's.
   titlesPreview: (body: TitleWords & { titles: string[]; channel_id?: string }) =>
     request<TitleKept[]>("POST", "/api/title-preview", body),
-  jobs: (query: {
-    kind?: JobKind
-    state?: JobState[]
-    channel_id?: string
-    // Drop a failed or interrupted archive run once a later run of its video succeeded.
-    unresolved?: boolean
-    limit?: number
-    // newest by default. dispatch: running first, then the order the worker takes the queue.
-    order?: "newest" | "dispatch"
-  }) => get<Job[]>("/api/jobs", query),
+  jobs: (query: JobQuery) => get<Job[]>("/api/jobs", query),
+  // The same list with the count of every matching job, for numbered pages.
+  jobPage: (query: JobQuery & { offset?: number }) => getPage<Job>("/api/jobs", query),
   // Every state is present, zero when no job holds it.
   jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),

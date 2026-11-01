@@ -220,3 +220,7 @@ def test_api_lists_active_jobs_in_the_order_the_worker_takes_them(settings):
         # Two rows stop at the running job and the next one, not the newest ones.
         params["limit"] = 2
         assert [j["id"] for j in client.get("/api/jobs", params=params).json()] == [2, 1]
+        # The second page continues the worker's order.
+        page = client.get("/api/jobs", params=params | {"offset": 2})
+        assert [j["id"] for j in page.json()] == [4, 3]
+        assert page.headers["X-Total-Count"] == "6"

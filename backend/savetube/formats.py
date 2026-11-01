@@ -104,6 +104,12 @@ def recorded(f: dict[str, Any]) -> bool:
     return f.get("protocol") != "https"
 
 
+def encoded(f: dict[str, Any]) -> bool:
+    """Whether a stored stream is savetube's re-encode (docs/plan/encode.md),
+    whose `protocol` the swap sets to `encode`."""
+    return f.get("protocol") == "encode"
+
+
 def video_codec(vcodec: str | None) -> tuple[int, str]:
     """AV1 over VP9 over H.264, and a display name."""
     v = (vcodec or "").lower()

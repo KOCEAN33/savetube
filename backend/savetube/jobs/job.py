@@ -452,6 +452,14 @@ async def _download(
     if r.live:
         await r.step("verifying")
         checks = await _verify_recording(media, info, tools)
+        if not info.get("duration"):
+            # yt-dlp gives a live no duration. The Videos page shows the file's.
+            try:
+                duration = await asyncio.to_thread(watch.probe_duration, media, tools)
+            except integrity.IntegrityFailed:
+                duration = None
+            if duration is not None:
+                info = {**info, "duration": round(duration)}
     await r.step("audio")
     await audio.add(media, tools)
     return info, checks

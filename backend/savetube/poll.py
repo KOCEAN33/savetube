@@ -139,6 +139,7 @@ class Synced:
     stored: int = 0
     in_flight: int = 0
     gave_up: int = 0
+    deleted: int = 0
     skips: Counter[str] = field(default_factory=Counter)
     titles: dict[str, str] = field(default_factory=dict)
     # Set when the poll queued nothing on purpose: "archiving_off", "no_owner",
@@ -293,6 +294,8 @@ async def sync(
     for vid in wanted:
         if videos[vid].state in (VideoState.COMPLETE, VideoState.STAGED):
             result.stored += 1
+        elif videos[vid].state is VideoState.DELETED:
+            result.deleted += 1
         elif vid in active:
             result.in_flight += 1
         elif failures.get(vid, 0) >= MAX_ARCHIVE_ATTEMPTS:
@@ -589,6 +592,7 @@ def _log_done(source_id: int, url: str, synced: Synced, cancelled: int, took: fl
         stored=synced.stored,
         in_flight=synced.in_flight,
         gave_up=synced.gave_up,
+        deleted=synced.deleted,
         cancelled=cancelled,
         **{f"skip_{reason}": synced.skips[reason] for reason in SKIPS},
         took=human_duration(took),

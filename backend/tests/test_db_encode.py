@@ -606,6 +606,7 @@ async def test_scheduler_cancel(settings, job_id, setup, status, state):
         tools=Tools(),
         requests=Requests(),
         encodes=asyncio.Lock(),
+        moves=asyncio.Lock(),
     )
     try:
         async with httpx2.AsyncClient(
@@ -647,6 +648,7 @@ class _Scheduler:
             tools=Tools(),
             requests=Requests(),
             encodes=asyncio.Lock(),
+            moves=asyncio.Lock(),
         )
         self.urls = []
 

@@ -103,6 +103,8 @@ async def test_a_probe_queues_the_opus_audio_for_a_recording_with_aac(settings):
     ]
     assert (watch.vod_duration, watch.stored_duration) == (8312.0, 8311.0)
     assert watch.checked_at == NOW and watch.probe_error is None
+    # The stored file's length, which a recording's info dict lacks.
+    assert _sql_rows(settings, "SELECT duration FROM video") == [(8311,)]
     assert "270" not in {f["format_id"] for f in watch.formats}
 
 
@@ -532,6 +534,8 @@ async def test_a_finished_recording_is_verified_and_gets_its_audio_copy(settings
     assert job.state is JobState.SUCCEEDED
     assert video.verified_at is not None
     assert video.verified_checks == ["probe", "packets"]
+    # make_media writes one second.
+    assert video.duration == 1
     directory = settings.archive_root / video.dir_path
     assert sorted(p.name for p in directory.iterdir()) == ["v1.mkv", "v1.opus"]
     assert video.size_bytes == sum(p.stat().st_size for p in directory.iterdir())
@@ -846,6 +850,17 @@ def test_api_pick_queues_a_replace_and_ends_the_automatic_ones(settings):
     assert again.status_code == 409
 
 
+def test_api_pick_refuses_a_deleted_video(settings):
+    _watched_with_formats(settings)
+    _sql(settings, "UPDATE video SET state = 'deleted', dir_path = NULL WHERE id = 'v1'")
+
+    with _api(settings) as api:
+        r = api.post("/api/videos/v1/formats/pick", json={"format_ids": ["243"]})
+
+    assert r.status_code == 409
+    assert _sql_rows(settings, "SELECT kind FROM job") == []
+
+
 def test_api_pick_of_a_held_video_needs_a_confirm(settings):
     _watched_with_formats(settings, stored_duration=8300.0)
     with _api(settings) as api:
@@ -887,6 +902,17 @@ def test_api_stored_rows_show_the_size_the_info_dict_holds(settings):
 
     sizes = {r["format_id"]: (r["size"], r["size_estimated"]) for r in body["stored"]}
     assert sizes == {"137": (1_234_567, False), "140": (98_765, False)}
+
+
+def test_api_a_stored_row_with_its_size_shows_the_measured_bitrate(settings):
+    # WBJ_RECORDING's 137 says 1100 kbps. 1,039,000,000 B over 8312 s is 1000 kbps.
+    info = _stored_with({"filesize": 1_039_000_000}, {})
+    _stored_live(settings, info=info, watch_sql="UPDATE format_watch SET stored_duration = 8312")
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    assert {r["format_id"]: r["bitrate"] for r in body["stored"]} == {"137": 1000.0, "140": 128.0}
 
 
 def test_api_stored_row_without_a_duration_has_no_size(settings):
@@ -954,6 +980,33 @@ def test_api_a_recorded_stream_keeps_its_stored_row_beside_its_youtube_row(setti
 
     assert _rows(body) == ([("137", True), ("140", True)], [])
     assert {"137", "140"} <= {r["format_id"] for r in body["formats"]}
+
+
+def test_api_a_re_encoded_stream_is_encoded_and_sized_from_the_result(settings):
+    # wPJeDtdhpuc in production: the encode's stored stream as encode.py
+    # writes it, with the audio stream's measured size.
+    video = {"format_id": "vtuber-av1-cq46", "format_note": "re-encoded", "protocol": "encode",
+             "vcodec": "av01", "acodec": "none", "tbr": 2213.664, "vbr": 2213.664}  # fmt: skip
+    audio = {"protocol": "https", "filesize": 265_736_997}
+    _watched_with_formats(settings, info=_stored_with(video, audio))
+    _sql(
+        settings,
+        "INSERT INTO encode_job (video_id, state, profile, source_path, source_size, result_size)"
+        " VALUES ('v1', 'succeeded', 'vtuber-av1-cq46', 'x', 11887951299, 5207195692)",
+    )
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    [row] = [r for r in body["stored"] if r["kind"] == "video"]
+    # 5,207,195,692 result bytes minus 265,736,997 audio bytes.
+    assert (row["encoded"], row["recorded"]) == (True, False)
+    assert (row["size"], row["size_estimated"]) == (4_941_458_695, False)
+    assert body["encode"] == {
+        "profile": "vtuber-av1-cq46",
+        "source_size": 11_887_951_299,
+        "result_size": 5_207_195_692,
+    }
 
 
 def test_api_a_stored_youtube_stream_the_probe_does_not_list_keeps_its_stored_row(settings):
@@ -1111,6 +1164,7 @@ class _Scheduler:
             tools=_Tools(8312.0),
             requests=Requests(),
             encodes=asyncio.Lock(),
+            moves=asyncio.Lock(),
         )
         self.urls = []
 

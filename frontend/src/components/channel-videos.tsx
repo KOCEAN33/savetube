@@ -1,14 +1,15 @@
 import { useState } from "react"
-import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query"
+import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { ChevronRightIcon } from "lucide-react"
 import { Link } from "react-router"
 
 import { Clock } from "@/components/clock"
+import { Pagination } from "@/components/pagination"
 import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { VideoYouTubeLink } from "@/components/youtube-link"
+import { usePageParam } from "@/hooks/use-page-param"
 import { api, type Source, type Video, type VideoOrder, type VideoType } from "@/lib/api"
 import { sourceLabel, thumbUrl } from "@/lib/channel"
 import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
@@ -16,6 +17,9 @@ import { queryKeys } from "@/lib/query-keys"
 import { cn } from "@/lib/utils"
 
 const PAGE = 30
+// A tab's list keeps its page under `page`, each playlist fold under its own key.
+const PAGE_KEY = "page"
+const playlistPageKey = (sourceId: number) => `pl${sourceId}`
 
 // Which stored videos a list shows: the channel's by the channel list rule, or one source's.
 export type VideoScope = { listedBy: string; type: VideoType } | { sourceId: number }
@@ -25,20 +29,22 @@ const videoHref = (id: string) => `/videos/${encodeURIComponent(id)}`
 // The YouTube link sits on the thumbnail's top left corner.
 const OVERLAY = "absolute top-3 left-4 rounded bg-background/80 p-1 text-foreground"
 
-function useStoredVideos(scope: VideoScope, q: string, order: VideoOrder) {
+function useStoredVideos(scope: VideoScope, q: string, order: VideoOrder, page: number) {
   const filter =
     "sourceId" in scope
       ? { source_id: scope.sourceId }
       : { listed_by: scope.listedBy, type: scope.type }
-  return useInfiniteQuery({
-    queryKey: queryKeys.videoPages({ ...filter, q, order }),
-    queryFn: ({ pageParam }) =>
-      api.videos({ ...filter, state: "complete", q, order, limit: PAGE, offset: pageParam }),
-    initialPageParam: 0,
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((n, p) => n + p.items.length, 0)
-      return loaded < last.total ? loaded : undefined
-    },
+  return useQuery({
+    queryKey: queryKeys.videoPage({ ...filter, q, order, page }),
+    queryFn: () =>
+      api.videos({
+        ...filter,
+        state: "complete",
+        q,
+        order,
+        limit: PAGE,
+        offset: (page - 1) * PAGE,
+      }),
     placeholderData: keepPreviousData,
   })
 }
@@ -136,25 +142,28 @@ function ShortTile({ video }: { video: Video }) {
   )
 }
 
-// Complete videos in the scope, a page at a time, filtered by `q`.
+// Complete videos in the scope, one numbered page at a time, filtered by `q`.
 export function StoredVideos({
   scope,
   q,
   order,
+  pageKey = PAGE_KEY,
   tiles = false,
 }: {
   scope: VideoScope
   q: string
   order: VideoOrder
+  // The URL parameter that holds the page, one per list on the screen.
+  pageKey?: string
   // Shorts show as 9:16 tiles, everything else as rows.
   tiles?: boolean
 }) {
-  const pages = useStoredVideos(scope, q, order)
-  if (pages.isPending) return <Skeleton className="h-48 w-full" />
-  if (pages.isError) return <ErrorBox error={pages.error} />
-  const videos = pages.data.pages.flatMap((p) => p.items)
-  const total = pages.data.pages[0].total
-  if (videos.length === 0)
+  const [page, setPage] = usePageParam(pageKey)
+  const query = useStoredVideos(scope, q, order, page)
+  if (query.isPending) return <Skeleton className="h-48 w-full" />
+  if (query.isError) return <ErrorBox error={query.error} />
+  const { items: videos, total } = query.data
+  if (total === 0)
     return (
       <p className="p-6 text-center text-sm text-muted-foreground">
         {q ? `No stored video matches "${q}".` : "No video is stored here yet."}
@@ -171,21 +180,7 @@ export function StoredVideos({
       ) : (
         <VideoRows videos={videos} total={total} />
       )}
-      {pages.hasNextPage && (
-        <div className="flex items-center gap-3 border-t p-3">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={pages.isFetchingNextPage}
-            onClick={() => pages.fetchNextPage()}
-          >
-            Show more
-          </Button>
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {formatCount(videos.length)} of {formatCount(total)}
-          </span>
-        </div>
-      )}
+      <Pagination page={page} total={total} pageSize={PAGE} onPage={setPage} label="Video pages" />
     </div>
   )
 }
@@ -213,7 +208,12 @@ function PlaylistFold({ source, order }: { source: Source; order: VideoOrder }) 
       </button>
       {open && (
         <div className="border-t bg-muted/20">
-          <StoredVideos scope={{ sourceId: source.id }} q="" order={order} />
+          <StoredVideos
+            scope={{ sourceId: source.id }}
+            q=""
+            order={order}
+            pageKey={playlistPageKey(source.id)}
+          />
         </div>
       )}
     </li>

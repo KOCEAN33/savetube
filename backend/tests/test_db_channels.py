@@ -316,6 +316,33 @@ def test_api_unresolved_drops_failures_a_later_success_fixed(settings):
     assert [j["id"] for j in unresolved] == [7, 5]
 
 
+def test_api_jobs_pages_with_offset_and_counts_every_matching_job(settings):
+    _job_rows(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts, finished_at) VALUES"
+        " (2, 'archive', 'interrupted', 'busy1', 0, '2026-01-01 10:00Z'),"
+        " (3, 'archive', 'succeeded', 'busy1', 1, '2026-01-01 12:00Z'),"
+        " (4, 'archive', 'failed', 'busy2', 3, '2026-01-01 10:00Z'),"
+        " (5, 'archive', 'failed', 'v1', 1, '2026-01-01 13:00Z'),"
+        " (6, 'archive', 'cancelled', 'v1', 0, '2026-01-01 14:00Z')",
+    )
+    finished = {"state": ["succeeded", "failed", "interrupted", "cancelled"]}
+    with _api(settings) as client:
+        second = client.get("/api/jobs", params={**finished, "limit": 2, "offset": 2})
+        last = client.get("/api/jobs", params={**finished, "limit": 2, "offset": 4})
+        past = client.get("/api/jobs", params={**finished, "limit": 2, "offset": 10})
+        # The total follows the unresolved filter: job 2's video succeeded later.
+        unresolved = client.get(
+            "/api/jobs", params={**finished, "unresolved": True, "limit": 1, "offset": 1}
+        )
+    assert [j["id"] for j in second.json()] == [4, 3]
+    assert second.headers["X-Total-Count"] == "5"
+    assert [j["id"] for j in last.json()] == [2]
+    assert past.json() == [] and past.headers["X-Total-Count"] == "5"
+    assert [j["id"] for j in unresolved.json()] == [5]
+    assert unresolved.headers["X-Total-Count"] == "4"
+
+
 def test_migration_0006_hands_waiting_archive_jobs_to_the_dispatcher(settings):
     from alembic import command
 

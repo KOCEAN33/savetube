@@ -1,14 +1,26 @@
-import { useQuery } from "@tanstack/react-query"
-import { Link, useParams } from "react-router"
+import { useState } from "react"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Trash2Icon } from "lucide-react"
+import { Link, useNavigate, useParams } from "react-router"
 
 import { Clock } from "@/components/clock"
 import { FormatWatchCard } from "@/components/format-watch"
-import { Page, QueryState } from "@/components/query-state"
+import { ErrorBox, Page, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { VideoPlayer } from "@/components/video-player"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
-import { api, type VideoDetail } from "@/lib/api"
+import { api, mutations, type VideoDetail } from "@/lib/api"
 import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 
@@ -25,6 +37,65 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="text-sm">{children}</dd>
     </div>
+  )
+}
+
+// Deletes the stored files after a confirm. The scheduler refuses (409) while a
+// job or an encode holds the video, and the dialog shows its reason.
+function DeleteVideoButton({ video }: { video: VideoDetail }) {
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [confirming, setConfirming] = useState(false)
+  const remove = useMutation({
+    mutationFn: () => mutations.deleteVideo(video.id),
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: queryKeys.video(video.id) })
+      void queryClient.invalidateQueries({ queryKey: ["videos"] })
+      void queryClient.invalidateQueries({ queryKey: ["stats"] })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.channels() })
+      // Back to the list the user came from, else the Videos page.
+      if ((window.history.state as { idx?: number } | null)?.idx) void navigate(-1)
+      else void navigate("/videos", { replace: true })
+    },
+  })
+
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => setConfirming(true)}>
+        <Trash2Icon />
+        Delete
+      </Button>
+      <Dialog
+        open={confirming}
+        onOpenChange={(open) => {
+          setConfirming(open)
+          if (!open) remove.reset()
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this video?</DialogTitle>
+            <DialogDescription>
+              &ldquo;{video.title}&rdquo; and its files, {formatBytes(video.size_bytes)}, are
+              deleted from the archive. This cannot be undone. No poll downloads it again.
+            </DialogDescription>
+          </DialogHeader>
+          {remove.isError && <ErrorBox error={remove.error} />}
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">Cancel</Button>
+            </DialogClose>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
+              Delete video
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 
@@ -45,6 +116,11 @@ export function VideoDetailPage() {
               <CardHeader>
                 <CardTitle className="text-xl">{v.title}</CardTitle>
                 <VideoYouTubeLink id={v.id} title={v.title} className="w-fit" />
+                {(v.state === "complete" || v.state === "staged") && (
+                  <CardAction>
+                    <DeleteVideoButton video={v} />
+                  </CardAction>
+                )}
               </CardHeader>
               <CardContent className="flex flex-col gap-6">
                 {v.state === "complete" && <VideoPlayer video={v} />}

@@ -211,3 +211,40 @@ def test_a_bad_bucket_is_rejected(settings):
     with _api(settings) as client:
         assert client.get("/api/videos", params={"height": "480"}).status_code == 422
         assert client.get("/api/videos", params={"vcodec": "hevc"}).status_code == 422
+
+
+def _stored(settings, vid, video, *, duration):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'Ch', 'Ch [UC1]')"
+        " ON CONFLICT DO NOTHING",
+        "INSERT INTO video (id, channel_id, type, title, state, format_id, duration, info) VALUES"
+        f" ('{vid}', 'UC1', 'lives', '{vid}', 'complete', '{video['format_id']}+140',"
+        f" {'NULL' if duration is None else duration}, '{json.dumps(_merged(video, AAC))}')",
+    )
+
+
+def _row(client, vid):
+    [v] = [v for v in client.get("/api/videos").json()["items"] if v["id"] == vid]
+    return v["video_kbps"], v["origin"]
+
+
+RECORDED = {"format_id": "248", "vcodec": "vp9", "acodec": "none", "height": 1080,
+            "tbr": 1402.0, "protocol": "http_dash_segments_generator"}  # fmt: skip
+
+
+def test_a_measured_stream_shows_its_measured_bitrate_and_origin(settings):
+    # The DASH manifest says 1402 kbps. 1,000,000,000 B over 4000 s is 2000 kbps.
+    _stored(settings, "rec", {**RECORDED, "filesize": 1_000_000_000}, duration=4000)
+    # Without a duration, the manifest's rate is all there is.
+    _stored(settings, "nodur", {**RECORDED, "filesize": 1_000_000_000}, duration=None)
+    _stored(settings, "enc", {"format_id": "vtuber-av1-cq46", "vcodec": "av01",
+            "acodec": "none", "vbr": 2213.664, "tbr": 2213.664, "protocol": "encode"},
+            duration=17858)  # fmt: skip
+    _stored(settings, "vod", {**RECORDED, "protocol": "https"}, duration=None)
+
+    with _api(settings) as client:
+        assert _row(client, "rec") == (2000.0, "recorded")
+        assert _row(client, "nodur") == (1402.0, "recorded")
+        assert _row(client, "enc") == (2213.664, "encoded")
+        assert _row(client, "vod") == (1402.0, None)

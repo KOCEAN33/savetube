@@ -8,7 +8,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Response
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from savetube import encode, watch
+from savetube import encode, removal, watch
 from savetube.config import Settings
 from savetube.db.models import Source
 from savetube.integrity import Tools
@@ -57,6 +57,7 @@ def create_app(
     tools: Tools,
     requests: Requests,
     encodes: asyncio.Lock,
+    moves: asyncio.Lock,
 ) -> FastAPI:
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
@@ -104,6 +105,19 @@ def create_app(
             raise HTTPException(status_code=404, detail="no such encode job") from None
         except encode.NotCancellable as e:
             raise HTTPException(status_code=409, detail=f"the job is {e}") from None
+        return Response(status_code=204)
+
+    @app.delete("/videos/{video_id}", status_code=204)
+    async def delete_video(video_id: str) -> Response:
+        """Delete the stored video's files and mark it deleted."""
+        try:
+            await removal.delete(
+                sessionmaker, settings, video_id, probes=probes, encodes=encodes, moves=moves
+            )
+        except LookupError:
+            raise HTTPException(status_code=404, detail="no such video") from None
+        except removal.NotDeletable as e:
+            raise HTTPException(status_code=409, detail=str(e)) from None
         return Response(status_code=204)
 
     return app

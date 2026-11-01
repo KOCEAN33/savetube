@@ -1,9 +1,9 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
 import { Link, useSearchParams } from "react-router"
 
+import { Pagination } from "@/components/pagination"
 import { Page, PageSection, QueryState } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -21,6 +21,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
+import { usePageParam } from "@/hooks/use-page-param"
 import { api, type Video, type VideoType } from "@/lib/api"
 import {
   formatBytes,
@@ -54,6 +55,11 @@ const HEIGHTS = [
 ] as const
 
 /** The short side and frame rate, "1080p60", so a vertical short reads 1080p. */
+const ORIGIN_LABEL: Record<NonNullable<Video["origin"]>, string> = {
+  recorded: "Recorded",
+  encoded: "Encoded",
+}
+
 function resolution(v: Video): string {
   const side = Math.min(v.video_width ?? Infinity, v.video_height ?? Infinity)
   if (side === Infinity) return "-"
@@ -74,7 +80,7 @@ export function VideosPage() {
   const height = params.get("height") ?? undefined
   // "true" or "false".
   const premium = params.get("premium") ?? undefined
-  const offset = Number(params.get("offset") ?? 0)
+  const [pageNo, setPage] = usePageParam()
 
   const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
   const videos = useQuery({
@@ -88,7 +94,7 @@ export function VideosPage() {
       acodec,
       height,
       premium,
-      offset,
+      page: pageNo,
     }),
     queryFn: () =>
       api.videos({
@@ -102,7 +108,7 @@ export function VideosPage() {
         height,
         premium: premium === undefined ? undefined : premium === "true",
         limit: PAGE_SIZE,
-        offset,
+        offset: (pageNo - 1) * PAGE_SIZE,
       }),
     placeholderData: keepPreviousData,
   })
@@ -116,7 +122,7 @@ export function VideosPage() {
       if (value === undefined || value === "" || value === ALL) next.delete(key)
       else next.set(key, value)
     }
-    if (!("offset" in changes)) next.delete("offset")
+    next.delete("page")
     setParams(next)
   }
 
@@ -228,7 +234,7 @@ export function VideosPage() {
               <Table>
                 <TableHeader className="bg-muted">
                   <TableRow>
-                    <TableHead>Title</TableHead>
+                    <TableHead>Title ({formatCount(page.total)})</TableHead>
                     <TableHead>Channel</TableHead>
                     <TableHead>Type</TableHead>
                     <TableHead>Uploaded</TableHead>
@@ -271,6 +277,7 @@ export function VideosPage() {
                             <span className="text-muted-foreground">{v.audio_codec}</span>
                           )}
                           {v.premium && <Badge variant="secondary">Premium</Badge>}
+                          {v.origin && <Badge variant="outline">{ORIGIN_LABEL[v.origin]}</Badge>}
                         </span>
                       </TableCell>
                       <TableCell>{resolution(v)}</TableCell>
@@ -295,31 +302,13 @@ export function VideosPage() {
                   )}
                 </TableBody>
               </Table>
-              <div className="flex items-center justify-between border-t p-3 text-sm">
-                <span className="text-muted-foreground">
-                  {page.total === 0
-                    ? "0 videos"
-                    : `${formatCount(offset + 1)}-${formatCount(offset + page.items.length)} of ${formatCount(page.total)}`}
-                </span>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={offset === 0}
-                    onClick={() => update({ offset: String(Math.max(offset - PAGE_SIZE, 0)) })}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={offset + PAGE_SIZE >= page.total}
-                    onClick={() => update({ offset: String(offset + PAGE_SIZE) })}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </div>
+              <Pagination
+                page={pageNo}
+                total={page.total}
+                pageSize={PAGE_SIZE}
+                onPage={setPage}
+                label="Video pages"
+              />
             </>
           )}
         </QueryState>

@@ -38,6 +38,8 @@ class VideoState(enum.StrEnum):
     FAILED = "failed"
     # Downloaded and verified, waiting on staging for the move into the tree.
     STAGED = "staged"
+    # The user deleted its files. The row stays, so nothing downloads it again.
+    DELETED = "deleted"
 
 
 class JobKind(enum.StrEnum):
@@ -257,6 +259,10 @@ def _number(stream: str, key: str) -> str:
 
 _V = _stream("vcodec")
 _A = _stream("acodec")
+_VIDEO_KBPS = (
+    f"COALESCE({_number(_V, 'filesize')} * 8 / 1000 / NULLIF(duration, 0),"
+    f" NULLIF({_number(_V, 'vbr')}, 0), {_number(_V, 'tbr')})::double precision"
+)
 
 
 class Video(Base):
@@ -301,12 +307,14 @@ class Video(Base):
     video_fps: Mapped[float | None] = mapped_column(
         Computed(f"{_number(_V, 'fps')}::double precision", persisted=True)
     )
-    # vbr, else tbr: a stream yt-dlp reports only one rate for.
-    video_kbps: Mapped[float | None] = mapped_column(
-        Computed(
-            f"COALESCE(NULLIF({_number(_V, 'vbr')}, 0), {_number(_V, 'tbr')})::double precision",
-            persisted=True,
-        )
+    # The stream's measured size over the stored duration, else vbr, else
+    # tbr: a stream yt-dlp reports only one rate for. A live's DASH manifest
+    # states less than the recording holds.
+    video_kbps: Mapped[float | None] = mapped_column(Computed(_VIDEO_KBPS, persisted=True))
+    # `encode` for savetube's re-encode, `https` for a YouTube download, a
+    # recording's protocol otherwise.
+    video_protocol: Mapped[str | None] = mapped_column(
+        Text, Computed(f"{_V}->>'protocol'", persisted=True)
     )
     # YouTube Premium's higher-bitrate format, such as itag 616.
     premium: Mapped[bool | None] = mapped_column(
