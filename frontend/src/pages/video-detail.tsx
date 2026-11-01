@@ -18,9 +18,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { VideoPlayer } from "@/components/video-player"
+import { UnplayableNote, VideoPlayer } from "@/components/video-player"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
 import { api, mutations, type VideoDetail } from "@/lib/api"
+import { IDLE_REFETCH_MS } from "@/lib/constants"
 import { formatBytes, formatCount, formatDuration, formatUploadDate } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 
@@ -101,7 +102,12 @@ function DeleteVideoButton({ video }: { video: VideoDetail }) {
 
 export function VideoDetailPage() {
   const { id = "" } = useParams()
-  const video = useQuery({ queryKey: queryKeys.video(id), queryFn: () => api.video(id) })
+  // A staged video turns complete when the move lands, and the player replaces the note.
+  const video = useQuery({
+    queryKey: queryKeys.video(id),
+    queryFn: () => api.video(id),
+    refetchInterval: (q) => (q.state.data?.state === "staged" ? IDLE_REFETCH_MS : false),
+  })
 
   return (
     <Page>
@@ -123,7 +129,11 @@ export function VideoDetailPage() {
                 )}
               </CardHeader>
               <CardContent className="flex flex-col gap-6">
-                {v.state === "complete" && <VideoPlayer video={v} />}
+                {v.state === "complete" ? (
+                  <VideoPlayer video={v} />
+                ) : (
+                  <UnplayableNote state={v.state} />
+                )}
                 <dl className="grid grid-cols-2 gap-4 md:grid-cols-4">
                   <Field label="ID">
                     <span className="font-mono">{v.id}</span>

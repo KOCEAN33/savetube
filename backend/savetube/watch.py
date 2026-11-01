@@ -27,6 +27,7 @@ from savetube.db.models import FormatWatch, Job, JobKind, JobState, Video, Video
 from savetube.integrity import IntegrityFailed, Tools
 from savetube.layout import LIVE_STATUSES, VideoType
 from savetube.logs import emit
+from savetube.ytdl import members_only
 
 log = logging.getLogger(__name__)
 
@@ -210,7 +211,11 @@ async def check(
     now: datetime,
 ) -> Job | None:
     """Probe one video with a row and store what it found. Only an open
-    watch queues a replace. Returns the replace job it queued, if any."""
+    watch queues a replace. Returns the replace job it queued, if any.
+
+    A live can turn members-only after it ends. A members-only refusal of the
+    general profile marks the video members-only, so its replace jobs take
+    the member profile, and the probe runs once more with that profile."""
     async with sessionmaker() as session:
         video = await session.get(Video, video_id)
         if video.type is VideoType.MEMBERS:
@@ -219,12 +224,19 @@ async def check(
             )
         else:
             profile = await cookies.general(session)
-    with tempfile.TemporaryDirectory(prefix="savetube-") as private:
-        cookiefile = cookies.cookiefile(settings, profile, Path(private))
+    try:
         try:
-            info = await asyncio.to_thread(probe, video_id, cookiefile)
+            info = await _probe_as(probe, settings, video_id, profile)
         except Exception as e:
-            info, error = None, logs.cut(f"{type(e).__name__}: {e}")
+            if video.type is VideoType.MEMBERS or not members_only(str(e)):
+                raise
+            profile = await _mark_members(sessionmaker, settings, video_id)
+            if profile is None:
+                raise
+            emit(log, logging.INFO, "watch.member_retry", video=video_id, cookies=profile)
+            info = await _probe_as(probe, settings, video_id, profile)
+    except Exception as e:
+        info, error = None, logs.cut(f"{type(e).__name__}: {e}")
     stored_duration = None
     media = media_path(settings.archive_root, video)
     async with sessionmaker() as session:
@@ -268,6 +280,29 @@ def _diff(watch: FormatWatch) -> float | None:
     if watch.vod_duration is None or watch.stored_duration is None:
         return None
     return round(watch.vod_duration - watch.stored_duration, 1)
+
+
+async def _probe_as(
+    probe: Probe, settings: Settings, video_id: str, profile: str | None
+) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="savetube-") as private:
+        cookiefile = cookies.cookiefile(settings, profile, Path(private))
+        return await asyncio.to_thread(probe, video_id, cookiefile)
+
+
+async def _mark_members(
+    sessionmaker: async_sessionmaker, settings: Settings, video_id: str
+) -> str | None:
+    """Mark the video members-only. Returns its channel's member profile."""
+    async with sessionmaker() as session:
+        video = await session.get(Video, video_id)
+        video.type = VideoType.MEMBERS
+        video.availability = "subscriber_only"
+        profile = await cookies.member_profile(
+            session, video.channel_id, cookies.profiles(settings)
+        )
+        await session.commit()
+    return profile
 
 
 async def _queue(session: AsyncSession, watch: FormatWatch, video: Video) -> Job | None:

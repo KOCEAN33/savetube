@@ -263,7 +263,16 @@ export function VideosPage() {
                       </TableCell>
                       <TableCell>
                         <span className="inline-flex items-center gap-1.5">
-                          {channelName.get(v.channel_id) ?? v.channel_id}
+                          {channelName.has(v.channel_id) ? (
+                            <Link
+                              className="hover:underline"
+                              to={`/channels/${encodeURIComponent(v.channel_id)}`}
+                            >
+                              {channelName.get(v.channel_id)}
+                            </Link>
+                          ) : (
+                            v.channel_id
+                          )}
                           <ChannelYouTubeLink id={v.channel_id} name={channelName.get(v.channel_id)} />
                         </span>
                       </TableCell>

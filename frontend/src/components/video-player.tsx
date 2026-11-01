@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { api, type VideoDetail } from "@/lib/api"
+import { ErrorBox } from "@/components/query-state"
+import { Button } from "@/components/ui/button"
+import { api, mutations, type VideoDetail } from "@/lib/api"
 import { thumbUrl } from "@/lib/channel"
 import { queryKeys } from "@/lib/query-keys"
 import { getSubtitleLang, setSubtitleLang } from "@/lib/subtitles"
@@ -12,6 +14,48 @@ const canPlayMkv = () => document.createElement("video").canPlayType("video/x-ma
 
 function Note({ children }: { children: React.ReactNode }) {
   return <p className="rounded-lg border p-4 text-sm text-muted-foreground">{children}</p>
+}
+
+const UNPLAYABLE: Record<string, string> = {
+  pending: "Not downloaded yet.",
+  downloading: "Downloading. It plays once the download finishes.",
+  failed: "The download failed. The Downloads page shows the reason.",
+  deleted: "The files were deleted from the archive.",
+}
+
+// A staged video sits on staging until the scheduler moves it into the tree
+// (docs/plan/storage.md, Staging). Move now moves every staged video.
+function StagedNote() {
+  const queryClient = useQueryClient()
+  const move = useMutation({
+    mutationFn: mutations.moveStaged,
+    onSuccess: (updated) => queryClient.setQueryData(queryKeys.staging(), updated),
+  })
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border p-4 text-sm text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-2">
+        <span>
+          Downloaded, waiting to move into the archive. It plays after the move.
+          {move.isSuccess && " Moving into the archive."}
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={move.isPending || move.isSuccess}
+          onClick={() => move.mutate()}
+        >
+          Move now
+        </Button>
+      </div>
+      {move.error && <ErrorBox error={move.error} />}
+    </div>
+  )
+}
+
+// Stands in for the player while the video is not `complete`.
+export function UnplayableNote({ state }: { state: string }) {
+  if (state === "staged") return <StagedNote />
+  return <Note>{UNPLAYABLE[state] ?? `The video is ${state}.`}</Note>
 }
 
 export function VideoPlayer({ video }: { video: VideoDetail }) {

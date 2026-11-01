@@ -181,6 +181,46 @@ async def test_a_members_live_is_probed_with_the_member_profile(settings, tmp_pa
 
 
 @pytest.mark.anyio
+async def test_a_live_turned_members_only_is_probed_again_with_the_member_profile(
+    settings, tmp_path
+):
+    cookies = tmp_path / "cookies"
+    cookies.mkdir()
+    (cookies / "main.txt").write_text("member cookies")
+    (cookies / "general.txt").write_text("general cookies")
+    member = settings.model_copy(update={"cookies_dir": cookies})
+    _stored_live(
+        settings,
+        info=HU7_RECORDING,
+        watch_sql="INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id)"
+        " VALUES ('UC1', 'main', true, now(), 'm1')",
+    )
+    _sql(settings, "UPDATE download_settings SET cookie_profile = 'general'")
+    calls = []
+    vod = _probe_vod("hU7U_HnNWUo", calls)
+
+    def probe(video_id, cookiefile):
+        if cookiefile.read_text() == "general cookies":
+            calls.append((video_id, "general cookies"))
+            raise RuntimeError(
+                f"ERROR: [youtube] {video_id}: This video is available to this channel's"
+                " members on level: つな友 (or any higher level). Join this channel to get"
+                " access to members-only content and other exclusive perks."
+            )
+        return vod(video_id, cookiefile)
+
+    watch, jobs = await _check(member, probe, _Tools(7421.0))
+
+    assert calls == [("v1", "general cookies"), ("v1", "member cookies")]
+    assert watch.probe_error is None
+    assert [j.format_id for j in jobs] == ["251"]
+    # The replace job then downloads with the member profile.
+    assert _sql_rows(settings, "SELECT type, availability FROM video") == [
+        ("members", "subscriber_only")
+    ]
+
+
+@pytest.mark.anyio
 async def test_only_due_watches_are_probed(settings):
     from savetube.watch import watch_formats
 
