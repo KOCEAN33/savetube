@@ -241,9 +241,10 @@ def check_formats(page: Page) -> str:
     # The kept video and the offered audio carry the badges.
     expect(video.locator("[data-slot=badge]")).to_have_count(1)
     expect(audio.locator("[data-slot=badge]")).to_have_count(1)
-    # The upgrade starts selected, the kept video keeps its stored row.
-    expect(audio.get_by_role("radio", name="Select format 251")).to_be_checked()
+    # The stored streams start selected, so nothing is picked yet.
+    expect(audio.get_by_role("radio", name="Keep stored audio")).to_be_checked()
     expect(video.get_by_role("radio", name="Keep stored video")).to_be_checked()
+    expect(card.get_by_role("button", name="Replace", exact=True)).to_be_disabled()
     # The VOD's 137 is another encode of the stored id, so it is selectable.
     expect(video.get_by_role("radio", name="Select format 137")).to_be_enabled()
     # The seed's stored streams carry no size: 1100 kbps over 2 s.
@@ -258,6 +259,9 @@ def check_formats(page: Page) -> str:
     expect(kept_audio).to_have_count(1)
     expect(kept_audio).to_contain_text("YouTube, stored")
     expect(kept_audio).to_contain_text("140")
+    # The stored stream comes first, above the better formats.
+    expect(audio.locator("tbody tr").first).to_contain_text("YouTube, stored")
+    audio.get_by_role("radio", name="Select format 251").check()
     expect(card.get_by_role("button", name="Replace with 251")).to_be_enabled()
     settle(page)
     rows = video.locator("tbody tr").count() + audio.locator("tbody tr").count()

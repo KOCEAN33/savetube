@@ -85,11 +85,10 @@ function value(row: FormatRow): string {
 }
 
 // The selected row of a kind: the user's choice while the table still lists
-// it, else the recommended upgrade, else the stored row.
+// it, else the stored row. A preselected upgrade reads as the stored stream.
 function selection(w: FormatWatch, kind: Kind, chosen: string | undefined): string {
   const offered = w.formats.filter((r) => r.kind === kind)
-  if (chosen === STORED || offered.some((r) => r.format_id === chosen)) return chosen ?? STORED
-  return offered.find((r) => r.recommended && !r.is_stored)?.format_id ?? STORED
+  return chosen && offered.some((r) => r.format_id === chosen) ? chosen : STORED
 }
 
 // The stored file and the formats YouTube offers for it, best first. A live's
@@ -262,11 +261,11 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
 // The offered formats a collapsed table shows, best first.
 const TOP_FORMATS = 3
 
-// One kind's rows: the stored stream, then the offered formats in the API's
-// best-first order. A stored YouTube stream has no stored row: its YouTube row
-// stands for it. The tail behind a toggle starts after the top formats, the
-// selected one and the stored one. One radio per row picks the format, the
-// stored row keeps the stored stream.
+// One kind's rows: the stored stream first, then the offered formats in the
+// API's best-first order. A stored YouTube stream has no stored row: its
+// YouTube row stands for it and moves to the top. The tail behind a toggle
+// starts after the top formats and the selected one. One radio per row picks
+// the format, the stored row keeps the stored stream.
 function FormatSection({
   kind,
   watch: w,
@@ -281,12 +280,13 @@ function FormatSection({
   onSelect: (formatId: string) => void
 }) {
   const [all, setAll] = useState(false)
-  const stored = w.stored.filter((r) => r.kind === kind)
-  const offered = w.formats.filter((r) => r.kind === kind)
-  const last = Math.max(
-    offered.findIndex((r) => value(r) === selected && selected !== STORED),
-    offered.findIndex((r) => r.is_stored),
-  )
+  const ofKind = w.formats.filter((r) => r.kind === kind)
+  const stored = [
+    ...w.stored.filter((r) => r.kind === kind),
+    ...ofKind.filter((r) => r.is_stored),
+  ]
+  const offered = ofKind.filter((r) => !r.is_stored)
+  const last = offered.findIndex((r) => r.format_id === selected)
   const shown = Math.max(TOP_FORMATS, last + 1)
   const rest = offered.slice(shown)
   const rows = [...stored, ...(all ? offered : offered.slice(0, shown))]
@@ -315,7 +315,10 @@ function FormatSection({
           </TableHeader>
           <TableBody>
             {rows.map((row) => (
-              <TableRow key={`${row.stored ? "stored" : "vod"}-${row.format_id}`}>
+              <TableRow
+                key={`${row.stored ? "stored" : "vod"}-${row.format_id}`}
+                className={cn(value(row) === STORED && "bg-muted/60")}
+              >
                 <TableCell>
                   <input
                     type="radio"
