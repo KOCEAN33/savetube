@@ -55,6 +55,11 @@ const HEIGHTS = [
 ] as const
 
 /** The short side and frame rate, "1080p60", so a vertical short reads 1080p. */
+const ORIGIN_LABEL: Record<NonNullable<Video["origin"]>, string> = {
+  recorded: "Recorded",
+  encoded: "Encoded",
+}
+
 function resolution(v: Video): string {
   const side = Math.min(v.video_width ?? Infinity, v.video_height ?? Infinity)
   if (side === Infinity) return "-"
@@ -272,6 +277,7 @@ export function VideosPage() {
                             <span className="text-muted-foreground">{v.audio_codec}</span>
                           )}
                           {v.premium && <Badge variant="secondary">Premium</Badge>}
+                          {v.origin && <Badge variant="outline">{ORIGIN_LABEL[v.origin]}</Badge>}
                         </span>
                       </TableCell>
                       <TableCell>{resolution(v)}</TableCell>

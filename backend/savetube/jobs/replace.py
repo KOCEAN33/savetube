@@ -305,6 +305,8 @@ async def _replace(
             watch.stored_duration = await asyncio.to_thread(probe_duration, final, tools)
         except integrity.IntegrityFailed:
             watch.stored_duration = None
+        if watch.stored_duration is not None:
+            video.duration = round(watch.stored_duration)
         job = await session.get(Job, job_id)
         job.state = JobState.SUCCEEDED
         job.finished_at = video.verified_at

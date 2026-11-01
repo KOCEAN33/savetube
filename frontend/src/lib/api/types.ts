@@ -179,10 +179,12 @@ export interface Video {
   video_width: number | null
   video_height: number | null
   video_fps: number | null
-  // vbr, else the video stream's tbr.
+  // The measured size over the duration, else vbr, else the video stream's tbr.
   video_kbps: number | null
   // YouTube Premium's higher-bitrate format, such as itag 616.
   premium: boolean | null
+  // A live recording or savetube's re-encode. Null for a YouTube download.
+  origin: "recorded" | "encoded" | null
 }
 
 export interface VideoDetail extends Video {

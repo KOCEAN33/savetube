@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
@@ -48,6 +48,16 @@ class VideoOut(_Out):
     video_fps: float | None
     video_kbps: float | None
     premium: bool | None
+    # Where the stored video stream came from: a live recording, savetube's
+    # re-encode, or null for a YouTube download.
+    origin: Literal["recorded", "encoded"] | None = Field(validation_alias="video_protocol")
+
+    @field_validator("origin", mode="before")
+    @classmethod
+    def _origin(cls, protocol: str | None) -> str | None:
+        if protocol is None or protocol == "https":
+            return None
+        return "encoded" if protocol == "encode" else "recorded"
 
     @field_validator("video_codec")
     @classmethod

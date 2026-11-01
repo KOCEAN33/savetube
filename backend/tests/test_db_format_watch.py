@@ -103,6 +103,8 @@ async def test_a_probe_queues_the_opus_audio_for_a_recording_with_aac(settings):
     ]
     assert (watch.vod_duration, watch.stored_duration) == (8312.0, 8311.0)
     assert watch.checked_at == NOW and watch.probe_error is None
+    # The stored file's length, which a recording's info dict lacks.
+    assert _sql_rows(settings, "SELECT duration FROM video") == [(8311,)]
     assert "270" not in {f["format_id"] for f in watch.formats}
 
 
@@ -532,6 +534,8 @@ async def test_a_finished_recording_is_verified_and_gets_its_audio_copy(settings
     assert job.state is JobState.SUCCEEDED
     assert video.verified_at is not None
     assert video.verified_checks == ["probe", "packets"]
+    # make_media writes one second.
+    assert video.duration == 1
     directory = settings.archive_root / video.dir_path
     assert sorted(p.name for p in directory.iterdir()) == ["v1.mkv", "v1.opus"]
     assert video.size_bytes == sum(p.stat().st_size for p in directory.iterdir())
@@ -898,6 +902,17 @@ def test_api_stored_rows_show_the_size_the_info_dict_holds(settings):
 
     sizes = {r["format_id"]: (r["size"], r["size_estimated"]) for r in body["stored"]}
     assert sizes == {"137": (1_234_567, False), "140": (98_765, False)}
+
+
+def test_api_a_stored_row_with_its_size_shows_the_measured_bitrate(settings):
+    # WBJ_RECORDING's 137 says 1100 kbps. 1,039,000,000 B over 8312 s is 1000 kbps.
+    info = _stored_with({"filesize": 1_039_000_000}, {})
+    _stored_live(settings, info=info, watch_sql="UPDATE format_watch SET stored_duration = 8312")
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    assert {r["format_id"]: r["bitrate"] for r in body["stored"]} == {"137": 1000.0, "140": 128.0}
 
 
 def test_api_stored_row_without_a_duration_has_no_size(settings):

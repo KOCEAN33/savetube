@@ -42,7 +42,8 @@ class FormatRow(BaseModel):
     width: int | None
     height: int | None
     fps: float | None
-    # kbps: tbr for video, abr for audio.
+    # kbps: tbr for video, abr for audio. A stored row with its exact size and
+    # the stored duration gets the measured rate.
     bitrate: float | None
     # The exact size, else yt-dlp's estimate. A stored stream without either
     # gets bitrate × stored duration, null without those.
@@ -134,6 +135,9 @@ def _row(
     estimated = stored and size is None and bitrate is not None and duration is not None
     if estimated:
         size = round(bitrate * 1000 / 8 * duration)
+    elif stored and f.get("filesize") and duration:
+        # A live's DASH manifest states less than the recording holds.
+        bitrate = round(f["filesize"] * 8 / 1000 / duration, 3)
     return FormatRow(
         format_id=str(f.get("format_id")),
         kind=k,
