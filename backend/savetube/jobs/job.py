@@ -55,6 +55,7 @@ from savetube.poll import MAX_ARCHIVE_ATTEMPTS
 from savetube.storage import dir_size
 from savetube.ytdl import (
     DEFAULT_FORMAT,
+    NotStarted,
     bare_unavailable,
     build_params,
     members_only,
@@ -74,6 +75,11 @@ MAX_NETWORK_STALLS = 5
 UNAVAILABLE_STREAK = 3
 UNAVAILABLE_STREAK_WINDOW = timedelta(hours=1)
 PAUSED_LOG = "paused by user"
+# How long past its scheduled start a recording waits for a stream still
+# upcoming, such as a cancelled waiting room. The span after which live
+# detection probes a refused id again (savetube.live.RETRY_UNREADABLE).
+NOT_STARTED_LIMIT = timedelta(hours=24)
+NOT_STARTED_LOG = "the stream did not start within 24 hours of its scheduled start"
 
 
 _RECORDED = "savetube_recorded"
@@ -121,6 +127,8 @@ async def run(
             await _finish(r, settings, info, checks, shorts=begun.shorts)
         except Disowned as e:
             r.log_disowned(str(e))
+        except NotStarted:
+            await _record_not_started(r, begun)
         except (asyncio.CancelledError, Paused) as e:
             # A recorder's retry starts from the first segment anyway.
             if live:
@@ -150,6 +158,8 @@ class _Begun:
     attempt: int
     limit: int | None
     described: dict[str, Any]
+    # A recording's NOT_STARTED_LIMIT past its scheduled start.
+    wait_until: datetime | None
 
 
 async def _begin(
@@ -187,6 +197,9 @@ async def _begin(
         run_started = await _mark_running(session, job, video_id)
         attempt, limit = await _attempt(session, job, video_id, live=live)
         described = await _describe(session, video_id)
+        wait_until = (
+            job.scheduled_at + NOT_STARTED_LIMIT if live and job.scheduled_at is not None else None
+        )
         await session.commit()
     return _Begun(
         video_id=video_id,
@@ -200,6 +213,7 @@ async def _begin(
         attempt=attempt,
         limit=limit,
         described=described,
+        wait_until=wait_until,
     )
 
 
@@ -397,6 +411,7 @@ def _params(
     live: bool,
     ratelimit: int | None,
     video_id: str,
+    wait_until: datetime | None = None,
 ) -> dict[str, Any]:
     p = build_params(
         workdir,
@@ -404,6 +419,7 @@ def _params(
         cookiefile=cookiefile,
         live=live,
         ratelimit=ratelimit,
+        wait_until=wait_until.timestamp() if wait_until is not None else None,
     )
     if not live:
         # A `.part` file left by an interrupted run resumes.
@@ -527,7 +543,8 @@ async def _download_as(
             video_id=r.video_id,
         )
         if r.live:
-            return await runner(video_url(r.video_id), params(begun.fmt), r.report), None
+            live_params = params(begun.fmt, wait_until=begun.wait_until)
+            return await runner(video_url(r.video_id), live_params, r.report), None
         return await _unless_paused(
             r.sessionmaker,
             r.job_id,
@@ -609,6 +626,28 @@ async def _record_stop(r: _Run, e: asyncio.CancelledError | Paused) -> None:
         await _interrupt(session, job, reason)
         await session.commit()
     r.interrupted(logging.INFO, reason, _present_label(r.workdir))
+
+
+async def _record_not_started(r: _Run, begun: _Begun) -> None:
+    """End a recording whose stream was still upcoming at its deadline. The
+    run returns, so the recorder exits 0 and its Job takes no retry."""
+    shutil.rmtree(r.workdir, ignore_errors=True)
+    async with r.sessionmaker() as session:
+        job = await session.get(Job, r.job_id)
+        job.state = JobState.MISSED
+        job.finished_at = datetime.now(UTC)
+        job.log_tail = NOT_STARTED_LOG
+        await _set_video_state(session, r.video_id, VideoState.FAILED)
+        await session.commit()
+    emit(
+        log,
+        logging.WARNING,
+        "record.not_started",
+        job=r.job_id,
+        video=r.video_id,
+        **r.described,
+        scheduled=(begun.wait_until - NOT_STARTED_LIMIT).isoformat(),
+    )
 
 
 async def _record_failure(r: _Run, e: Exception) -> bool:

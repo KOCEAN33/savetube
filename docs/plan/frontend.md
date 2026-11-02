@@ -141,4 +141,4 @@ Home's statistics read the base tables in Postgres on every view. No metrics sto
 
 - `reason` is one line the API makes from `log_tail`, with no column behind it. A YouTube block reads "blocked by YouTube", a `NETWORK_MARKERS` match (archive.md) "network error", and a missing member profile "members-only, no member cookie profile". An integrity failure names its check, and a worker stop reads "worker stopped" or "worker shut down". Any other text loses yt-dlp's prefixes and is cut to 120 characters.
 - `video.size_bytes` sums every file in the video's directory, so subtitles, thumbnails and the audio copy count.
-- A missed live is a detected stream whose recorder never captured from the first segment. It carries the reason: DVR off, ended before detection, or recorder failure.
+- A missed live is a detected stream whose recorder never captured from the first segment. It carries the reason: DVR off, ended before detection, or recorder failure. A recording that gave up on a stream that never started carries none.
