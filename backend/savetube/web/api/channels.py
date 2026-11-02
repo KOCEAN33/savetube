@@ -120,6 +120,14 @@ async def update_channel(session: Session, channel_id: str, body: ChannelPatch) 
     channel = await session.get(Channel, channel_id)
     if channel is None:
         raise HTTPException(status_code=404)
+    # Live detection watches the channels with an enabled tab (savetube.live).
+    if body.watch_lives and not await session.scalar(
+        select(Source.id)
+        .where(Source.channel_id == channel_id, Source.kind == SourceKind.TAB, Source.enabled)
+        .exists()
+        .select()
+    ):
+        raise HTTPException(status_code=422, detail="recording lives needs a tab")
     _normalize(body)
     changed = {}
     for field, value in body.model_dump(exclude_unset=True).items():

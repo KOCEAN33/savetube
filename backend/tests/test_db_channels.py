@@ -587,6 +587,27 @@ def test_api_channel_counts_use_the_channel_page_rule(settings):
     assert (patched["video_count"], patched["bytes"]) == (2, 120)
 
 
+def test_api_patch_turns_on_live_recording_only_with_an_enabled_tab(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, '{PL}A', 'playlist', 'UC1', true, 360),"
+        " (2, 'https://www.youtube.com/@a/streams', 'tab', 'UC1', false, 360)",
+    )
+    with _api(settings) as client:
+        refused = client.patch("/api/channels/UC1", json={"watch_lives": True})
+        assert refused.status_code == 422
+        assert refused.json()["detail"] == "recording lives needs a tab"
+        assert client.get("/api/channels").json()[0]["watch_lives"] is False
+        # Turning it off needs no tab.
+        assert client.patch("/api/channels/UC1", json={"watch_lives": False}).status_code == 200
+
+        _sql(settings, "UPDATE source SET enabled = true WHERE id = 2")
+        on = client.patch("/api/channels/UC1", json={"watch_lives": True})
+        assert on.status_code == 200 and on.json()["watch_lives"] is True
+
+
 def test_api_channel_statistics_follow_the_channel_list_rule(settings):
     # UC2 uploaded a video UC1's playlist lists and another one no source lists.
     # No source names UC2.

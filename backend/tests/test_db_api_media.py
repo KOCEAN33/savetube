@@ -110,6 +110,13 @@ def test_media_never_leaves_the_archive_root(settings):
         assert client.get("/api/videos/m1/media").status_code == 404
 
 
+def test_get_and_head_of_media_and_audio_have_distinct_operation_ids(settings):
+    paths = create_app(settings).openapi()["paths"]
+    for path in ("/api/videos/{video_id}/media", "/api/videos/{video_id}/audio"):
+        assert set(paths[path]) == {"get", "head"}
+        assert paths[path]["get"]["operationId"] != paths[path]["head"]["operationId"]
+
+
 def test_media_needs_a_login(settings):
     _media_rows(settings)
     app = create_app(settings)

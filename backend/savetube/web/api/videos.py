@@ -275,13 +275,16 @@ async def video_subtitle(
 
 
 # Starlette's FileResponse answers Range (206, 416, multipart) and HEAD itself.
-@router.api_route("/videos/{video_id}/media", methods=["GET", "HEAD"])
+# One route per method, so GET and HEAD get their own OpenAPI operation id.
+@router.get("/videos/{video_id}/media")
+@router.head("/videos/{video_id}/media")
 async def video_media(request: Request, session: Session, video_id: str) -> FileResponse:
     path = await _stored_file(request, session, video_id, "")
     return FileResponse(path, media_type="video/x-matroska" if path.suffix == ".mkv" else None)
 
 
-@router.api_route("/videos/{video_id}/audio", methods=["GET", "HEAD"])
+@router.get("/videos/{video_id}/audio")
+@router.head("/videos/{video_id}/audio")
 async def video_audio(request: Request, session: Session, video_id: str) -> FileResponse:
     return FileResponse(
         await _stored_file(request, session, video_id, "opus"), media_type="audio/ogg"

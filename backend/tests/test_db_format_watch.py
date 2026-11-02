@@ -1388,6 +1388,27 @@ async def test_a_replace_swaps_the_audio_and_keeps_the_recording_aside(settings,
     assert sorted(p.name for p in aside.parent.iterdir()) == ["v1.mkv"]
 
 
+@pytest.mark.anyio
+async def test_a_replace_whose_row_is_no_longer_queued_does_not_run(settings, caplog):
+    # A cancel whose queue job stayed `todo` hands the worker a cancelled row.
+    directory = _stored_live(settings)
+    _sql(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts)"
+        " VALUES (1, 'replace', 'cancelled', 'v1', '251', 0)",
+    )
+    runner = _Steps()
+
+    with caplog.at_level(logging.INFO, logger="savetube.jobs"):
+        job, video, watch = await _replace(settings, 1, runner)
+
+    assert runner.calls == []
+    assert job.state is JobState.CANCELLED and job.attempts == 0 and job.started_at is None
+    assert (directory / "v1.mkv").read_bytes() == b"recording"
+    [skipped] = _events(caplog, "replace.skipped")
+    assert _fields(skipped)["state"] == "cancelled"
+
+
 @needs_ffmpeg
 @pytest.mark.anyio
 async def test_a_manual_swap_without_a_watch_keeps_the_original_7_days(settings, tmp_path):
