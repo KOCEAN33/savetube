@@ -28,7 +28,6 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - `PUT /api/download-settings` defaults `window_enabled` to false, so a client that omits it turns the window off. The Settings page always sends it.
 - `/api/stats/daily` buckets by the DB session time zone, not KST, so it can differ from `downloaded_today` near midnight.
 - The format fallback treats any HLS run that ends "The downloaded file is empty" with no bytes as a refused format, whatever the cause. The cap of 3 per attempt bounds it.
-- `POST /api/channels` refuses `watch_lives` without a tab, but `PATCH /api/channels/{id}` sets it with no such check (`web/api/channels.py`).
 - The GET and HEAD routes for `/media` and `/audio` share an operation ID. FastAPI warns "Duplicate Operation ID", and which method names it depends on the hash seed.
 - A playlist listing can name the group channel for a member's video, which leaves an empty group channel row once the download stores the video under the member.
 

@@ -264,7 +264,7 @@ def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplo
             {"profile": "alt", "is_member": False, "checked_at": "2026-10-21T02:00:00Z"},
             {"profile": "main", "is_member": True, "checked_at": "2026-10-21T01:00:00Z"},
         ]
-        patched = client.patch(f"/api/channels/{VESP}", json={"watch_lives": True}).json()
+        patched = client.patch(f"/api/channels/{VESP}", json={"watch_lives": False}).json()
         assert patched["memberships"] == channel["memberships"]
 
     # The scheduler records what its mount holds. The web reads only the table.
