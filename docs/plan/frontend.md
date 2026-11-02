@@ -133,7 +133,7 @@ Home's statistics read the base tables in Postgres on every view. No metrics sto
 | --- | --- |
 | Total stored size, video count, hours archived | `sum(size_bytes)`, `count(*)`, `sum(duration)` over `video` |
 | Size and count by channel and by type | the same, grouped by tracked channel under the channel page's rule, and by `type` |
-| Bytes added per day or week | `video.completed_at` bucketed with `date_trunc` |
+| Bytes added per day or week | `video.completed_at` bucketed by Asia/Seoul day with `date_trunc` |
 | Live recordings: recorded, failed, missed | `job` where kind is record, grouped by state |
 | Queue: pending, running, failed | procrastinate's job table |
 | Dataset free space | `statfs` on the mount, sampled into a table hourly |

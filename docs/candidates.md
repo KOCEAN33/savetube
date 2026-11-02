@@ -26,7 +26,6 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - `GET /api/sources` sends `last_error` raw. The Home card cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
 - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
 - `PUT /api/download-settings` defaults `window_enabled` to false, so a client that omits it turns the window off. The Settings page always sends it.
-- `/api/stats/daily` buckets by the DB session time zone, not KST, so it can differ from `downloaded_today` near midnight.
 - The format fallback treats any HLS run that ends "The downloaded file is empty" with no bytes as a refused format, whatever the cause. The cap of 3 per attempt bounds it.
 - The GET and HEAD routes for `/media` and `/audio` share an operation ID. FastAPI warns "Duplicate Operation ID", and which method names it depends on the hash seed.
 - A playlist listing can name the group channel for a member's video, which leaves an empty group channel row once the download stores the video under the member.

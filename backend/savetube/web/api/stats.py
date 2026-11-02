@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from savetube.db.models import Channel, StorageSample, Video
 from savetube.layout import VideoType
+from savetube.tz import TIMEZONE
 from savetube.web.api.deps import Session, _channel_videos, _size, _stored, _tracked
 from savetube.web.api.schemas import _Out
 
@@ -85,7 +86,8 @@ async def summary(session: Session) -> Summary:
 async def daily(
     session: Session, days: Annotated[int, Query(ge=1, le=3650)] = 90
 ) -> list[DailyStat]:
-    day = func.date_trunc("day", Video.completed_at).label("day")
+    # The Seoul day, as downloaded_today counts it, whatever the session time zone.
+    day = func.date_trunc("day", func.timezone(TIMEZONE.key, Video.completed_at)).label("day")
     since = datetime.now(UTC) - timedelta(days=days)
     rows = await session.execute(
         select(day, _size.label("bytes"), func.count().label("count"))

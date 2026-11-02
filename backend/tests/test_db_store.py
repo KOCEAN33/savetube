@@ -1,6 +1,6 @@
 import pytest
 import sqlalchemy as sa
-from conftest import ADMIN_URL
+from conftest import ADMIN_URL, _api, _sql
 from fastapi.testclient import TestClient
 
 from savetube.db import make_engine, make_sessionmaker
@@ -141,3 +141,22 @@ def test_api_reports_only_stored_videos(settings):
         assert client.get("/api/videos", params={"q": "a_"}).json()["total"] == 1
         assert client.get("/api/videos/v2").json()["type"] == "lives"
         assert client.get("/api/videos/nope").status_code == 404
+
+
+def test_api_daily_stats_bucket_by_the_seoul_day(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, size_bytes, state, completed_at) VALUES"
+        # 2026-10-21 01:30 and 23:00 in Seoul, two UTC days apart.
+        " ('v1', 'UC1', 'videos', 'a', 100, 'complete', '2026-10-20T16:30:00Z'),"
+        " ('v2', 'UC1', 'videos', 'b', 20, 'complete', '2026-10-21T14:00:00Z'),"
+        # 2026-10-22 00:10 in Seoul, still 10-21 in UTC.
+        " ('v3', 'UC1', 'videos', 'c', 3, 'complete', '2026-10-21T15:10:00Z')",
+    )
+    with _api(settings) as client:
+        daily = client.get("/api/stats/daily", params={"days": 3650}).json()
+    assert daily == [
+        {"day": "2026-10-21", "bytes": 120, "count": 2},
+        {"day": "2026-10-22", "bytes": 3, "count": 1},
+    ]
