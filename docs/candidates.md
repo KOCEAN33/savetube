@@ -25,7 +25,6 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - A failed audio extraction after a download is not retried. Only a rerun of `savetube extract-audio` through `kubectl exec` fills it, with `print` output invisible in Loki and tied to the caller's connection.
 - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
 - The format fallback treats any HLS run that ends "The downloaded file is empty" with no bytes as a refused format, whatever the cause. The cap of 3 per attempt bounds it.
-- The GET and HEAD routes for `/media` and `/audio` share an operation ID. FastAPI warns "Duplicate Operation ID", and which method names it depends on the hash seed.
 - A playlist listing can name the group channel for a member's video, which leaves an empty group channel row once the download stores the video under the member.
 
 ## Cleanup
