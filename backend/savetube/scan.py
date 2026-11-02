@@ -43,7 +43,7 @@ SCAN_SECONDS = 110
 # Entries per tab in a channel scan: one page of YouTube's tab listing.
 SCAN_PAGE = 30
 # yt-dlp's answer for a tab the channel lacks, such as Shorts on a channel without any.
-_NO_TAB = "does not have a"
+NO_TAB = "does not have a"
 SCAN_TABS = (Tab.VIDEOS, Tab.SHORTS, Tab.STREAMS)
 
 
@@ -73,7 +73,7 @@ def _listing(
         with tempfile.TemporaryDirectory(prefix="savetube-") as private:
             return lister(url, cookies.cookiefile(settings, profile, Path(private)), limit)
     except DownloadError as e:
-        if _NO_TAB in str(e):
+        if NO_TAB in str(e):
             return None
         raise
 

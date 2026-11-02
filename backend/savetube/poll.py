@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from yt_dlp.utils import DownloadError
 
-from savetube import cookies, logs, words
+from savetube import cookies, limits, logs, words
 from savetube.config import Settings
 from savetube.db.models import (
     Channel,
@@ -36,6 +36,7 @@ from savetube.db.models import (
 from savetube.layout import VideoType, classify
 from savetube.logs import emit, human_duration
 from savetube.pipeline import get_or_create_channel
+from savetube.scan import NO_TAB
 from savetube.sources import InvalidSourceUrl
 from savetube.sources import parse as parse_source_url
 from savetube.ytdl import avatar_url
@@ -496,6 +497,7 @@ async def _poll_source(
             return
         channel = await session.get(Channel, source.channel_id) if source.channel_id else None
         url, profile = source.url, await cookies.general(session)
+        kind, channel_id = source.kind, source.channel_id
         emit(
             log,
             logging.INFO,
@@ -509,9 +511,27 @@ async def _poll_source(
     now = datetime.now(UTC)
     started = time.monotonic()
     try:
-        with tempfile.TemporaryDirectory(prefix="savetube-") as private:
-            cookiefile = cookies.cookiefile(settings, profile, Path(private))
-            listing = await asyncio.to_thread(lister, url, cookiefile)
+        missing: DownloadError | None = None
+        try:
+            listing = await _list(lister, settings, url, profile)
+        except DownloadError as e:
+            if kind is not SourceKind.TAB or NO_TAB not in str(e):
+                raise
+            listing, missing = {}, e
+        if kind is SourceKind.TAB and channel_id is not None and not _has_entries(listing):
+            member = await _member_lister(sessionmaker, settings, channel_id, profile)
+            if member is not None:
+                emit(
+                    log,
+                    logging.INFO,
+                    "poll.member_listing",
+                    source=source_id,
+                    url=url,
+                    profile=member,
+                )
+                listing, missing = await _list(lister, settings, url, member), None
+        if missing is not None:
+            raise missing
         async with sessionmaker() as session:
             source = await session.get(Source, source_id)
             source.last_polled_at = now
@@ -551,6 +571,34 @@ async def _poll_source(
         )
     _log_done(source_id, url, synced, cancelled, time.monotonic() - started)
     await cookies.check_memberships(sessionmaker, settings, synced.members_only, prober=prober)
+
+
+async def _list(
+    lister: Lister, settings: Settings, url: str, profile: str | None
+) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="savetube-") as private:
+        cookiefile = cookies.cookiefile(settings, profile, Path(private))
+        return await asyncio.to_thread(lister, url, cookiefile)
+
+
+def _has_entries(listing: dict[str, Any]) -> bool:
+    return any(e.get("id") for e in listing.get("entries") or [])
+
+
+async def _member_lister(
+    sessionmaker: async_sessionmaker, settings: Settings, channel_id: str, general: str | None
+) -> str | None:
+    """The member profile that lists a tab the general profile found empty or
+    missing, as a channel whose uploads are all members-only shows without a
+    member's cookies. The profile a members-only download takes. None while a
+    YouTube block holds, or when the general profile is a member itself."""
+    present = cookies.profiles(settings)
+    async with sessionmaker() as session:
+        if limits.blocked(await limits.load(session), datetime.now(UTC)) is not None:
+            return None
+        if general is not None and await cookies.member_profile(session, channel_id, [general]):
+            return None
+        return await cookies.member_profile(session, channel_id, present)
 
 
 def _log_done(source_id: int, url: str, synced: Synced, cancelled: int, took: float) -> None:

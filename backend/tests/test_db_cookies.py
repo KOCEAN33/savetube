@@ -467,6 +467,138 @@ async def poll_source_with(sessionmaker, settings, source_id, lister):
 
 
 @pytest.mark.anyio
+async def test_an_empty_tab_lists_again_with_the_member_profile(settings, caplog):
+    """A channel whose uploads are all members-only: without a member's cookies
+    its Videos tab lists no entries and its Shorts tab is missing."""
+    import logging
+
+    from yt_dlp.utils import DownloadError
+
+    videos = f"https://www.youtube.com/channel/{VESP}/videos"
+    shorts = f"https://www.youtube.com/channel/{VESP}/shorts"
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, '{videos}', 'tab', '{VESP}', true, 360),"
+        f" (2, '{shorts}', 'tab', '{VESP}', true, 360)",
+        "INSERT INTO membership (channel_id, profile, is_member, video_id, checked_at) VALUES"
+        f" ('{VESP}', 'alt', false, 'member1', now()),"
+        f" ('{VESP}', 'main', true, 'member1', now()),"
+        f" ('{VESP}', 'main2', true, 'member1', now()),"
+        f" ('{VESP}', 'throwaway', false, 'member1', now())",
+    )
+    settings = _profiles(settings, "alt", "main", "main2", "throwaway")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    head = {"channel_id": VESP, "channel": "VESPERBELL"}
+    calls = []
+    # What a member sees on the Videos tab.
+    uploads = ["member1", "member2"]
+
+    def lister(url, cookiefile):
+        profile = None if cookiefile is None else cookiefile.read_text().removeprefix("# ").strip()
+        calls.append((url.rsplit("/", 1)[1], profile))
+        member = profile in ("main", "main2")
+        if url == shorts:
+            if not member:
+                raise DownloadError(
+                    "ERROR: [youtube:tab] VESPERBELL: This channel does not have a shorts tab"
+                )
+            return {**head, "entries": [{"id": "short1", "title": "short"}]}
+        entries = [
+            {"id": vid, "title": f"【メン限】{vid}", "availability": "subscriber_only"}
+            for vid in uploads
+        ]
+        return {**head, "entries": entries if member else []}
+
+    async def queued():
+        async with sessionmaker() as session:
+            return sorted(
+                await session.scalars(sa.select(Job.video_id).where(Job.state == JobState.QUEUED))
+            )
+
+    # Cookie-free, then the first member profile by name. The member listing's
+    # entries queue as any poll's do.
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await poll_source_with(sessionmaker, settings, 1, lister)
+        await poll_source_with(sessionmaker, settings, 2, lister)
+    assert calls == [("videos", None), ("videos", "main"), ("shorts", None), ("shorts", "main")]
+    assert await queued() == ["member1", "member2", "short1"]
+    fallbacks = [_fields(r) for r in caplog.records if r.getMessage() == "poll.member_listing"]
+    assert [(f["source"], f["profile"]) for f in fallbacks] == [(1, "main"), (2, "main")]
+    async with sessionmaker() as session:
+        assert (await session.get(Source, 2)).last_error is None
+
+    # A general profile that is a member lists what a member sees, so an
+    # empty tab stays empty.
+    calls.clear()
+    uploads.clear()
+    _sql(settings, "UPDATE download_settings SET cookie_profile = 'main2'")
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    assert calls == [("videos", "main2")]
+    uploads.append("member3")
+
+    # A throwaway general profile falls back to a member.
+    calls.clear()
+    _sql(settings, "UPDATE download_settings SET cookie_profile = 'throwaway'")
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    assert calls == [("videos", "throwaway"), ("videos", "main")]
+
+    # No member listing while a YouTube block holds. The missing tab fails the poll.
+    calls.clear()
+    _sql(settings, "UPDATE download_settings SET blocked_until = now() + interval '1 hour'")
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    await poll_source_with(sessionmaker, settings, 2, lister)
+    assert calls == [("videos", "throwaway"), ("shorts", "throwaway")]
+    async with sessionmaker() as session:
+        assert "does not have a shorts tab" in (await session.get(Source, 2)).last_error
+
+    # Without a confirmed member, no profile but the general one lists.
+    calls.clear()
+    _sql(
+        settings,
+        "UPDATE download_settings SET blocked_until = NULL",
+        "UPDATE membership SET is_member = false",
+    )
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    assert calls == [("videos", "throwaway")]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_tab_with_entries_lists_with_the_general_profile_only(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/videos', 'tab', '{VESP}', true, 360),"
+        " (2, 'https://www.youtube.com/playlist?list=PLempty', 'playlist', "
+        f" '{VESP}', true, 360)",
+        "INSERT INTO membership (channel_id, profile, is_member, video_id, checked_at) VALUES"
+        f" ('{VESP}', 'main', true, 'member1', now())",
+    )
+    settings = _profiles(settings, "main")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    calls = []
+
+    def lister(url, cookiefile):
+        calls.append((url, cookiefile))
+        if "playlist" in url:
+            return {"channel_id": VESP, "entries": []}
+        return {"channel_id": VESP, "entries": [{"id": "public", "title": "public"}]}
+
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    # A playlist source never takes the member profile, even when empty.
+    await poll_source_with(sessionmaker, settings, 2, lister)
+    assert [c for _, c in calls] == [None, None]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
 async def test_a_download_takes_format_from_its_sources_channel(settings):
     _job_rows(
         settings,
