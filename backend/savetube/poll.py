@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import and_, delete, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from yt_dlp.utils import DownloadError
@@ -268,12 +268,19 @@ async def sync(
     wanted = list(entries)
     active = set(
         await session.scalars(
-            # A record job does not count: a recording can have gaps, so the VOD
-            # stays wanted beside it (docs/plan/live.md).
+            # A running recording, merging after its live ended, stores the
+            # video unless it fails. A VOD beside it would race it for one
+            # tree directory. A queued record job does not count: outside a
+            # cluster no recorder ever takes it (docs/plan/live.md).
             select(Job.video_id).where(
                 Job.video_id.in_(wanted),
-                Job.kind == JobKind.ARCHIVE,
-                Job.state.in_([JobState.QUEUED, JobState.RUNNING]),
+                or_(
+                    and_(
+                        Job.kind == JobKind.ARCHIVE,
+                        Job.state.in_([JobState.QUEUED, JobState.RUNNING]),
+                    ),
+                    and_(Job.kind == JobKind.RECORD, Job.state == JobState.RUNNING),
+                ),
             )
         )
     )

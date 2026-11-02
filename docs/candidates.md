@@ -22,7 +22,6 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 
 - `jobs/replace.py` `_begin` runs a replace job whatever its row state, so a cancelled job whose procrastinate row is still `todo` runs. Migration 0021 deleted those rows once. It could refuse a row that is not `queued`.
 - A recorder whose stream stays upcoming past `scheduled_at`, such as a cancelled waiting room, waits with `wait_for_video` until someone deletes its Job.
-- When the poll queues the VOD while a recording still merges, both target one tree directory, and the second `finalize` fails with `FileExistsError`.
 - A failed audio extraction after a download is not retried. Only a rerun of `savetube extract-audio` through `kubectl exec` fills it, with `print` output invisible in Loki and tied to the caller's connection.
 - `GET /api/sources` sends `last_error` raw. The Home card cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
 - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.

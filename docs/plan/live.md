@@ -17,7 +17,7 @@
 - No Data API key is used. The probe reads the scheduled start that `videos.list` would.
 - A detection is a queued `record` job. `scheduled_at` comes from `release_timestamp` for an upcoming stream and is null for a stream found live. The record job keeps a video to one detection. A video the user deleted gets no record job (storage.md, Deleting a video).
 - The first check of a newly watched channel probes up to 15 feed ids and takes about a minute. Later checks take seconds.
-- A queued record job does not stop the archive poll from queuing the VOD. The poll skips a live until it ends, so the VOD is queued only when the recording has not stored the video.
+- The archive poll skips a live until it ends. It then queues the VOD only when the recording has not stored the video and no record job of the video is running. A recording merges for minutes after its live ends, and a VOD beside it would race it for one tree directory. A failed recording lets the next poll queue the VOD. A queued record job does not stop the poll, because outside a cluster no recorder takes it.
 - WebSub push needs a public HTTPS callback, which the tailnet-only cluster lacks. Not used.
 
 ## Recording and the VOD
