@@ -7,7 +7,7 @@ The encoder is its own private repo, `KOCEAN33/media-encoder`, at `/Users/kocean
 ## Which videos
 
 - A `complete` video whose stored video stream is H.264, outside the max quality tier once tiers exist (candidates.md, Quality tiers), and whose last format probe offers no AV1 at the stored height or above. A video YouTube still serves as AV1 is downloaded again instead.
-- Settings turn re-encoding on or off and pick the profile. The default profile is `vtuber-av1-cq46`.
+- Settings turn re-encoding on or off and pick the profile. The default profile is `vtuber-av1-hq-cq46`.
 - A video with a queued or running replace job, an open live recording, an open format watch, or an original already kept aside is skipped. So is a video with an encode job queued, claimed, failed or succeeded.
 - The last format probe is the format watch's stored list, else the format list of the download's info dict. A video with neither counts as offered AV1.
 - The largest stored videos queue first.
@@ -18,9 +18,10 @@ A profile names a fixed encode. The encoder repo owns each profile's ffmpeg argu
 
 | Profile | Output |
 | --- | --- |
+| `vtuber-av1-hq-cq46` | AV1 10-bit (`av1_nvenc`, `-tune hq`, `-cq 46`, hierarchical B-frames), 30 fps when the source runs above 30, the source's resolution, audio streams copied, Matroska |
 | `vtuber-av1-cq46` | AV1 10-bit (`av1_nvenc`, `-tune uhq`, `-cq 46`, hierarchical B-frames), 30 fps when the source runs above 30, the source's resolution, audio streams copied, Matroska |
 
-The profile choice rests on a measured 10-minute clip of `hSLDqEi-yCE` (1080p60 H.264, 3.3 Mbps): 24% of the source's video bytes at VMAF 91.6.
+The profile choice rests on a measured 10-minute clip of `hSLDqEi-yCE` (1080p60 H.264, 3.3 Mbps), with VMAF scored against the source resampled to 30 fps. `vtuber-av1-hq-cq46` gives 18% of the source's video bytes at VMAF 86.8 in 47 s. `vtuber-av1-cq46` gives 24% at VMAF 89.3 in 100 s. The source streams are low-bitrate, so the default takes the smaller, faster `vtuber-av1-hq-cq46`.
 
 ## Shares
 

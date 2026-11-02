@@ -689,7 +689,7 @@ def test_api_settings_start_off_and_save(settings):
     assert first == {
         "enabled": False,
         "profile": PROFILE,
-        "profiles": [PROFILE],
+        "profiles": ["vtuber-av1-hq-cq46", PROFILE],
         "summary": {
             "saved_bytes": 0, "source_bytes": 0, "held_bytes": 0,
             "succeeded": 0, "failed": 0, "open": 0,

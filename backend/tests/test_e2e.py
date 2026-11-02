@@ -684,7 +684,7 @@ def test_encode_settings_round_trip(server):
     assert r.json() == {
         "enabled": False,
         "profile": "vtuber-av1-cq46",
-        "profiles": ["vtuber-av1-cq46"],
+        "profiles": ["vtuber-av1-hq-cq46", "vtuber-av1-cq46"],
         "summary": {
             "saved_bytes": 0,
             "source_bytes": 0,
@@ -696,8 +696,9 @@ def test_encode_settings_round_trip(server):
         "waiting": {"total": 0, "items": []},
         "finished": {"total": 0, "items": []},
     }
-    body = {"enabled": True, "profile": "vtuber-av1-cq46"}
-    assert server.put("/api/encode", json=body, headers=WRITE).json()["enabled"] is True
+    body = {"enabled": True, "profile": "vtuber-av1-hq-cq46"}
+    r = server.put("/api/encode", json=body, headers=WRITE).json()
+    assert r["enabled"] is True and r["profile"] == "vtuber-av1-hq-cq46"
     unknown = {"enabled": True, "profile": "x"}
     assert server.put("/api/encode", json=unknown, headers=WRITE).status_code == 422
     body["enabled"] = False
