@@ -693,7 +693,16 @@ def test_encode_settings_round_trip(server):
         "enabled": False,
         "profile": "vtuber-av1-cq46",
         "profiles": ["vtuber-av1-cq46"],
-        "jobs": [],
+        "summary": {
+            "saved_bytes": 0,
+            "source_bytes": 0,
+            "held_bytes": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "open": 0,
+        },
+        "waiting": {"total": 0, "items": []},
+        "finished": {"total": 0, "items": []},
     }
     body = {"enabled": True, "profile": "vtuber-av1-cq46"}
     assert server.put("/api/encode", json=body, headers=WRITE).json()["enabled"] is True
