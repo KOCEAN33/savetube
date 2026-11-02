@@ -5,19 +5,19 @@ import logging
 from collections.abc import Callable
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from yt_dlp.utils import DownloadError
 
 from savetube import logs, words
-from savetube.db.models import Source, SourceKind
+from savetube.db.models import Source
 from savetube.logs import emit
-from savetube.sources import InvalidSourceUrl, Tab
-from savetube.sources import parse as parse_source_url
-from savetube.web.api.deps import Session, _channel_base, log
+from savetube.scan import playlists as _playlists
+from savetube.sources import Tab
+from savetube.web.api.deps import Session, _channel_base, call_scheduler, log
 from savetube.web.api.schemas import WordCount, WordsIn, _Out
-from savetube.ytdl import avatar_url, list_entries
+from savetube.ytdl import list_entries
 
 router = APIRouter()
 
@@ -45,30 +45,14 @@ class ChannelUrl(BaseModel):
 # A listing holds a yt-dlp extraction and YouTube requests for its whole run.
 _listings = asyncio.Semaphore(2)
 CHANNEL_PLAYLISTS_TIMEOUT = 120
-# Entries per tab in a channel scan: one page of YouTube's tab listing.
-SCAN_PAGE = 30
-# yt-dlp's answer for a tab the channel lacks, such as Shorts on a channel without any.
-_NO_TAB = "does not have a"
-SCAN_TABS = (Tab.VIDEOS, Tab.SHORTS, Tab.STREAMS)
+# The scheduler answers within 110 s (savetube.scan.SCAN_SECONDS).
+CHANNEL_SCAN_TIMEOUT = 120
 
 
 async def _list(scanner: Scanner, url: str, limit: int | None) -> dict[str, Any]:
     async with _listings:
         # On a timeout the thread runs on, and its result is dropped.
         return await asyncio.to_thread(scanner, url, limit)
-
-
-def _playlists(listing: dict[str, Any]) -> list[tuple[dict[str, Any], str]]:
-    """Each playlist entry of a channel's /playlists listing, with its canonical URL."""
-    found = []
-    for e in listing.get("entries") or []:
-        try:
-            [p] = parse_source_url(e.get("url") or "")
-        except InvalidSourceUrl:
-            continue
-        if p.kind is SourceKind.PLAYLIST:
-            found.append((e, p.url))
-    return found
 
 
 @router.post("/channel-playlists")
@@ -117,6 +101,14 @@ class ScanPlaylist(_Out):
     url: str
 
 
+class ScanMembership(_Out):
+    profile: str
+    # Members-only entries the profile's listing showed, null when it failed.
+    members_only: int | None
+    # The stored membership result, null without one.
+    is_member: bool | None
+
+
 class ChannelScan(_Out):
     url: str
     channel_id: str
@@ -126,64 +118,34 @@ class ChannelScan(_Out):
     # Keyed by tab. Null for a tab the channel lacks.
     tabs: dict[str, list[ScanEntry] | None]
     playlists: list[ScanPlaylist]
+    # One per cookie profile the scan listed with, by name.
+    memberships: list[ScanMembership]
     # Words that recur in the scanned titles, best first.
     suggestions: list[WordCount]
 
 
-async def _scan_one(scanner: Scanner, url: str, limit: int | None) -> dict[str, Any] | None:
-    try:
-        return await _list(scanner, url, limit)
-    except DownloadError as e:
-        if _NO_TAB in str(e):
-            return None
-        raise
-
-
 @router.post("/channel-scan")
-async def channel_scan(
-    body: ChannelUrl, scanner: Annotated[Scanner, Depends(get_scanner)]
-) -> ChannelScan:
-    """The first page of each video tab and every playlist, listed live, so the
-    words can be set against real titles before anything is stored."""
+async def channel_scan(request: Request, body: ChannelUrl) -> ChannelScan:
+    """The first page of each video tab and every playlist, listed live by the
+    scheduler with the cookie profiles, so the words can be set against real
+    titles before the sources are stored."""
     base = _channel_base(body.url)
-    try:
-        async with asyncio.timeout(CHANNEL_PLAYLISTS_TIMEOUT):
-            *tabs, playlists = await asyncio.gather(
-                *(_scan_one(scanner, f"{base}/{t}", SCAN_PAGE) for t in SCAN_TABS),
-                _scan_one(scanner, f"{base}/{Tab.PLAYLISTS}", None),
-            )
-    except TimeoutError:
-        _scan_failed(base, 504, "timed out")
-        raise HTTPException(status_code=504, detail="scanning the channel timed out") from None
-    except DownloadError as e:
-        _scan_failed(base, 502, str(e))
-        raise HTTPException(status_code=502, detail=str(e)) from None
-    owner = next((x for x in (*tabs, playlists) if x and x.get("channel_id")), None)
-    if owner is None:
-        raise HTTPException(status_code=502, detail="the channel lists no tab")
-    entries = {
-        t.value: None
-        if listing is None
-        else [
-            ScanEntry(video_id=e["id"], title=e.get("title") or e["id"])
-            for e in listing.get("entries") or []
-            if e.get("id")
-        ]
-        for t, listing in zip(SCAN_TABS, tabs, strict=True)
-    }
-    titles = [e.title for listed in entries.values() for e in listed or []]
+
+    def failed(status: int, reason: str) -> None:
+        emit(log, logging.WARNING, "scan.request_failed", url=base, status=status, reason=reason)
+
+    r = await call_scheduler(
+        request,
+        "/channel-scan",
+        seconds=CHANNEL_SCAN_TIMEOUT,
+        failed=failed,
+        json={"url": base},
+        passes=(404, 409, 502, 504),
+    )
+    scan = r.json()
+    titles = [e["title"] for listed in scan["tabs"].values() for e in listed or []]
     return ChannelScan(
-        url=base,
-        channel_id=owner["channel_id"],
-        handle=owner.get("uploader_id"),
-        name=owner.get("channel") or owner.get("uploader") or owner["channel_id"],
-        avatar_url=next((a for x in tabs if x and (a := avatar_url(x))), None),
-        tabs=entries,
-        playlists=[
-            ScanPlaylist(id=e["id"], title=e.get("title") or e["id"], url=u)
-            for e, u in _playlists(playlists or {})
-        ],
-        suggestions=[WordCount(word=w, count=n) for w, n in words.rank(titles)],
+        **scan, suggestions=[WordCount(word=w, count=n) for w, n in words.rank(titles)]
     )
 
 

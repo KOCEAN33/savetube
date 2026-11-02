@@ -5,6 +5,7 @@ import sqlalchemy as sa
 from conftest import (
     ADMIN_URL,
     GUERRILLA,
+    MEMBERS_ONLY_ERROR,
     NASA,
     PL,
     PLAYLISTS_LISTING,
@@ -18,6 +19,7 @@ from conftest import (
     _no_probe,
     _no_streams,
     _not_live,
+    _profiles,
     _queue_row,
     _sql,
     _watch,
@@ -50,7 +52,8 @@ def _scanner(failing=None):
         "playlists": PLAYLISTS_LISTING,
     }
 
-    def scan(url, limit):
+    def scan(url, cookiefile, limit):
+        assert cookiefile is None
         calls.append((url, limit))
         tab = url.rsplit("/", 1)[1]
         if failing and tab in failing:
@@ -60,9 +63,60 @@ def _scanner(failing=None):
     return scan, calls
 
 
-def test_api_channel_scan_lists_the_first_page_of_each_tab_and_the_playlists(settings):
+def _profile(cookiefile):
+    """The profile a `_profiles` cookie file copy belongs to, None for no cookies."""
+    return None if cookiefile is None else cookiefile.read_text().removeprefix("# ").strip()
+
+
+class _Scheduler:
+    """The scheduler's API behind the web's outbound httpx2 calls, listing
+    with `lister` and checking memberships with `prober`."""
+
+    def __init__(self, settings, lister, prober=_no_probe):
+        from sqlalchemy.ext.asyncio import create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        from savetube.db import PSYCOPG_CONNECT_ARGS
+        from savetube.integrity import Tools
+        from savetube.scheduler_api import Requests, create_app
+
+        # NullPool: the web app's loop runs these calls, so no connection
+        # outlives it.
+        engine = create_async_engine(
+            settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
+        )
+        self.app = create_app(
+            settings,
+            make_sessionmaker(engine),
+            probes=asyncio.Lock(),
+            probe=lambda v, c: pytest.fail("no format probe expected"),
+            tools=Tools(),
+            requests=Requests(),
+            encodes=asyncio.Lock(),
+            moves=asyncio.Lock(),
+            listings=asyncio.Semaphore(2),
+            lister=lister,
+            prober=prober,
+        )
+
+    async def handle(self, request):
+        import httpx2
+
+        return await httpx2.ASGITransport(app=self.app).handle_async_request(request)
+
+
+def _scan_api(settings, monkeypatch, lister, prober=_no_probe):
+    """The web's test client, its scheduler calls served by `_Scheduler`."""
+    import httpx2
+
+    scheduler = _Scheduler(settings, lister, prober)
+    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
+    return _api(settings)
+
+
+def test_api_channel_scan_lists_the_first_page_of_each_tab_and_the_playlists(settings, monkeypatch):
     scan, calls = _scanner({"shorts": "ERROR: This channel does not have a shorts tab"})
-    with _api(settings, scan) as client:
+    with _scan_api(settings, monkeypatch, scan) as client:
         response = client.post(
             "/api/channel-scan", json={"url": "https://www.youtube.com/@VESPERBELL/videos"}
         )
@@ -74,6 +128,8 @@ def test_api_channel_scan_lists_the_first_page_of_each_tab_and_the_playlists(set
             ("https://www.youtube.com/@VESPERBELL/streams", 30),
             ("https://www.youtube.com/@VESPERBELL/videos", 30),
         ]
+        # No cookie profile is present.
+        assert body["memberships"] == []
         assert (body["url"], body["channel_id"], body["handle"], body["name"]) == (
             "https://www.youtube.com/@VESPERBELL",
             VESP,
@@ -103,25 +159,191 @@ def test_api_channel_scan_lists_the_first_page_of_each_tab_and_the_playlists(set
         assert client.get("/api/channels").json() == []
 
     gone, _ = _scanner(dict.fromkeys(["videos", "shorts", "streams", "playlists"], "gone"))
-    with _api(settings, gone) as client:
+    with _scan_api(settings, monkeypatch, gone) as client:
         response = client.post("/api/channel-scan", json={"url": "https://www.youtube.com/@x"})
     assert response.status_code == 502 and response.json()["detail"] == "gone"
+
+
+@pytest.mark.anyio
+async def test_concurrent_channel_scans_share_one_listing_cap(settings):
+    import threading
+    import time
+
+    import httpx2
+
+    scan, _ = _scanner()
+    guard = threading.Lock()
+    running = [0]
+    peak = [0]
+
+    def lister(url, cookiefile, limit):
+        with guard:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        time.sleep(0.2)
+        with guard:
+            running[0] -= 1
+        return scan(url, cookiefile, limit)
+
+    # The scheduler's API caps listings at 2 (`_Scheduler`).
+    app = _Scheduler(settings, lister).app
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://scheduler"
+    ) as client:
+        responses = await asyncio.gather(
+            *(
+                client.post("/channel-scan", json={"url": f"https://www.youtube.com/@{h}"})
+                for h in ("VESPERBELL", "other")
+            )
+        )
+    assert [r.status_code for r in responses] == [200, 200]
+    assert peak[0] == 2
 
 
 def test_api_channel_scan_times_out(settings, monkeypatch):
     import time
 
-    from savetube.web.api import scan
+    from savetube import scan
 
-    monkeypatch.setattr(scan, "CHANNEL_PLAYLISTS_TIMEOUT", 0.2)
+    monkeypatch.setattr(scan, "LIST_SECONDS", 0.2)
 
-    def slow(url, limit):
+    def slow(url, cookiefile, limit):
         time.sleep(1)
         return {}
 
-    with _api(settings, slow) as client:
+    with _scan_api(settings, monkeypatch, slow) as client:
         response = client.post("/api/channel-scan", json={"url": "https://www.youtube.com/@x"})
     assert response.status_code == 504
+
+
+NO_TAB = "ERROR: [youtube:tab] VESPERBELL: This channel does not have a {} tab"
+
+
+def _members_channel():
+    """A channel whose uploads are all members-only: without cookies its
+    Videos tab lists nothing. `main` is a member and lists two members-only
+    videos, `alt` is none and lists nothing. Records (url, profile) per call."""
+    from yt_dlp.utils import DownloadError
+
+    calls = []
+    head = {"channel_id": VESP, "channel": "VESPERBELL", "uploader_id": "@VESPERBELL"}
+    member_videos = [
+        {"id": "member1", "title": "【メン限】歌枠", "availability": "subscriber_only"},
+        {"id": "member2", "title": "【メン限】雑談", "availability": "subscriber_only"},
+    ]
+
+    def lister(url, cookiefile, limit):
+        profile = _profile(cookiefile)
+        calls.append((url, profile))
+        tab = url.rsplit("/", 1)[1]
+        if tab in ("shorts", "streams"):
+            raise DownloadError(NO_TAB.format(tab))
+        if tab == "videos" and profile == "main":
+            return {**head, "entries": member_videos}
+        return {**head, "entries": []}
+
+    return lister, calls
+
+
+def _member_prober(probed):
+    from yt_dlp.utils import DownloadError
+
+    def prober(video_id, cookiefile):
+        profile = _profile(cookiefile)
+        probed.append((video_id, profile))
+        if profile != "main":
+            raise DownloadError(MEMBERS_ONLY_ERROR)
+        return {"id": video_id, "formats": [{"format_id": "251"}]}
+
+    return prober
+
+
+def test_api_channel_scan_lists_members_only_tabs_with_the_member_profile(settings, monkeypatch):
+    settings = _profiles(settings, "main", "alt")
+    lister, calls = _members_channel()
+    probed = []
+    with _scan_api(settings, monkeypatch, lister, _member_prober(probed)) as client:
+        response = client.post(
+            "/api/channel-scan", json={"url": "https://www.youtube.com/@VESPERBELL"}
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["tabs"] == {
+            "videos": [
+                {"video_id": "member1", "title": "【メン限】歌枠"},
+                {"video_id": "member2", "title": "【メン限】雑談"},
+            ],
+            "shorts": None,
+            "streams": None,
+        }
+        assert body["memberships"] == [
+            {"profile": "alt", "members_only": 0, "is_member": False},
+            {"profile": "main", "members_only": 2, "is_member": True},
+        ]
+        # The playlists list without cookies only.
+        base = "https://www.youtube.com/@VESPERBELL"
+        assert sorted(calls, key=str) == sorted(
+            [(f"{base}/playlists", None)]
+            + [
+                (f"{base}/{t}", p)
+                for t in ("videos", "shorts", "streams")
+                for p in (None, "alt", "main")
+            ],
+            key=str,
+        )
+        assert sorted(probed) == [("member1", "alt"), ("member1", "main")]
+
+        # The channel waits as an untracked row with the stored results.
+        [channel] = client.get("/api/channels").json()
+        assert (channel["id"], channel["tracked"]) == (VESP, False)
+        assert [(m["profile"], m["is_member"]) for m in channel["memberships"]] == [
+            ("alt", False),
+            ("main", True),
+        ]
+
+        # Fresh results are not checked again.
+        again = client.post("/api/channel-scan", json={"url": base}).json()
+        assert again["memberships"] == body["memberships"]
+        assert len(probed) == 2
+
+        # Adding the channel keeps the row the scan stored.
+        created = client.post("/api/channels", json=_channel_body(tabs=["videos"], playlists=[]))
+        assert created.status_code == 201 and created.json()["tracked"] is True
+
+
+def test_api_channel_scan_lists_no_profile_while_a_youtube_block_holds(settings, monkeypatch):
+    settings = _profiles(settings, "main", "alt")
+    _sql(settings, "UPDATE download_settings SET blocked_until = now() + interval '1 hour'")
+    lister, calls = _members_channel()
+    with _scan_api(settings, monkeypatch, lister) as client:
+        body = client.post(
+            "/api/channel-scan", json={"url": "https://www.youtube.com/@VESPERBELL"}
+        ).json()
+    assert {p for _, p in calls} == {None}
+    assert body["tabs"]["videos"] == [] and body["memberships"] == []
+
+
+def test_api_channel_scan_keeps_the_cookie_free_tabs_when_a_profile_listing_fails(
+    settings, monkeypatch
+):
+    from yt_dlp.utils import DownloadError
+
+    settings = _profiles(settings, "main")
+    scan, _ = _scanner()
+
+    def lister(url, cookiefile, limit):
+        if cookiefile is not None:
+            raise DownloadError("ERROR: [youtube:tab] Sign in to confirm you’re not a bot.")
+        return scan(url, None, limit)
+
+    with _scan_api(settings, monkeypatch, lister) as client:
+        response = client.post(
+            "/api/channel-scan", json={"url": "https://www.youtube.com/@VESPERBELL"}
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tabs"]["videos"] == [{"video_id": "cover", "title": "IRIS OUT (Cover)"}]
+    assert body["memberships"] == [{"profile": "main", "members_only": None, "is_member": None}]
 
 
 def test_api_title_preview_merges_stored_global_and_channel_words(settings):
@@ -409,14 +631,14 @@ CHANNEL_THUMBNAILS = [
 ]
 
 
-def test_api_scan_and_create_carry_the_channel_avatar(settings):
+def test_api_scan_and_create_carry_the_channel_avatar(settings, monkeypatch):
     scan, _ = _scanner()
 
-    def with_avatar(url, limit):
-        listing = scan(url, limit)
+    def with_avatar(url, cookiefile, limit):
+        listing = scan(url, cookiefile, limit)
         return {**listing, "thumbnails": CHANNEL_THUMBNAILS}
 
-    with _api(settings, with_avatar) as client:
+    with _scan_api(settings, monkeypatch, with_avatar) as client:
         body = client.post(
             "/api/channel-scan", json={"url": "https://www.youtube.com/@VESPERBELL"}
         ).json()
@@ -585,6 +807,27 @@ def test_api_channel_counts_use_the_channel_page_rule(settings):
         patched = client.patch("/api/channels/UC1", json={"watch_lives": False}).json()
     assert counts == {"UC1": (2, 120), "UC2": (2, 23)}
     assert (patched["video_count"], patched["bytes"]) == (2, 120)
+
+
+def test_api_patch_turns_on_live_recording_only_with_an_enabled_tab(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, '{PL}A', 'playlist', 'UC1', true, 360),"
+        " (2, 'https://www.youtube.com/@a/streams', 'tab', 'UC1', false, 360)",
+    )
+    with _api(settings) as client:
+        refused = client.patch("/api/channels/UC1", json={"watch_lives": True})
+        assert refused.status_code == 422
+        assert refused.json()["detail"] == "recording lives needs a tab"
+        assert client.get("/api/channels").json()[0]["watch_lives"] is False
+        # Turning it off needs no tab.
+        assert client.patch("/api/channels/UC1", json={"watch_lives": False}).status_code == 200
+
+        _sql(settings, "UPDATE source SET enabled = true WHERE id = 2")
+        on = client.patch("/api/channels/UC1", json={"watch_lives": True})
+        assert on.status_code == 200 and on.json()["watch_lives"] is True
 
 
 def test_api_channel_statistics_follow_the_channel_list_rule(settings):

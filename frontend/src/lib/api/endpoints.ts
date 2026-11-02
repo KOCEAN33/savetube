@@ -1,4 +1,4 @@
-import { get, getPage, request } from "@/lib/api/client"
+import { get, getPage, request, withQuery } from "@/lib/api/client"
 import type {
   Channel,
   ChannelIn,
@@ -10,6 +10,7 @@ import type {
   DownloadSettings,
   DownloadSettingsIn,
   Encode,
+  EncodePages,
   EncodeSettingsIn,
   FormatWatch,
   Job,
@@ -60,11 +61,14 @@ export const mutations = {
   setDownloadsPaused: (paused: boolean) =>
     request<DownloadSettings>("PUT", "/api/download-settings/paused", { paused }),
   replaceGlobalWords: (body: TitleWords) => request<TitleWords>("PUT", "/api/words", body),
-  replaceEncodeSettings: (body: EncodeSettingsIn) => request<Encode>("PUT", "/api/encode", body),
+  replaceEncodeSettings: (body: EncodeSettingsIn, pages: EncodePages) =>
+    request<Encode>("PUT", withQuery("/api/encode", pages), body),
   // Queued jobs only: 409 once the encoder claimed the job.
-  cancelEncodeJob: (id: number) => request<Encode>("POST", `/api/encode/jobs/${id}/cancel`),
+  cancelEncodeJob: (id: number, pages: EncodePages) =>
+    request<Encode>("POST", withQuery(`/api/encode/jobs/${id}/cancel`, pages)),
   // Failed jobs only: the video may be queued again.
-  requeueEncodeJob: (id: number) => request<Encode>("POST", `/api/encode/jobs/${id}/requeue`),
+  requeueEncodeJob: (id: number, pages: EncodePages) =>
+    request<Encode>("POST", withQuery(`/api/encode/jobs/${id}/requeue`, pages)),
   // Queues a replace with one video and one audio format at most, ends the
   // automatic replaces, and cancels a queued automatic one. A held video needs
   // `confirm`.
@@ -93,7 +97,7 @@ export const api = {
   globalWords: () => get<TitleWords>("/api/words"),
   downloadSettings: () => get<DownloadSettings>("/api/download-settings"),
   cookieProfiles: () => get<CookieProfile[]>("/api/cookie-profiles"),
-  encode: () => get<Encode>("/api/encode"),
+  encode: (pages: EncodePages) => get<Encode>("/api/encode", pages),
   // A POST that writes nothing: it lists live through yt-dlp, which can answer 502 or 504.
   channelPlaylists: (url: string) =>
     request<ChannelPlaylist[]>("POST", "/api/channel-playlists", { url }),

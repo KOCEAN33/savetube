@@ -1022,6 +1022,17 @@ def test_api_a_recorded_stream_keeps_its_stored_row_beside_its_youtube_row(setti
     assert {"137", "140"} <= {r["format_id"] for r in body["formats"]}
 
 
+def test_api_a_premium_hls_download_is_a_stored_row_not_recorded(settings):
+    # YouTube serves the Premium 616 over HLS only, and the probe counts no HLS.
+    hls = {"format_id": "616", "format_note": "Premium", "protocol": "m3u8_native"}
+    _watched_with_formats(settings, info=_stored_with(hls, {"protocol": "https"}))
+
+    with _api(settings) as api:
+        body = api.get("/api/videos/v1/formats").json()
+
+    assert _rows(body)[0] == [("616", False)]
+
+
 def test_api_a_re_encoded_stream_is_encoded_and_sized_from_the_result(settings):
     # wPJeDtdhpuc in production: the encode's stored stream as encode.py
     # writes it, with the audio stream's measured size.
@@ -1205,6 +1216,9 @@ class _Scheduler:
             requests=Requests(),
             encodes=asyncio.Lock(),
             moves=asyncio.Lock(),
+            listings=asyncio.Semaphore(2),
+            lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
+            prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
         )
         self.urls = []
 
@@ -1375,6 +1389,27 @@ async def test_a_replace_swaps_the_audio_and_keeps_the_recording_aside(settings,
     assert job.state is JobState.SUCCEEDED, job.log_tail
     assert aside.read_bytes() == recording.read_bytes()
     assert sorted(p.name for p in aside.parent.iterdir()) == ["v1.mkv"]
+
+
+@pytest.mark.anyio
+async def test_a_replace_whose_row_is_no_longer_queued_does_not_run(settings, caplog):
+    # A cancel whose queue job stayed `todo` hands the worker a cancelled row.
+    directory = _stored_live(settings)
+    _sql(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts)"
+        " VALUES (1, 'replace', 'cancelled', 'v1', '251', 0)",
+    )
+    runner = _Steps()
+
+    with caplog.at_level(logging.INFO, logger="savetube.jobs"):
+        job, video, watch = await _replace(settings, 1, runner)
+
+    assert runner.calls == []
+    assert job.state is JobState.CANCELLED and job.attempts == 0 and job.started_at is None
+    assert (directory / "v1.mkv").read_bytes() == b"recording"
+    [skipped] = _events(caplog, "replace.skipped")
+    assert _fields(skipped)["state"] == "cancelled"
 
 
 @needs_ffmpeg

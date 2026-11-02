@@ -1,7 +1,7 @@
 import pytest
 
 from savetube.storage import finalize
-from savetube.ytdl import WAIT_FOR_VIDEO, build_params, copy_cookies
+from savetube.ytdl import WAIT_FOR_VIDEO, NotStarted, build_params, copy_cookies, download
 
 
 def test_archive_params_sleep_and_never_record_from_start(tmp_path):
@@ -85,6 +85,59 @@ def test_a_dropped_connection_resumes_inside_one_download(tmp_path):
     assert ok and target.read_bytes() == body
     # The retry continues near the cut, from the last block yt-dlp wrote.
     assert len(requests) == 2 and 0 < requests[1] <= len(body) // 2
+
+
+def test_a_recording_gives_up_on_a_stream_still_upcoming_at_its_deadline(tmp_path, monkeypatch):
+    """yt-dlp's wait_for_video has no bound, so a cancelled waiting room kept
+    its recorder waiting for good."""
+    import threading
+    import time
+
+    import yt_dlp
+    from yt_dlp.extractor.common import InfoExtractor
+
+    extractions = []
+
+    class _UpcomingIE(InfoExtractor):
+        _VALID_URL = r"upcoming:(?P<id>\w+)"
+
+        def _real_extract(self, url):
+            extractions.append(time.monotonic())
+            # As the YouTube extractor reports a waiting room past its start.
+            self.raise_no_formats("This live event will begin in a few moments.", expected=True)
+            return {
+                "id": "v1",
+                "title": "t",
+                "live_status": "is_upcoming",
+                "release_timestamp": int(time.time()) - 3600,
+                "formats": [],
+            }
+
+    class _YoutubeDL(yt_dlp.YoutubeDL):
+        def __init__(self, params):
+            super().__init__(params, auto_init=False)
+            self.add_info_extractor(_UpcomingIE())
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _YoutubeDL)
+    params = build_params(tmp_path, live=True, wait_until=time.time() + 3)
+    params["wait_for_video"] = (1, 1)
+    outcome = []
+
+    def run():
+        started = time.monotonic()
+        try:
+            download("upcoming:v1", params)
+        except Exception as e:
+            outcome.append((type(e), time.monotonic() - started))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=15)
+    assert not thread.is_alive(), "the recording still waits past its deadline"
+    [(error, took)] = outcome
+    assert error is NotStarted
+    # It waited for the stream until the deadline, extracting again each second.
+    assert took >= 3 and len(extractions) >= 3
 
 
 def test_cookie_copy_is_writable_and_passed(tmp_path):

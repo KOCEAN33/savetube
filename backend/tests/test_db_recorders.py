@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy as sa
-from conftest import ADMIN_URL, _sql
+from conftest import ADMIN_URL, _sql, _Steps
 
 from savetube.db import make_engine, make_sessionmaker
 from savetube.db.models import Job, JobState, MissReason, Video, VideoState
@@ -109,3 +109,52 @@ async def test_a_failed_recorder_marks_its_open_job_missed(settings):
     assert jobs[3].state is JobState.FAILED and jobs[3].miss_reason is None
     assert jobs[4].state is JobState.RUNNING
     assert videos["v4"].state is VideoState.PENDING
+
+
+async def _record(settings, runner):
+    from savetube.jobs import run
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    # A return, not a raise, so the recorder exits 0 and its Job takes no retry.
+    await run(1, settings, live=True, runner=runner, sessionmaker=sessionmaker)
+    async with sessionmaker() as session:
+        job = await session.get(Job, 1)
+        video = await session.get(Video, "v1")
+    await engine.dispose()
+    return job, video
+
+
+@pytest.mark.anyio
+async def test_a_stream_still_upcoming_a_day_past_its_start_ends_its_recording_missed(settings):
+    """A cancelled waiting room stays upcoming, and the recorder waited for it
+    until someone deleted its Job."""
+    from savetube.ytdl import WAIT_UNTIL, NotStarted
+
+    _record_rows(settings, (1, "queued", "'2026-10-23 16:00:00+00'"))
+
+    async def never_starts(params, report):
+        raise NotStarted("ERROR: [youtube] v1: This live event will begin in a few moments.")
+
+    runner = _Steps(never_starts)
+    job, video = await _record(settings, runner)
+    assert runner.calls[0][WAIT_UNTIL] == datetime(2026, 10, 24, 16, tzinfo=UTC).timestamp()
+    assert job.state is JobState.MISSED and job.finished_at is not None
+    assert video.state is VideoState.FAILED
+    assert not (settings.incoming_root / "1").exists()
+
+
+@pytest.mark.anyio
+async def test_a_stream_found_live_records_with_no_deadline(settings):
+    from savetube.jobs import DownloadFailed
+    from savetube.ytdl import WAIT_UNTIL
+
+    _record_rows(settings, (1, "queued", "NULL"))
+
+    async def stopped(params, report):
+        raise DownloadFailed("stopped by the test")
+
+    runner = _Steps(stopped)
+    with pytest.raises(DownloadFailed):
+        await _record(settings, runner)
+    assert WAIT_UNTIL not in runner.calls[0]

@@ -97,11 +97,16 @@ def with_sizes(info: dict[str, Any], streams: list[dict[str, Any]]) -> dict[str,
     return info
 
 
+# The protocols of a stored stream a download or a replace took from YouTube.
+# YouTube serves the Premium 616 over HLS only.
+DOWNLOADED = ("https", "m3u8_native")
+
+
 def recorded(f: dict[str, Any]) -> bool:
-    """Whether a stored stream is no YouTube `https` format: a live
-    recording's `http_dash_segments_generator` stream, or an info dict
-    without a protocol. A VOD download and a replace store `https` formats."""
-    return f.get("protocol") != "https"
+    """Whether a stored stream is no YouTube download: a live recording's
+    `http_dash_segments_generator` stream, or an info dict without a
+    protocol."""
+    return f.get("protocol") not in DOWNLOADED
 
 
 def encoded(f: dict[str, Any]) -> bool:

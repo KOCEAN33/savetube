@@ -333,7 +333,17 @@ export interface ChannelScan {
   // The first page of each tab. Null for a tab the channel lacks.
   tabs: Record<VideoTab, ScanEntry[] | null>
   playlists: { id: string; title: string; url: string }[]
+  // One per cookie profile the scan listed with, by name.
+  memberships: ScanMembership[]
   suggestions: TitleWord[]
+}
+
+export interface ScanMembership {
+  profile: string
+  // Members-only entries the profile's listing showed. Null when it failed.
+  members_only: number | null
+  // The stored membership result. Null without one.
+  is_member: boolean | null
 }
 
 export interface TitleKept {
@@ -406,6 +416,7 @@ export interface EncodeJob {
   // Null until the encoder's result passes the check.
   result_size: number | null
   reason: string | null
+  log_tail: string | null
   created_at: string
   finished_at: string | null
 }
@@ -415,8 +426,31 @@ export interface EncodeSettingsIn {
   profile: string
 }
 
+// One page of each job list. Every encode route answers with the pages asked for.
+export type EncodePages = {
+  open_offset?: number
+  finished_offset?: number
+  limit?: number
+}
+
+export interface EncodeSummary {
+  // source_size - result_size over succeeded jobs with a result size, and the
+  // source_size of those jobs.
+  saved_bytes: number
+  source_bytes: number
+  // The part of saved_bytes whose original still waits in .originals/.
+  held_bytes: number
+  succeeded: number
+  failed: number
+  // Queued and claimed.
+  open: number
+}
+
 export interface Encode extends EncodeSettingsIn {
   profiles: string[]
-  // Queued, claimed and failed jobs first, then the 20 latest others.
-  jobs: EncodeJob[]
+  summary: EncodeSummary
+  // Queued, claimed and failed jobs, oldest first.
+  waiting: { total: number; items: EncodeJob[] }
+  // The other jobs, newest first.
+  finished: { total: number; items: EncodeJob[] }
 }

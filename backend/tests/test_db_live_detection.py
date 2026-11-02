@@ -26,6 +26,7 @@ from savetube.db.models import (
     JobKind,
     JobState,
     Video,
+    VideoState,
 )
 from savetube.layout import VideoType
 from savetube.web.app import create_app
@@ -349,6 +350,56 @@ async def test_a_detected_live_is_archived_once_it_ends(settings):
             await session.scalars(sa.select(Job.kind).where(Job.video_id == "B_eFxgIWdXo"))
         )
     assert kinds == [JobKind.ARCHIVE, JobKind.RECORD]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_an_ended_live_whose_recording_still_runs_gets_no_vod_job(settings):
+    """A recording merges for minutes after its live ends. It stores the video
+    unless it fails, and a failed one lets a later poll queue the VOD."""
+    from savetube.poll import poll_source
+
+    _sql(
+        settings,
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@VESPERBELL/streams', 'tab', true, 360)",
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        " ('UCPd0Z22gF43dUidPYEQO5-w', 'VESPERBELL', 'VESPERBELL [UCPd0Z22gF43dUidPYEQO5-w]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('B_eFxgIWdXo', 'UCPd0Z22gF43dUidPYEQO5-w', 'lives', 't', 'downloading')",
+        "INSERT INTO job (kind, state, video_id, attempts) VALUES"
+        " ('record', 'running', 'B_eFxgIWdXo', 1)",
+    )
+    listing = {
+        "channel_id": "UCPd0Z22gF43dUidPYEQO5-w",
+        "channel": "VESPERBELL",
+        "entries": [{"id": "B_eFxgIWdXo", "title": "t", "live_status": "was_live"}],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+
+    async def kinds_and_state():
+        async with sessionmaker() as session:
+            kinds = sorted(
+                await session.scalars(sa.select(Job.kind).where(Job.video_id == "B_eFxgIWdXo"))
+            )
+            return kinds, (await session.get(Video, "B_eFxgIWdXo")).state
+
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
+    assert await kinds_and_state() == ([JobKind.RECORD], VideoState.DOWNLOADING)
+
+    _sql(
+        settings,
+        "UPDATE job SET state = 'failed' WHERE kind = 'record'",
+        "UPDATE video SET state = 'failed'",
+        "UPDATE source SET last_polled_at = NULL",
+    )
+    await poll_source(
+        sessionmaker, 1, settings, lister=lambda u, c: listing, cancel=_cancel, prober=_no_probe
+    )
+    assert await kinds_and_state() == ([JobKind.ARCHIVE, JobKind.RECORD], VideoState.PENDING)
     await engine.dispose()
 
 

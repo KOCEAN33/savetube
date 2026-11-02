@@ -164,6 +164,17 @@ PLAYLISTS_LISTING = {
 }
 
 
+def _profiles(settings, *names):
+    """Settings whose SAVETUBE_COOKIES_DIR holds a file per name, its content `# <name>`."""
+    root = settings.archive_root.parent / "cookies"
+    root.mkdir(exist_ok=True)
+    for name in names:
+        (root / f"{name}.txt").write_text(f"# {name}\n")
+    # A Secret mount's own entries are no profiles.
+    (root / "..data").mkdir(exist_ok=True)
+    return settings.model_copy(update={"cookies_dir": root})
+
+
 def _api(settings, lister=None):
     from savetube.web.api import get_scanner
 

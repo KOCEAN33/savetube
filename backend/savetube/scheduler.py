@@ -16,7 +16,7 @@ from pathlib import Path
 from procrastinate.jobs import Status
 from sqlalchemy import func, select
 
-from savetube import cookies, encode, k8s, scheduler_api
+from savetube import cookies, encode, k8s, scan, scheduler_api
 from savetube.cleanup import clean_database
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
@@ -341,6 +341,8 @@ async def run(settings: Settings) -> None:
     encodes = asyncio.Lock()
     # The staging move and a delete of a staged video take turns on its files.
     moves = asyncio.Lock()
+    # Every add-channel scan shares one cap on its listings.
+    listings = asyncio.Semaphore(scan.LISTINGS)
     requests = scheduler_api.Requests()
     api = scheduler_api.create_app(
         settings,
@@ -351,6 +353,9 @@ async def run(settings: Settings) -> None:
         requests=requests,
         encodes=encodes,
         moves=moves,
+        lister=list_entries,
+        prober=probe_member,
+        listings=listings,
     )
     async with app.open_async():
         # Separate loops, so a long first listing of a big channel never delays

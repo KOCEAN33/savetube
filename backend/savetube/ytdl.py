@@ -2,6 +2,8 @@
 
 import re
 import shutil
+import threading
+import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -37,6 +39,13 @@ _SLEEP = {
 
 # Seconds between retries while a scheduled stream has not started.
 WAIT_FOR_VIDEO = (30, 120)
+# A params key of savetube's, not yt-dlp's: the Unix time after which a
+# recording stops waiting for its stream to start. `download` takes it out.
+WAIT_UNTIL = "savetube_wait_until"
+
+
+class NotStarted(Exception):
+    """The stream was still upcoming at the recording's WAIT_UNTIL."""
 
 
 # yt-dlp's text when YouTube refuses this client rather than the video. Each
@@ -74,6 +83,20 @@ MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
 # A throttled client gets this for public videos. A deleted video usually adds
 # why, such as "This video has been removed by the uploader".
 _BARE_UNAVAILABLE = re.compile(r"(?:\w+: )?(?:ERROR: )?\[youtube\] [\w-]+: Video unavailable\.?")
+# yt-dlp's wrapping around the message itself: the exception name, its
+# "ERROR:" prefix, a "[download] Got error:" retry line, and an
+# "[extractor] <id>:" tag, such as "[youtube:tab] @handle:".
+_NOISE = re.compile(
+    r"^(?:\w+Error:\s*)?(?:ERROR:\s*)?(?:\[download\]\s*Got error:\s*)?"
+    r"(?:\[[\w:]+\]\s*[@\w-]+:\s*)?"
+)
+
+
+def strip_noise(message: str) -> str:
+    """`message` on one line without yt-dlp's wrapping around it."""
+    # yt-dlp puts a carriage return before its retry line, so lines do not split it.
+    flat = " ".join(message.split())
+    return _NOISE.sub("", flat) or flat
 
 
 def youtube_block(message: str) -> bool:
@@ -137,6 +160,7 @@ def build_params(
     cookiefile: Path | None = None,
     live: bool = False,
     ratelimit: int | None = None,
+    wait_until: float | None = None,
 ) -> dict[str, Any]:
     """Picklable, because a download child gets them through `spawn`. The child
     adds the logger and the hooks itself (`download`)."""
@@ -164,6 +188,8 @@ def build_params(
     if live:
         params["live_from_start"] = True
         params["wait_for_video"] = WAIT_FOR_VIDEO
+        if wait_until is not None:
+            params[WAIT_UNTIL] = wait_until
         # A sleep before a DVR-off stream is footage lost.
         del params["sleep_interval"], params["max_sleep_interval"]
         # yt-dlp writes subtitles before the media, and a running live's chat
@@ -326,10 +352,42 @@ def download(
     on_format: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Download one video and return its sanitised info dict. `on_format` sees
-    the info dict once the format is chosen, before the download starts."""
+    the info dict once the format is chosen, before the download starts.
+
+    With WAIT_UNTIL in `params`, a stream with no format chosen by then
+    raises NotStarted."""
     params = {**params, "logger": YtdlpLogger()}
-    with yt_dlp.YoutubeDL(params) as ydl:
+    wait_until = params.pop(WAIT_UNTIL, None)
+    chosen = threading.Event()
+    gave_up = threading.Event()
+
+    def before_download(info: dict[str, Any]) -> None:
+        chosen.set()
         if on_format is not None:
-            ydl.add_post_processor(_BeforeDownload(on_format), when="before_dl")
-        info = ydl.extract_info(url, download=True)
+            on_format(info)
+
+    with yt_dlp.YoutubeDL(params) as ydl:
+        ydl.add_post_processor(_BeforeDownload(before_download), when="before_dl")
+
+        def give_up() -> None:
+            gave_up.set()
+            # yt-dlp's wait has no bound. Without the option, the next
+            # extraction of a stream still upcoming raises "This live event
+            # will begin in ...".
+            ydl.params.pop("wait_for_video", None)
+
+        timer = None
+        if wait_until is not None:
+            timer = threading.Timer(max(wait_until - time.time(), 0), give_up)
+            timer.daemon = True
+            timer.start()
+        try:
+            info = ydl.extract_info(url, download=True)
+        except yt_dlp.utils.DownloadError as e:
+            if gave_up.is_set() and not chosen.is_set():
+                raise NotStarted(str(e)) from e
+            raise
+        finally:
+            if timer is not None:
+                timer.cancel()
         return ydl.sanitize_info(info)

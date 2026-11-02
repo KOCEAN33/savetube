@@ -607,6 +607,9 @@ async def test_scheduler_cancel(settings, job_id, setup, status, state):
         requests=Requests(),
         encodes=asyncio.Lock(),
         moves=asyncio.Lock(),
+        listings=asyncio.Semaphore(2),
+        lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
+        prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
     )
     try:
         async with httpx2.AsyncClient(
@@ -649,6 +652,9 @@ class _Scheduler:
             requests=Requests(),
             encodes=asyncio.Lock(),
             moves=asyncio.Lock(),
+            listings=asyncio.Semaphore(2),
+            lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
+            prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
         )
         self.urls = []
 
@@ -665,7 +671,7 @@ def test_api_cancel_asks_the_scheduler(settings, monkeypatch):
 
     with _api(settings) as api:
         r = api.post(f"/api/encode/jobs/{job['job_id']}/cancel")
-        jobs = api.get("/api/encode").json()["jobs"]
+        jobs = api.get("/api/encode").json()["finished"]["items"]
 
     assert r.is_success
     assert scheduler.urls == [f"{settings.scheduler_url}/encode/{job['job_id']}/cancel"]
@@ -680,7 +686,17 @@ def test_api_settings_start_off_and_save(settings):
         unknown = api.put("/api/encode", json={"enabled": True, "profile": "av1-cq99"})
         after = api.get("/api/encode").json()
 
-    assert first == {"enabled": False, "profile": PROFILE, "profiles": [PROFILE], "jobs": []}
+    assert first == {
+        "enabled": False,
+        "profile": PROFILE,
+        "profiles": [PROFILE],
+        "summary": {
+            "saved_bytes": 0, "source_bytes": 0, "held_bytes": 0,
+            "succeeded": 0, "failed": 0, "open": 0,
+        },
+        "waiting": {"total": 0, "items": []},
+        "finished": {"total": 0, "items": []},
+    }  # fmt: skip
     assert put.is_success and unknown.status_code == 422
     assert (after["enabled"], after["profile"]) == (True, PROFILE)
 
@@ -690,26 +706,107 @@ def test_api_lists_jobs_and_requeues_only_failures(settings):
     _sql(
         settings,
         "INSERT INTO encode_job (id, video_id, state, profile, source_path, source_size, reason,"
-        f" finished_at) VALUES (7, 'v1', 'failed', '{PROFILE}', '{_dir('v1')}/v1.mp4', 1000,"
-        " 'sha256 mismatch', now()),"
-        f" (8, 'v1', 'queued', '{PROFILE}', '{_dir('v1')}/v1.mp4', 1000, NULL, NULL)",
+        f" log_tail, finished_at) VALUES (7, 'v1', 'failed', '{PROFILE}', '{_dir('v1')}/v1.mp4',"
+        " 1000, 'sha256 mismatch', 'ffmpeg said no', now()),"
+        f" (8, 'v1', 'queued', '{PROFILE}', '{_dir('v1')}/v1.mp4', 1000, NULL, NULL, NULL)",
     )
 
+    def states(body):
+        return {j["id"]: j["state"] for j in body["waiting"]["items"] + body["finished"]["items"]}
+
     with _api(settings) as api:
-        listed = {j["id"]: j for j in api.get("/api/encode").json()["jobs"]}
+        listed = {j["id"]: j for j in api.get("/api/encode").json()["waiting"]["items"]}
         queued = api.post("/api/encode/jobs/8/requeue")
         unknown = api.post("/api/encode/jobs/99/requeue")
         requeued = api.post("/api/encode/jobs/7/requeue")
         again = api.post("/api/encode/jobs/7/requeue")
-        after = {j["id"]: j["state"] for j in api.get("/api/encode").json()["jobs"]}
+        after = states(api.get("/api/encode").json())
 
     failed = listed[7]
     assert {k: failed[k] for k in ("video_id", "title", "state", "profile", "source_size",
-                                   "result_size", "reason")} == {
+                                   "result_size", "reason", "log_tail")} == {
         "video_id": "v1", "title": "title v1", "state": "failed", "profile": PROFILE,
         "source_size": 1000, "result_size": None, "reason": "sha256 mismatch",
+        "log_tail": "ffmpeg said no",
     }  # fmt: skip
     assert failed["created_at"] and failed["finished_at"]
     assert (queued.status_code, unknown.status_code, again.status_code) == (409, 404, 409)
     assert requeued.is_success
+    # The requeue answers with the lists as they are after it.
+    assert states(requeued.json()) == {7: "requeued", 8: "queued"}
     assert after == {7: "requeued", 8: "queued"}
+
+
+def _job_rows(settings, rows):
+    """Encode jobs as (id, video_id, state, source_size, result_size)."""
+    values = ", ".join(
+        f"({i}, '{v}', '{state}', '{PROFILE}', '{_dir(v)}/{v}.mp4', {source},"
+        f" {'NULL' if result is None else result})"
+        for i, v, state, source, result in rows
+    )
+    _sql(
+        settings,
+        "INSERT INTO encode_job (id, video_id, state, profile, source_path, source_size,"
+        f" result_size) VALUES {values}",
+    )
+
+
+def test_api_summary_counts_savings_of_succeeded_results_only(settings):
+    for v in ("v1", "v2", "v3", "v4", "v5", "v6", "v7"):
+        _stored(settings, v)
+    _job_rows(
+        settings,
+        [
+            (1, "v1", "succeeded", 1000, 400),
+            (2, "v2", "succeeded", 2000, 500),
+            # A succeeded row without a result size saves nothing countable.
+            (3, "v3", "succeeded", 5000, None),
+            (4, "v4", "failed", 3000, 100),
+            (5, "v5", "queued", 700, None),
+            (6, "v6", "claimed", 800, None),
+            (7, "v7", "cancelled", 900, None),
+            (8, "v1", "lost", 900, 100),
+        ],
+    )
+    # v1's original still waits in .originals/, v2's is deleted.
+    _sql(
+        settings,
+        "INSERT INTO format_watch (video_id, original_path, original_until) VALUES"
+        " ('v1', '.originals/v1/v1.mp4', now() + interval '7 days'),"
+        " ('v2', NULL, NULL)",
+    )
+
+    with _api(settings) as api:
+        summary = api.get("/api/encode").json()["summary"]
+
+    assert summary == {
+        "saved_bytes": 2100,
+        "source_bytes": 3000,
+        "held_bytes": 600,
+        "succeeded": 3,
+        "failed": 1,
+        "open": 2,
+    }
+
+
+def test_api_pages_the_waiting_and_finished_jobs(settings):
+    for i in range(1, 16):
+        _stored(settings, f"v{i}")
+    _job_rows(
+        settings,
+        [(i, f"v{i}", "queued" if i % 2 else "failed", 1000, None) for i in range(1, 13)]
+        + [(i, f"v{i}", "succeeded", 1000, 400) for i in (13, 14, 15)],
+    )
+
+    with _api(settings) as api:
+        first = api.get("/api/encode").json()
+        second = api.get("/api/encode", params={"open_offset": 10}).json()
+        finished = api.get("/api/encode", params={"finished_offset": 2, "limit": 2}).json()
+
+    assert first["waiting"]["total"] == 12
+    assert [j["id"] for j in first["waiting"]["items"]] == list(range(1, 11))
+    assert [j["id"] for j in second["waiting"]["items"]] == [11, 12]
+    assert first["finished"]["total"] == 3
+    # The newest finished job comes first.
+    assert [j["id"] for j in first["finished"]["items"]] == [15, 14, 13]
+    assert [j["id"] for j in finished["finished"]["items"]] == [13]

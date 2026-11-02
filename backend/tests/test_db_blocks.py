@@ -484,7 +484,7 @@ def test_api_pauses_and_resumes_archive_downloads(settings, caplog):
         assert put.status_code == 200 and put.json()["paused"] is True
         assert client.get("/api/download-settings").json()["paused"] is True
         # Saving the limits leaves the pause as it is.
-        limits = {"max_concurrent": 2, "cookie_profile": None}
+        limits = {"max_concurrent": 2, "window_enabled": False, "cookie_profile": None}
         assert client.put("/api/download-settings", json=limits).json()["paused"] is True
         assert client.put("/api/download-settings/paused", json={}).status_code == 422
         put = client.put("/api/download-settings/paused", json={"paused": False})

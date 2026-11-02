@@ -101,7 +101,10 @@ def check_videos(page: Page) -> str:
     expect(rows.first.locator(f"a[href='/videos/{MANIFEST['video_id']}']")).to_be_visible()
     expect(rows.first).to_contain_text("1080p30")
     settle(page)
-    return f"filter sent channel_name={name!r}, vcodec=h264 listed 1 video"
+    # A cell outside the links opens the video too, for a video with no title.
+    rows.first.get_by_role("cell", name="1080p30", exact=True).click()
+    expect(page).to_have_url(BASE + f"/videos/{MANIFEST['video_id']}")
+    return f"filter sent channel_name={name!r}, vcodec=h264 listed 1 video, row click opened it"
 
 
 def check_live(page: Page) -> str:
@@ -205,6 +208,26 @@ def check_settings(page: Page) -> str:
     return f"PUT {put.value.status}, max_concurrent={saved}"
 
 
+def check_encode(page: Page) -> str:
+    with page.expect_response(lambda r: path_of(r.url) == "/api/encode") as first:
+        page.goto(BASE + "/encode")
+    assert first.value.ok, f"/api/encode answered {first.value.status}"
+    switch = page.locator("#encode-enabled")
+    expect(switch).to_be_visible()
+    expect(page.locator("#encode-profile")).to_be_visible()
+    expect(page.get_by_role("table")).to_have_count(2)
+    settle(page)
+    before = switch.get_attribute("aria-checked")
+    with page.expect_response(
+        lambda r: path_of(r.url) == "/api/encode" and r.request.method == "PUT"
+    ) as put:
+        switch.click()
+    assert put.value.ok, f"PUT answered {put.value.status}"
+    expect(switch).not_to_have_attribute("aria-checked", before or "")
+    settle(page)
+    return f"PUT {put.value.status}, enabled={put.value.json()['enabled']}"
+
+
 def check_video(page: Page) -> str:
     video_id = MANIFEST["video_id"]
     if not MANIFEST["media"]:
@@ -241,9 +264,10 @@ def check_formats(page: Page) -> str:
     # The kept video and the offered audio carry the badges.
     expect(video.locator("[data-slot=badge]")).to_have_count(1)
     expect(audio.locator("[data-slot=badge]")).to_have_count(1)
-    # The upgrade starts selected, the kept video keeps its stored row.
-    expect(audio.get_by_role("radio", name="Select format 251")).to_be_checked()
+    # The stored streams start selected, so nothing is picked yet.
+    expect(audio.get_by_role("radio", name="Keep stored audio")).to_be_checked()
     expect(video.get_by_role("radio", name="Keep stored video")).to_be_checked()
+    expect(card.get_by_role("button", name="Replace", exact=True)).to_be_disabled()
     # The VOD's 137 is another encode of the stored id, so it is selectable.
     expect(video.get_by_role("radio", name="Select format 137")).to_be_enabled()
     # The seed's stored streams carry no size: 1100 kbps over 2 s.
@@ -258,6 +282,9 @@ def check_formats(page: Page) -> str:
     expect(kept_audio).to_have_count(1)
     expect(kept_audio).to_contain_text("YouTube, stored")
     expect(kept_audio).to_contain_text("140")
+    # The stored stream comes first, above the better formats.
+    expect(audio.locator("tbody tr").first).to_contain_text("YouTube, stored")
+    audio.get_by_role("radio", name="Select format 251").check()
     expect(card.get_by_role("button", name="Replace with 251")).to_be_enabled()
     settle(page)
     rows = video.locator("tbody tr").count() + audio.locator("tbody tr").count()
@@ -271,6 +298,7 @@ CHECKS = [
     ("Downloads", check_downloads),
     ("Channel", check_channel),
     ("Settings", check_settings),
+    ("Encode", check_encode),
     ("Video", check_video),
     ("Formats", check_formats),
 ]

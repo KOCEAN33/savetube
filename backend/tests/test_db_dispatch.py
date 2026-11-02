@@ -192,6 +192,10 @@ def test_api_download_settings_and_job_deferral(settings):
             body | {"rate_limit_bytes": 0},
         ):
             assert client.put("/api/download-settings", json=bad).status_code == 422, bad
+        # A body without window_enabled is refused, so the window stays on.
+        omitted = {k: v for k, v in body.items() if k != "window_enabled"}
+        assert client.put("/api/download-settings", json=omitted).status_code == 422
+        assert client.get("/api/download-settings").json()["window_enabled"] is True
         open_all_day = body | {"window_start": None, "window_end": None, "window_enabled": False}
         assert client.put("/api/download-settings", json=open_all_day).status_code == 200
 

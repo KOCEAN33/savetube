@@ -155,6 +155,17 @@ async def _begin(
         job = await session.get(Job, job_id)
         if job is None or job.video_id is None or not job.format_id:
             raise LookupError(f"job {job_id} has no video or format")
+        # A cancel can leave the queue job `todo`, so the worker gets a row it must not run.
+        if job.state is not JobState.QUEUED:
+            emit(
+                log,
+                logging.WARNING,
+                "replace.skipped",
+                job=job_id,
+                video=job.video_id,
+                state=job.state.value,
+            )
+            return None
         now = datetime.now(UTC)
         limits = await admit(session, now)
         if limits is None:

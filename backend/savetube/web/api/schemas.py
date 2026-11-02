@@ -3,7 +3,9 @@
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from savetube.ytdl import strip_noise
 
 
 class _Out(BaseModel):
@@ -25,6 +27,11 @@ class SourceOut(_Out):
     archiving: bool
     last_polled_at: datetime | None
     last_error: str | None
+
+    @field_validator("last_error")
+    @classmethod
+    def _plain(cls, v: str | None) -> str | None:
+        return strip_noise(v) if v else v
 
 
 # Every match runs each word against each listed title.

@@ -15,6 +15,7 @@ from conftest import (
     _job_rows,
     _no_probe,
     _poll,
+    _profiles,
     _run,
     _run_steps,
     _Runner,
@@ -35,17 +36,6 @@ from savetube.db.models import (
 from savetube.layout import VideoType
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
-
-
-def _profiles(settings, *names):
-    """Settings whose SAVETUBE_COOKIES_DIR holds a file per name, its content `# <name>`."""
-    root = settings.archive_root.parent / "cookies"
-    root.mkdir(exist_ok=True)
-    for name in names:
-        (root / f"{name}.txt").write_text(f"# {name}\n")
-    # A Secret mount's own entries are no profiles.
-    (root / "..data").mkdir(exist_ok=True)
-    return settings.model_copy(update={"cookies_dir": root})
 
 
 BOT_CHECK_ERROR = (
@@ -257,14 +247,17 @@ def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplo
     with _api(settings) as client:
         assert client.get("/api/cookie-profiles").json() == []
         assert (
-            client.put("/api/download-settings", json={"cookie_profile": "main"}).status_code == 422
+            client.put(
+                "/api/download-settings", json={"window_enabled": False, "cookie_profile": "main"}
+            ).status_code
+            == 422
         )
         [channel] = client.get("/api/channels").json()
         assert channel["memberships"] == [
             {"profile": "alt", "is_member": False, "checked_at": "2026-10-21T02:00:00Z"},
             {"profile": "main", "is_member": True, "checked_at": "2026-10-21T01:00:00Z"},
         ]
-        patched = client.patch(f"/api/channels/{VESP}", json={"watch_lives": True}).json()
+        patched = client.patch(f"/api/channels/{VESP}", json={"watch_lives": False}).json()
         assert patched["memberships"] == channel["memberships"]
 
     # The scheduler records what its mount holds. The web reads only the table.
@@ -286,15 +279,25 @@ def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplo
             {"name": "throwaway", "account_name": None, "account_handle": None},
         ]
         with caplog.at_level(logging.INFO, logger="savetube"):
-            put = client.put("/api/download-settings", json={"cookie_profile": "throwaway"})
+            put = client.put(
+                "/api/download-settings",
+                json={"window_enabled": False, "cookie_profile": "throwaway"},
+            )
         assert put.status_code == 200 and put.json()["cookie_profile"] == "throwaway"
         assert client.get("/api/download-settings").json()["cookie_profile"] == "throwaway"
         assert "# throwaway" not in caplog.text and "# throwaway" not in put.text
         [line] = [r for r in caplog.records if r.getMessage() == "settings.download"]
         assert _fields(line)["cookie_profile"] == "throwaway"
-        put = client.put("/api/download-settings", json={"cookie_profile": "gone"})
+        put = client.put(
+            "/api/download-settings", json={"window_enabled": False, "cookie_profile": "gone"}
+        )
         assert put.status_code == 422
-        assert client.put("/api/download-settings", json={}).json()["cookie_profile"] is None
+        assert (
+            client.put("/api/download-settings", json={"window_enabled": False}).json()[
+                "cookie_profile"
+            ]
+            is None
+        )
 
 
 @pytest.mark.anyio
@@ -461,6 +464,138 @@ async def poll_source_with(sessionmaker, settings, source_id, lister):
     await poll_source(
         sessionmaker, source_id, settings, lister=lister, cancel=_cancel, prober=_no_probe
     )
+
+
+@pytest.mark.anyio
+async def test_an_empty_tab_lists_again_with_the_member_profile(settings, caplog):
+    """A channel whose uploads are all members-only: without a member's cookies
+    its Videos tab lists no entries and its Shorts tab is missing."""
+    import logging
+
+    from yt_dlp.utils import DownloadError
+
+    videos = f"https://www.youtube.com/channel/{VESP}/videos"
+    shorts = f"https://www.youtube.com/channel/{VESP}/shorts"
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, '{videos}', 'tab', '{VESP}', true, 360),"
+        f" (2, '{shorts}', 'tab', '{VESP}', true, 360)",
+        "INSERT INTO membership (channel_id, profile, is_member, video_id, checked_at) VALUES"
+        f" ('{VESP}', 'alt', false, 'member1', now()),"
+        f" ('{VESP}', 'main', true, 'member1', now()),"
+        f" ('{VESP}', 'main2', true, 'member1', now()),"
+        f" ('{VESP}', 'throwaway', false, 'member1', now())",
+    )
+    settings = _profiles(settings, "alt", "main", "main2", "throwaway")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    head = {"channel_id": VESP, "channel": "VESPERBELL"}
+    calls = []
+    # What a member sees on the Videos tab.
+    uploads = ["member1", "member2"]
+
+    def lister(url, cookiefile):
+        profile = None if cookiefile is None else cookiefile.read_text().removeprefix("# ").strip()
+        calls.append((url.rsplit("/", 1)[1], profile))
+        member = profile in ("main", "main2")
+        if url == shorts:
+            if not member:
+                raise DownloadError(
+                    "ERROR: [youtube:tab] VESPERBELL: This channel does not have a shorts tab"
+                )
+            return {**head, "entries": [{"id": "short1", "title": "short"}]}
+        entries = [
+            {"id": vid, "title": f"【メン限】{vid}", "availability": "subscriber_only"}
+            for vid in uploads
+        ]
+        return {**head, "entries": entries if member else []}
+
+    async def queued():
+        async with sessionmaker() as session:
+            return sorted(
+                await session.scalars(sa.select(Job.video_id).where(Job.state == JobState.QUEUED))
+            )
+
+    # Cookie-free, then the first member profile by name. The member listing's
+    # entries queue as any poll's do.
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await poll_source_with(sessionmaker, settings, 1, lister)
+        await poll_source_with(sessionmaker, settings, 2, lister)
+    assert calls == [("videos", None), ("videos", "main"), ("shorts", None), ("shorts", "main")]
+    assert await queued() == ["member1", "member2", "short1"]
+    fallbacks = [_fields(r) for r in caplog.records if r.getMessage() == "poll.member_listing"]
+    assert [(f["source"], f["profile"]) for f in fallbacks] == [(1, "main"), (2, "main")]
+    async with sessionmaker() as session:
+        assert (await session.get(Source, 2)).last_error is None
+
+    # A general profile that is a member lists what a member sees, so an
+    # empty tab stays empty.
+    calls.clear()
+    uploads.clear()
+    _sql(settings, "UPDATE download_settings SET cookie_profile = 'main2'")
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    assert calls == [("videos", "main2")]
+    uploads.append("member3")
+
+    # A throwaway general profile falls back to a member.
+    calls.clear()
+    _sql(settings, "UPDATE download_settings SET cookie_profile = 'throwaway'")
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    assert calls == [("videos", "throwaway"), ("videos", "main")]
+
+    # No member listing while a YouTube block holds. The missing tab fails the poll.
+    calls.clear()
+    _sql(settings, "UPDATE download_settings SET blocked_until = now() + interval '1 hour'")
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    await poll_source_with(sessionmaker, settings, 2, lister)
+    assert calls == [("videos", "throwaway"), ("shorts", "throwaway")]
+    async with sessionmaker() as session:
+        assert "does not have a shorts tab" in (await session.get(Source, 2)).last_error
+
+    # Without a confirmed member, no profile but the general one lists.
+    calls.clear()
+    _sql(
+        settings,
+        "UPDATE download_settings SET blocked_until = NULL",
+        "UPDATE membership SET is_member = false",
+    )
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    assert calls == [("videos", "throwaway")]
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_tab_with_entries_lists_with_the_general_profile_only(settings):
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/videos', 'tab', '{VESP}', true, 360),"
+        " (2, 'https://www.youtube.com/playlist?list=PLempty', 'playlist', "
+        f" '{VESP}', true, 360)",
+        "INSERT INTO membership (channel_id, profile, is_member, video_id, checked_at) VALUES"
+        f" ('{VESP}', 'main', true, 'member1', now())",
+    )
+    settings = _profiles(settings, "main")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    calls = []
+
+    def lister(url, cookiefile):
+        calls.append((url, cookiefile))
+        if "playlist" in url:
+            return {"channel_id": VESP, "entries": []}
+        return {"channel_id": VESP, "entries": [{"id": "public", "title": "public"}]}
+
+    await poll_source_with(sessionmaker, settings, 1, lister)
+    # A playlist source never takes the member profile, even when empty.
+    await poll_source_with(sessionmaker, settings, 2, lister)
+    assert [c for _, c in calls] == [None, None]
+    await engine.dispose()
 
 
 @pytest.mark.anyio
