@@ -47,8 +47,8 @@ export function ScanStep({
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          The scan lists the first page of the Videos, Shorts and Live tabs and the channel's
-          playlists. It stores nothing.
+          The scan lists the first page of the Videos, Shorts and Live tabs, also with each cookie
+          profile, and the channel's playlists. It stores no source.
         </p>
       </form>
       {run.isPending && (
@@ -74,6 +74,14 @@ export function ScanStep({
               </Badge>
             ))}
             <Badge variant="outline">Playlists: {scan.playlists.length}</Badge>
+            {scan.memberships
+              .filter((m) => m.members_only)
+              .map((m) => (
+                <Badge key={m.profile} variant="outline">
+                  Members-only with {m.profile}: {m.members_only}
+                  {m.is_member === null ? "" : m.is_member ? ", member" : ", not a member"}
+                </Badge>
+              ))}
           </div>
         </div>
       )}

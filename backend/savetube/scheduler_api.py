@@ -3,16 +3,21 @@ user action the web asks the scheduler to do now. Cluster-internal, with no
 auth: only the web calls it, through a ClusterIP Service."""
 
 import asyncio
+import logging
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from savetube import encode, removal, watch
+from savetube import cookies, encode, logs, removal, scan, watch
 from savetube.config import Settings
 from savetube.db.models import Source
 from savetube.integrity import Tools
+from savetube.logs import emit
 from savetube.poll import disabled
+
+log = logging.getLogger(__name__)
 
 # An in-flight probe gets this long after SIGTERM before the server closes.
 _GRACEFUL_SECONDS = 5
@@ -48,6 +53,11 @@ class Requests:
         return asked
 
 
+class ChannelUrl(BaseModel):
+    # A channel URL without a tab, as the web's _channel_base makes it.
+    url: str
+
+
 def create_app(
     settings: Settings,
     sessionmaker: async_sessionmaker,
@@ -58,6 +68,8 @@ def create_app(
     requests: Requests,
     encodes: asyncio.Lock,
     moves: asyncio.Lock,
+    lister: scan.Lister,
+    prober: cookies.Prober,
 ) -> FastAPI:
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
@@ -73,6 +85,21 @@ def create_app(
         except watch.NotComplete:
             raise HTTPException(status_code=409, detail="the video is not complete") from None
         return Response(status_code=204)
+
+    @app.post("/channel-scan")
+    async def channel_scan(body: ChannelUrl) -> dict:
+        """List the channel's tabs with every cookie profile and check its
+        memberships, within the web's 120 s wait."""
+        try:
+            return await scan.scan_channel(
+                sessionmaker, settings, body.url, lister=lister, prober=prober
+            )
+        except TimeoutError:
+            _scan_failed(body.url, 504, "timed out")
+            raise HTTPException(status_code=504, detail="scanning the channel timed out") from None
+        except scan.ScanFailed as e:
+            _scan_failed(body.url, 502, str(e))
+            raise HTTPException(status_code=502, detail=str(e)) from None
 
     @app.post("/poll/{source_id}", status_code=202)
     async def poll_now(source_id: int) -> Response:
@@ -121,6 +148,10 @@ def create_app(
         return Response(status_code=204)
 
     return app
+
+
+def _scan_failed(url: str, status: int, reason: str) -> None:
+    emit(log, logging.WARNING, "scan.failed", url=url, status=status, reason=logs.cut(reason))
 
 
 async def serve(app: FastAPI, port: int) -> None:

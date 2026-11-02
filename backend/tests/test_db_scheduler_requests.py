@@ -51,6 +51,8 @@ async def _scheduler_post(settings, path, requests):
         requests=requests,
         encodes=asyncio.Lock(),
         moves=asyncio.Lock(),
+        lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
+        prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
     )
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=app), base_url="http://scheduler"
@@ -208,6 +210,8 @@ class _Scheduler:
             requests=self.requests,
             encodes=asyncio.Lock(),
             moves=asyncio.Lock(),
+            lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
+            prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
         )
         self.urls = []
 

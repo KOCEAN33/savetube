@@ -607,6 +607,8 @@ async def test_scheduler_cancel(settings, job_id, setup, status, state):
         requests=Requests(),
         encodes=asyncio.Lock(),
         moves=asyncio.Lock(),
+        lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
+        prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
     )
     try:
         async with httpx2.AsyncClient(
@@ -649,6 +651,8 @@ class _Scheduler:
             requests=Requests(),
             encodes=asyncio.Lock(),
             moves=asyncio.Lock(),
+            lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
+            prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
         )
         self.urls = []
 

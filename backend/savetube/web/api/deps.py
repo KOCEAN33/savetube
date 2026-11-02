@@ -1,7 +1,7 @@
 """Dependencies and helpers the route modules share."""
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import Annotated, Any
 
 import httpx2
@@ -45,13 +45,16 @@ async def call_scheduler(
     seconds: float,
     failed: Callable[[int, str], None],
     method: str = "POST",
-) -> None:
-    """Call `path` on the scheduler's internal API (savetube.scheduler_api).
-    Its 404 and 409 pass through with its detail. A timeout answers 504 and any
-    other failure 502, after `failed(status, reason)` logs it."""
+    json: Any = None,
+    passes: Collection[int] = (404, 409),
+) -> httpx2.Response:
+    """Call `path` on the scheduler's internal API (savetube.scheduler_api)
+    and return its answer. An answer in `passes` passes through with its
+    detail. A timeout answers 504 and any other failure 502, after
+    `failed(status, reason)` logs it."""
     try:
         async with httpx2.AsyncClient(timeout=seconds) as client:
-            r = await client.request(method, f"{request.app.state.scheduler_url}{path}")
+            r = await client.request(method, f"{request.app.state.scheduler_url}{path}", json=json)
     except httpx2.TimeoutException:
         failed(504, "timed out")
         raise HTTPException(
@@ -62,11 +65,12 @@ async def call_scheduler(
         raise HTTPException(
             status_code=502, detail=f"the scheduler is unreachable: {type(e).__name__}"
         ) from None
-    if r.status_code in (404, 409):
+    if r.status_code in passes:
         raise HTTPException(status_code=r.status_code, detail=r.json().get("detail"))
     if not r.is_success:
         failed(502, f"scheduler answered {r.status_code}")
         raise HTTPException(status_code=502, detail=f"the scheduler answered {r.status_code}")
+    return r
 
 
 _size = func.coalesce(func.sum(Video.size_bytes), 0)

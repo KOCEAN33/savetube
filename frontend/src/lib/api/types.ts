@@ -333,7 +333,17 @@ export interface ChannelScan {
   // The first page of each tab. Null for a tab the channel lacks.
   tabs: Record<VideoTab, ScanEntry[] | null>
   playlists: { id: string; title: string; url: string }[]
+  // One per cookie profile the scan listed with, by name.
+  memberships: ScanMembership[]
   suggestions: TitleWord[]
+}
+
+export interface ScanMembership {
+  profile: string
+  // Members-only entries the profile's listing showed. Null when it failed.
+  members_only: number | null
+  // The stored membership result. Null without one.
+  is_member: boolean | null
 }
 
 export interface TitleKept {

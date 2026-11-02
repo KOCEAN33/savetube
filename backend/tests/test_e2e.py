@@ -573,19 +573,11 @@ def test_a_playlist_source_lifecycle(server):
 
 
 def test_a_channel_scan_then_add(server):
+    # No scheduler runs here, so the scan cannot reach it.
     r = server.post("/api/channel-scan", json={"url": f"{CHANNEL_URL}/videos"}, headers=WRITE)
-    assert r.status_code == 200
-    scan = r.json()
-    assert scan["url"] == CHANNEL_URL and scan["channel_id"] == CHANNEL_ID
-    assert scan["tabs"] == {
-        "videos": [{"video_id": VIDEO_ID, "title": TITLE}],
-        "shorts": None,
-        "streams": None,
-    }
-    playlist_url = f"https://www.youtube.com/playlist?list={PLAYLIST_ID}"
-    assert scan["playlists"] == [{"id": PLAYLIST_ID, "title": "E2E list", "url": playlist_url}]
-    assert {"handle", "name", "avatar_url", "suggestions"} <= scan.keys()
+    assert r.status_code == 502 and "unreachable" in r.json()["detail"]
 
+    playlist_url = f"https://www.youtube.com/playlist?list={PLAYLIST_ID}"
     r = server.post("/api/channel-playlists", json={"url": CHANNEL_URL}, headers=WRITE)
     assert r.status_code == 200
     assert r.json() == [

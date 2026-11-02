@@ -15,6 +15,7 @@ from conftest import (
     _job_rows,
     _no_probe,
     _poll,
+    _profiles,
     _run,
     _run_steps,
     _Runner,
@@ -35,17 +36,6 @@ from savetube.db.models import (
 from savetube.layout import VideoType
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
-
-
-def _profiles(settings, *names):
-    """Settings whose SAVETUBE_COOKIES_DIR holds a file per name, its content `# <name>`."""
-    root = settings.archive_root.parent / "cookies"
-    root.mkdir(exist_ok=True)
-    for name in names:
-        (root / f"{name}.txt").write_text(f"# {name}\n")
-    # A Secret mount's own entries are no profiles.
-    (root / "..data").mkdir(exist_ok=True)
-    return settings.model_copy(update={"cookies_dir": root})
 
 
 BOT_CHECK_ERROR = (

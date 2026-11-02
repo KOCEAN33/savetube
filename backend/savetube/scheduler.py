@@ -351,6 +351,8 @@ async def run(settings: Settings) -> None:
         requests=requests,
         encodes=encodes,
         moves=moves,
+        lister=list_entries,
+        prober=probe_member,
     )
     async with app.open_async():
         # Separate loops, so a long first listing of a big channel never delays
