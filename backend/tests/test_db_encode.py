@@ -21,7 +21,9 @@ needs_ffmpeg = pytest.mark.skipif(
     reason="ffmpeg or ffprobe not on PATH",
 )
 
-PROFILE = "vtuber-av1-cq46"
+PROFILE = "vtuber-av1-uhq-cq46"
+# The uhq profile's old name, accepted only for jobs queued under it.
+RETIRED = "vtuber-av1-cq46"
 H264 = {
     "format_id": "137",
     "vcodec": "avc1.640028",
@@ -151,6 +153,17 @@ async def test_a_complete_h264_video_gets_one_queue_file(settings):
 @pytest.mark.anyio
 async def test_nothing_is_queued_while_disabled(settings):
     _stored(settings)
+
+    await _step(settings, now=datetime.now(UTC))
+
+    assert _jobs(settings) == []
+    assert not list(_enc(settings).glob("queue/*"))
+
+
+@pytest.mark.anyio
+async def test_nothing_is_queued_under_a_retired_profile(settings):
+    _stored(settings)
+    _sql(settings, f"UPDATE encode_settings SET enabled = true, profile = '{RETIRED}'")
 
     await _step(settings, now=datetime.now(UTC))
 
@@ -466,6 +479,24 @@ async def test_a_valid_result_replaces_the_stored_file(settings, tmp_path):
     assert written["requested_formats"][0]["vcodec"] == "av01"
 
 
+@needs_ffmpeg
+@pytest.mark.anyio
+async def test_a_result_queued_under_a_retired_profile_still_replaces_the_stored_file(
+    settings, tmp_path
+):
+    t = datetime.now(UTC)
+    source, directory, job, result = await _with_result(settings, tmp_path, t)
+    _sql(settings, f"UPDATE encode_job SET profile = '{RETIRED}' WHERE id = {job['job_id']}")
+    _done(settings, job, result, t, profile=RETIRED)
+
+    await _step(settings, now=t + timedelta(minutes=1))
+
+    row = _state(settings, job["job_id"])
+    assert row.state == "succeeded", row.reason
+    assert (directory / "v1.mkv").read_bytes() == result.read_bytes()
+    assert _video(settings).format_id == f"{RETIRED}+140"
+
+
 def _assert_failed(settings, job, data):
     failed = _enc(settings) / "failed"
     assert sorted(p.name for p in failed.iterdir()) == [
@@ -684,12 +715,13 @@ def test_api_settings_start_off_and_save(settings):
         first = api.get("/api/encode").json()
         put = api.put("/api/encode", json={"enabled": True, "profile": PROFILE})
         unknown = api.put("/api/encode", json={"enabled": True, "profile": "av1-cq99"})
+        retired = api.put("/api/encode", json={"enabled": True, "profile": RETIRED})
         after = api.get("/api/encode").json()
 
     assert first == {
         "enabled": False,
         "profile": PROFILE,
-        "profiles": ["vtuber-av1-hq-cq46", PROFILE],
+        "profiles": ["vtuber-av1-hq-cq46", "vtuber-av1-uhq-cq46"],
         "summary": {
             "saved_bytes": 0, "source_bytes": 0, "held_bytes": 0,
             "succeeded": 0, "failed": 0, "open": 0,
@@ -697,7 +729,7 @@ def test_api_settings_start_off_and_save(settings):
         "waiting": {"total": 0, "items": []},
         "finished": {"total": 0, "items": []},
     }  # fmt: skip
-    assert put.is_success and unknown.status_code == 422
+    assert put.is_success and unknown.status_code == 422 and retired.status_code == 422
     assert (after["enabled"], after["profile"]) == (True, PROFILE)
 
 

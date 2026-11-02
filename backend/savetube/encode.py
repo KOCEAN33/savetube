@@ -71,7 +71,10 @@ class Profile:
 
 
 _AV1_30 = Profile(vcodec="av01", codec_name="av1", ten_bit=True, max_fps=30)
-PROFILES = {"vtuber-av1-hq-cq46": _AV1_30, "vtuber-av1-cq46": _AV1_30}
+PROFILES = {"vtuber-av1-hq-cq46": _AV1_30, "vtuber-av1-uhq-cq46": _AV1_30}
+# Old names nothing queues under any more. A job file already queued under one
+# still passes its checks.
+RETIRED_PROFILES = {"vtuber-av1-cq46": _AV1_30}
 DEFAULT_PROFILE = "vtuber-av1-hq-cq46"
 
 
@@ -351,7 +354,7 @@ async def _check(
         raise Rejected(f"job file unreadable: {data['unreadable']}")
     if data.get("profile") != job.profile:
         raise Rejected(f"profile {data.get('profile')!r}, queued {job.profile!r}")
-    profile = PROFILES.get(job.profile)
+    profile = PROFILES.get(job.profile) or RETIRED_PROFILES.get(job.profile)
     if profile is None:
         raise Rejected(f"unknown profile {job.profile!r}")
     try:

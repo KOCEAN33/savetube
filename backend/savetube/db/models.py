@@ -446,7 +446,7 @@ class EncodeSettings(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1, autoincrement=False)
     enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
-    profile: Mapped[str] = mapped_column(Text, server_default="vtuber-av1-cq46")
+    profile: Mapped[str] = mapped_column(Text, server_default="vtuber-av1-uhq-cq46")
 
 
 class EncodeJob(Base):
