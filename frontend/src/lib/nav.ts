@@ -4,6 +4,7 @@ import {
   HouseIcon,
   RadioIcon,
   SettingsIcon,
+  ShrinkIcon,
   type LucideIcon,
 } from "lucide-react"
 
@@ -18,6 +19,7 @@ export const navItems: NavItem[] = [
   { title: "Live", url: "/live", icon: RadioIcon },
   { title: "Videos", url: "/videos", icon: FilmIcon },
   { title: "Downloads", url: "/downloads", icon: DownloadIcon },
+  { title: "Encode", url: "/encode", icon: ShrinkIcon },
   { title: "Settings", url: "/settings", icon: SettingsIcon },
 ]
 

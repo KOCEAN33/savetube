@@ -5,7 +5,7 @@
 - React with shadcn/ui, starting from the `dashboard-01` block: sidebar, section cards, an interactive area chart, and a data table. `npx shadcn add dashboard-01` installs it.
 - Vite builds a static bundle that FastAPI serves as static files. The block ships as Next.js page files, so its components move into a Vite app.
 - The user chose the library layout: the sidebar lists the channels, each page searches its own lists, and no global search bar exists.
-- Sidebar: Home, Live, Videos, Downloads, Settings, then "Channels (N)". N counts the tracked channels. A + button opens the add-channel modal, and a filter input matches a channel's name or handle. Each tracked channel shows its avatar, its name and its stored-video count, sorted by name, and links to its channel page. No channel list page exists, and `/channels` redirects to `/`.
+- Sidebar: Home, Live, Videos, Downloads, Encode, Settings, then "Channels (N)". N counts the tracked channels. A + button opens the add-channel modal, and a filter input matches a channel's name or handle. Each tracked channel shows its avatar, its name and its stored-video count, sorted by name, and links to its channel page. No channel list page exists, and `/channels` redirects to `/`.
 - The Videos page is the cross-channel library: search and filters across every channel, recent downloads, and channels known only as an uploader. A channel's own videos are browsed on its channel page, so nothing links from a channel into the Videos page.
 - The Videos page channel filter lists each channel name once and filters by `channel_name`. A group's member channels, such as KMNZ's per-member channels, each have their own channel id but carry the group's name in their video info, so one entry shows the whole group. Two unrelated channels with the same name also merge there. A tracked channel's name follows its tab listing, which can differ from the name its video info carries and split it from its group.
 - Every list longer than one page ends in numbered pages: previous, the first and last page, the current page with a neighbour on each side, a gap for hidden pages, and next. The current page is highlighted, and the range shown sits at the left. The page lives in the URL, so back, forward and reload keep it. The Videos page shows 50 videos a page under `?page=`, with the total in the title column header, and a filter or search change returns it to page 1.
@@ -19,7 +19,7 @@
 - Settings holds the download limits, the general cookie profile, and the global title words. The window has an on/off checkbox beside its times, which stay editable while it is off. The daily limit field shows "n / limit today" from `downloaded_today`. The profile select offers "None (cookie-free)" and each present profile from `GET /api/cookie-profiles`.
 - Every place that shows a profile, the profile select, the Memberships columns and the channel page membership list, shows its name with the account its file signs in, such as `main / vivi kikirara (@vivikikirara)`, or `main / account unknown` before a read succeeds. Membership results stay keyed by profile name, and the page joins them with the profile list.
 - Settings also holds the default subtitle language: Off, ja, en, ko, zh-Hans, zh-Hant, or another code typed in. It applies at once and lives in the browser's `localStorage` (`savetube.subtitle-lang`), not in the database, so each browser keeps its own.
-- Settings holds "Re-encoding" (encode.md) after the download limits: an on/off switch and the profile select, each saved on change through `PUT /api/encode`, and the jobs from `GET /api/encode`, refetched every 15 s. A row shows the video linked to its page, the state, the source size and the result size, and the reason of a failure. A queued row has Cancel, and a failed row has Requeue.
+- Settings holds a "Re-encoding" line after the download limits, linking to the Encode page.
 - Settings ends with "Memberships", every membership result across channels from `GET /api/channels`. A row is a channel with at least one result, and a column is a present cookie profile. A cell shows "member" or "not a member" with the check time, or "not checked". The channel name links to its channel page.
 - The site header holds the pause switch for every archive download (archive.md, Pausing downloads), on every page. While paused it shows a "Downloads paused" badge and a Resume button. "Pause downloads" opens a confirmation modal first, because a pause stops the running downloads. Resume applies at once. The switch refetches the flag every 15 s, so a change from another tab shows. Settings shows the same switch above the download limits.
 - The sidebar user button opens a menu with only "Log out". The app has one account, so the menu repeats no name or email.
@@ -50,6 +50,15 @@
 - "Hide resolved" starts on and sends `unresolved`. Turning it off sets `?resolved=show`. Changing either filter returns the finished list to page 1.
 - A job table colors the state badge: failed and missed red, interrupted amber. A failed or interrupted row shows no reason inline. Hovering its badge shows the `reason`. A click on the row opens the `reason` and the full `log_tail` in a row below it, and a second click closes it. A closed row stays one line. This holds for every job table.
 - The page refetches every 3 s while a download runs, and every 15 s otherwise.
+
+## Encode page
+
+- `/encode` holds re-encoding (encode.md), in the layout of the Downloads page. Everything on it comes from one `GET /api/encode`, refetched every 15 s.
+- The top section holds the on/off switch and the profile select, each saved on change through `PUT /api/encode`.
+- "Summary" shows the space saved, the sum of `source_size - result_size` over succeeded jobs with a result size, as bytes and as a percent of those jobs' source sizes. Below it, the part of that saving whose original still waits in `.originals/` shows as held until originals expire. Then the succeeded count, the failed count, and the queued and claimed count.
+- "Waiting" lists queued, claimed and failed jobs, oldest first, with their count in the title. "Finished" lists the other jobs, newest first. Each shows one page of 10 jobs. `?qpage=` and `?fpage=` hold their pages.
+- A row shows the video linked to its page, the state, the source size and the result size, and the queued and finished times. A queued row has Cancel, and a failed row has Requeue. A failed row opens its `reason` and `log_tail` like a failed download row.
+- `PUT /api/encode`, Cancel and Requeue send the shown pages, and their answer replaces the page.
 
 ## Adding a channel
 

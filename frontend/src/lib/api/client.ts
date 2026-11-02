@@ -68,7 +68,7 @@ export async function request<T>(method: string, path: string, body?: unknown): 
   return (await res.json()) as T
 }
 
-function withQuery(path: string, query: Query): string {
+export function withQuery(path: string, query: Query): string {
   const params = new URLSearchParams()
   for (const [key, value] of Object.entries(query)) {
     if (Array.isArray(value)) for (const v of value) params.append(key, v)

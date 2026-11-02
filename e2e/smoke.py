@@ -208,6 +208,26 @@ def check_settings(page: Page) -> str:
     return f"PUT {put.value.status}, max_concurrent={saved}"
 
 
+def check_encode(page: Page) -> str:
+    with page.expect_response(lambda r: path_of(r.url) == "/api/encode") as first:
+        page.goto(BASE + "/encode")
+    assert first.value.ok, f"/api/encode answered {first.value.status}"
+    switch = page.locator("#encode-enabled")
+    expect(switch).to_be_visible()
+    expect(page.locator("#encode-profile")).to_be_visible()
+    expect(page.get_by_role("table")).to_have_count(2)
+    settle(page)
+    before = switch.get_attribute("aria-checked")
+    with page.expect_response(
+        lambda r: path_of(r.url) == "/api/encode" and r.request.method == "PUT"
+    ) as put:
+        switch.click()
+    assert put.value.ok, f"PUT answered {put.value.status}"
+    expect(switch).not_to_have_attribute("aria-checked", before or "")
+    settle(page)
+    return f"PUT {put.value.status}, enabled={put.value.json()['enabled']}"
+
+
 def check_video(page: Page) -> str:
     video_id = MANIFEST["video_id"]
     if not MANIFEST["media"]:
@@ -278,6 +298,7 @@ CHECKS = [
     ("Downloads", check_downloads),
     ("Channel", check_channel),
     ("Settings", check_settings),
+    ("Encode", check_encode),
     ("Video", check_video),
     ("Formats", check_formats),
 ]

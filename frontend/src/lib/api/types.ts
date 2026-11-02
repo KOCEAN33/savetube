@@ -406,6 +406,7 @@ export interface EncodeJob {
   // Null until the encoder's result passes the check.
   result_size: number | null
   reason: string | null
+  log_tail: string | null
   created_at: string
   finished_at: string | null
 }
@@ -415,8 +416,31 @@ export interface EncodeSettingsIn {
   profile: string
 }
 
+// One page of each job list. Every encode route answers with the pages asked for.
+export type EncodePages = {
+  open_offset?: number
+  finished_offset?: number
+  limit?: number
+}
+
+export interface EncodeSummary {
+  // source_size - result_size over succeeded jobs with a result size, and the
+  // source_size of those jobs.
+  saved_bytes: number
+  source_bytes: number
+  // The part of saved_bytes whose original still waits in .originals/.
+  held_bytes: number
+  succeeded: number
+  failed: number
+  // Queued and claimed.
+  open: number
+}
+
 export interface Encode extends EncodeSettingsIn {
   profiles: string[]
-  // Queued, claimed and failed jobs first, then the 20 latest others.
-  jobs: EncodeJob[]
+  summary: EncodeSummary
+  // Queued, claimed and failed jobs, oldest first.
+  waiting: { total: number; items: EncodeJob[] }
+  // The other jobs, newest first.
+  finished: { total: number; items: EncodeJob[] }
 }

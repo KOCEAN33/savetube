@@ -9,7 +9,8 @@ export const queryKeys = {
   words: () => ["words"] as const,
   downloadSettings: () => ["download-settings"] as const,
   cookieProfiles: () => ["cookie-profiles"] as const,
-  encode: () => ["encode"] as const,
+  encode: (waitingPage: number, finishedPage: number) =>
+    ["encode", waitingPage, finishedPage] as const,
   staging: () => ["staging"] as const,
   statsSummary: () => ["stats", "summary"] as const,
   statsDaily: (days: number) => ["stats", "daily", days] as const,
