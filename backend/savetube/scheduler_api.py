@@ -70,6 +70,7 @@ def create_app(
     moves: asyncio.Lock,
     lister: scan.Lister,
     prober: cookies.Prober,
+    listings: asyncio.Semaphore,
 ) -> FastAPI:
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
@@ -92,7 +93,7 @@ def create_app(
         memberships, within the web's 120 s wait."""
         try:
             return await scan.scan_channel(
-                sessionmaker, settings, body.url, lister=lister, prober=prober
+                sessionmaker, settings, body.url, lister=lister, prober=prober, slots=listings
             )
         except TimeoutError:
             _scan_failed(body.url, 504, "timed out")

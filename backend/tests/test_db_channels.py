@@ -94,6 +94,7 @@ class _Scheduler:
             requests=Requests(),
             encodes=asyncio.Lock(),
             moves=asyncio.Lock(),
+            listings=asyncio.Semaphore(2),
             lister=lister,
             prober=prober,
         )
@@ -161,6 +162,42 @@ def test_api_channel_scan_lists_the_first_page_of_each_tab_and_the_playlists(set
     with _scan_api(settings, monkeypatch, gone) as client:
         response = client.post("/api/channel-scan", json={"url": "https://www.youtube.com/@x"})
     assert response.status_code == 502 and response.json()["detail"] == "gone"
+
+
+@pytest.mark.anyio
+async def test_concurrent_channel_scans_share_one_listing_cap(settings):
+    import threading
+    import time
+
+    import httpx2
+
+    scan, _ = _scanner()
+    guard = threading.Lock()
+    running = [0]
+    peak = [0]
+
+    def lister(url, cookiefile, limit):
+        with guard:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        time.sleep(0.2)
+        with guard:
+            running[0] -= 1
+        return scan(url, cookiefile, limit)
+
+    # The scheduler's API caps listings at 2 (`_Scheduler`).
+    app = _Scheduler(settings, lister).app
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://scheduler"
+    ) as client:
+        responses = await asyncio.gather(
+            *(
+                client.post("/channel-scan", json={"url": f"https://www.youtube.com/@{h}"})
+                for h in ("VESPERBELL", "other")
+            )
+        )
+    assert [r.status_code for r in responses] == [200, 200]
+    assert peak[0] == 2
 
 
 def test_api_channel_scan_times_out(settings, monkeypatch):

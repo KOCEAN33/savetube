@@ -32,8 +32,9 @@ log = logging.getLogger(__name__)
 Lister = Callable[[str, Path | None, int | None], dict[str, Any]]
 Listing = dict[str, Any] | None
 
-# Listings one scan runs at once. A listing holds a yt-dlp extraction and
-# YouTube requests for its whole run.
+# Listings all scans run at once together, through the one semaphore the
+# scheduler passes in. A listing holds a yt-dlp extraction and YouTube requests
+# for its whole run.
 LISTINGS = 2
 # The web waits 120 s for the scan (web.api.scan.CHANNEL_SCAN_TIMEOUT). The
 # listings get LIST_SECONDS, and the membership checks the time left up to
@@ -155,18 +156,19 @@ async def scan_channel(
     *,
     lister: Lister,
     prober: cookies.Prober,
+    slots: asyncio.Semaphore,
 ) -> dict[str, Any]:
     """List the first page of each video tab without cookies and with each
     cookie profile, and every playlist without cookies. A members-only entry
     stores the channel row and checks its due memberships with that entry.
-    Raises TimeoutError or ScanFailed when the cookie-free listing fails."""
+    `slots` caps the listings of every scan at once. Raises TimeoutError or
+    ScanFailed when the cookie-free listing fails."""
     started = time.monotonic()
     present = cookies.profiles(settings)
     async with sessionmaker() as session:
         if limits.blocked(await limits.load(session), datetime.now(UTC)) is not None:
             # The member accounts make no request while a YouTube block holds.
             present = []
-    slots = asyncio.Semaphore(LISTINGS)
     deadline = asyncio.get_running_loop().time() + LIST_SECONDS
     # Made first, so the cookie-free listings take the first slots.
     free = asyncio.gather(
