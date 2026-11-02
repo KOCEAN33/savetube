@@ -23,7 +23,6 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - A recorder whose stream stays upcoming past `scheduled_at`, such as a cancelled waiting room, waits with `wait_for_video` until someone deletes its Job.
 - When the poll queues the VOD while a recording still merges, both target one tree directory, and the second `finalize` fails with `FileExistsError`.
 - A failed audio extraction after a download is not retried. Only a rerun of `savetube extract-audio` through `kubectl exec` fills it, with `print` output invisible in Loki and tied to the caller's connection.
-- `GET /api/sources` sends `last_error` raw. The Home card cuts it at 120 characters, without the yt-dlp noise stripping `job_reason` does.
 - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
 - The format fallback treats any HLS run that ends "The downloaded file is empty" with no bytes as a refused format, whatever the cause. The cap of 3 per attempt bounds it.
 - The GET and HEAD routes for `/media` and `/audio` share an operation ID. FastAPI warns "Duplicate Operation ID", and which method names it depends on the hash seed.

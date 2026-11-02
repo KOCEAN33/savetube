@@ -74,6 +74,20 @@ MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
 # A throttled client gets this for public videos. A deleted video usually adds
 # why, such as "This video has been removed by the uploader".
 _BARE_UNAVAILABLE = re.compile(r"(?:\w+: )?(?:ERROR: )?\[youtube\] [\w-]+: Video unavailable\.?")
+# yt-dlp's wrapping around the message itself: the exception name, its
+# "ERROR:" prefix, a "[download] Got error:" retry line, and an
+# "[extractor] <id>:" tag, such as "[youtube:tab] @handle:".
+_NOISE = re.compile(
+    r"^(?:\w+Error:\s*)?(?:ERROR:\s*)?(?:\[download\]\s*Got error:\s*)?"
+    r"(?:\[[\w:]+\]\s*[@\w-]+:\s*)?"
+)
+
+
+def strip_noise(message: str) -> str:
+    """`message` on one line without yt-dlp's wrapping around it."""
+    # yt-dlp puts a carriage return before its retry line, so lines do not split it.
+    flat = " ".join(message.split())
+    return _NOISE.sub("", flat) or flat
 
 
 def youtube_block(message: str) -> bool:

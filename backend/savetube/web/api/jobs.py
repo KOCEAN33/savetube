@@ -1,4 +1,3 @@
-import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -11,16 +10,10 @@ from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, NO_MEMBER, SHUTDOWN_LOG, S
 from savetube.limits import DISPATCH_ORDER
 from savetube.web.api.deps import Session, _of_channel
 from savetube.web.api.schemas import _Out
-from savetube.ytdl import members_only, network_error, youtube_block
+from savetube.ytdl import members_only, network_error, strip_noise, youtube_block
 
 router = APIRouter()
 
-# yt-dlp's wrapping around the message itself: the exception name, its
-# "ERROR:" prefix, a "[download] Got error:" retry line, and an
-# "[extractor] <video id>:" tag.
-_YTDLP_NOISE = re.compile(
-    r"^(?:\w+Error:\s*)?(?:ERROR:\s*)?(?:\[download\]\s*Got error:\s*)?(?:\[\w+\]\s*[\w-]+:\s*)?"
-)
 _REASON_CHARS = 120
 
 
@@ -42,9 +35,7 @@ def job_reason(log_tail: str | None) -> str | None:
         return f"integrity check failed: {check[0]}" if check else "integrity check failed"
     if log_tail.startswith(NETWORK_LOG) or network_error(log_tail):
         return NETWORK_LOG
-    # yt-dlp puts a carriage return before its retry line, so lines do not split it.
-    flat = " ".join(log_tail.split())
-    line = _YTDLP_NOISE.sub("", flat) or flat
+    line = strip_noise(log_tail)
     return line if len(line) <= _REASON_CHARS else line[: _REASON_CHARS - 3] + "..."
 
 

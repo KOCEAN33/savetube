@@ -188,6 +188,25 @@ def test_api_writes_sources(settings):
         assert client.get("/api/sources").json() == []
 
 
+def test_api_sources_strip_yt_dlp_noise_from_last_error(settings):
+    _sql(
+        settings,
+        "INSERT INTO source (id, url, kind, enabled, poll_interval_minutes, last_error) VALUES"
+        " (1, 'https://www.youtube.com/@a/videos', 'tab', true, 360,"
+        "  'DownloadError: ERROR: [youtube:tab] @a: This channel does not exist.'),"
+        f" (2, '{PL}A', 'playlist', true, 360,"
+        "  'playlist has no owner channel; turn on other channels to archive it'),"
+        " (3, 'https://www.youtube.com/@c/videos', 'tab', true, 360, NULL)",
+    )
+    with _api(settings) as client:
+        errors = [s["last_error"] for s in client.get("/api/sources").json()]
+    assert errors == [
+        "This channel does not exist.",
+        "playlist has no owner channel; turn on other channels to archive it",
+        None,
+    ]
+
+
 def test_api_refuses_a_write_without_the_csrf_header(settings):
     app = create_app(settings)
     app.dependency_overrides[current_user] = lambda: User(sub="u")
