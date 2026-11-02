@@ -35,7 +35,6 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 
 ## Cleanup
 
-- The settings page uses a checkbox for the window, because the project has no Switch component.
 - Test files import helpers with `from conftest import`. A plain helper module such as `tests/_db.py` would be cleaner.
 - `savetube/__init__.py` imports `savetube.cli`, so importing any `savetube.X` loads cli, config and db.
 - `jobs/guards.py` and `jobs/job.py` import private names (`_interrupt`, `_owner_lost` and others) from sibling modules.
