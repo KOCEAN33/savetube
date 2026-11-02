@@ -257,7 +257,10 @@ def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplo
     with _api(settings) as client:
         assert client.get("/api/cookie-profiles").json() == []
         assert (
-            client.put("/api/download-settings", json={"cookie_profile": "main"}).status_code == 422
+            client.put(
+                "/api/download-settings", json={"window_enabled": False, "cookie_profile": "main"}
+            ).status_code
+            == 422
         )
         [channel] = client.get("/api/channels").json()
         assert channel["memberships"] == [
@@ -286,15 +289,25 @@ def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplo
             {"name": "throwaway", "account_name": None, "account_handle": None},
         ]
         with caplog.at_level(logging.INFO, logger="savetube"):
-            put = client.put("/api/download-settings", json={"cookie_profile": "throwaway"})
+            put = client.put(
+                "/api/download-settings",
+                json={"window_enabled": False, "cookie_profile": "throwaway"},
+            )
         assert put.status_code == 200 and put.json()["cookie_profile"] == "throwaway"
         assert client.get("/api/download-settings").json()["cookie_profile"] == "throwaway"
         assert "# throwaway" not in caplog.text and "# throwaway" not in put.text
         [line] = [r for r in caplog.records if r.getMessage() == "settings.download"]
         assert _fields(line)["cookie_profile"] == "throwaway"
-        put = client.put("/api/download-settings", json={"cookie_profile": "gone"})
+        put = client.put(
+            "/api/download-settings", json={"window_enabled": False, "cookie_profile": "gone"}
+        )
         assert put.status_code == 422
-        assert client.put("/api/download-settings", json={}).json()["cookie_profile"] is None
+        assert (
+            client.put("/api/download-settings", json={"window_enabled": False}).json()[
+                "cookie_profile"
+            ]
+            is None
+        )
 
 
 @pytest.mark.anyio
