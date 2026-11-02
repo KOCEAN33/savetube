@@ -683,8 +683,8 @@ def test_encode_settings_round_trip(server):
     assert r.status_code == 200
     assert r.json() == {
         "enabled": False,
-        "profile": "vtuber-av1-cq46",
-        "profiles": ["vtuber-av1-hq-cq46", "vtuber-av1-cq46"],
+        "profile": "vtuber-av1-uhq-cq46",
+        "profiles": ["vtuber-av1-hq-cq46", "vtuber-av1-uhq-cq46"],
         "summary": {
             "saved_bytes": 0,
             "source_bytes": 0,

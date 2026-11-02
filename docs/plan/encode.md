@@ -19,9 +19,11 @@ A profile names a fixed encode. The encoder repo owns each profile's ffmpeg argu
 | Profile | Output |
 | --- | --- |
 | `vtuber-av1-hq-cq46` | AV1 10-bit (`av1_nvenc`, `-tune hq`, `-cq 46`, hierarchical B-frames), 30 fps when the source runs above 30, the source's resolution, audio streams copied, Matroska |
-| `vtuber-av1-cq46` | AV1 10-bit (`av1_nvenc`, `-tune uhq`, `-cq 46`, hierarchical B-frames), 30 fps when the source runs above 30, the source's resolution, audio streams copied, Matroska |
+| `vtuber-av1-uhq-cq46` | AV1 10-bit (`av1_nvenc`, `-tune uhq`, `-cq 46`, hierarchical B-frames), 30 fps when the source runs above 30, the source's resolution, audio streams copied, Matroska |
 
-The profile choice rests on a measured 10-minute clip of `hSLDqEi-yCE` (1080p60 H.264, 3.3 Mbps), with VMAF scored against the source resampled to 30 fps. `vtuber-av1-hq-cq46` gives 18% of the source's video bytes at VMAF 86.8 in 47 s. `vtuber-av1-cq46` gives 24% at VMAF 89.3 in 100 s. The source streams are low-bitrate, so the default takes the smaller, faster `vtuber-av1-hq-cq46`.
+`vtuber-av1-cq46` is the retired name of `vtuber-av1-uhq-cq46`. savetube accepts it only for a job queued under it, and settings cannot pick it.
+
+The profile choice rests on a measured 10-minute clip of `hSLDqEi-yCE` (1080p60 H.264, 3.3 Mbps), with VMAF scored against the source resampled to 30 fps. `vtuber-av1-hq-cq46` gives 18% of the source's video bytes at VMAF 86.8 in 47 s. `vtuber-av1-uhq-cq46` gives 24% at VMAF 89.3 in 100 s. The source streams are low-bitrate, so the default takes the smaller, faster `vtuber-av1-hq-cq46`.
 
 ## Shares
 
