@@ -70,7 +70,9 @@ class Profile:
     max_fps: float
 
 
-PROFILES = {"vtuber-av1-cq46": Profile(vcodec="av01", codec_name="av1", ten_bit=True, max_fps=30)}
+_AV1_30 = Profile(vcodec="av01", codec_name="av1", ten_bit=True, max_fps=30)
+PROFILES = {"vtuber-av1-hq-cq46": _AV1_30, "vtuber-av1-cq46": _AV1_30}
+DEFAULT_PROFILE = "vtuber-av1-hq-cq46"
 
 
 class Rejected(Exception):
@@ -82,7 +84,7 @@ def encode_root(archive_root: Path) -> Path:
 
 
 def _settings_row(row: EncodeSettings | None) -> EncodeSettings:
-    return row or EncodeSettings(id=1, enabled=False, profile=next(iter(PROFILES)))
+    return row or EncodeSettings(id=1, enabled=False, profile=DEFAULT_PROFILE)
 
 
 async def step(
