@@ -85,7 +85,9 @@ def issuer(monkeypatch):
 
 
 def _client(
-    required_group: str | None = "savetube-admin", internal_url: str | None = None
+    required_group: str | None = "savetube-admin",
+    internal_url: str | None = None,
+    raise_server_exceptions: bool = True,
 ) -> TestClient:
     settings = Settings(
         public_url="http://testserver",
@@ -95,7 +97,7 @@ def _client(
         oidc_required_group=required_group,
         oidc_internal_url=internal_url,
     )
-    return TestClient(create_app(settings))
+    return TestClient(create_app(settings), raise_server_exceptions=raise_server_exceptions)
 
 
 def _login(client: TestClient, issuer: FakeIssuer, groups: list[str], next: str | None = "/videos"):
@@ -325,3 +327,35 @@ def test_internal_url_routes_server_calls_but_not_browser_redirects(issuer):
     for q in issuer.requests:
         assert (q.url.scheme, q.url.host, q.url.port) == ("http", "zitadel.test", 8080)
         assert q.headers["host"] == "issuer.test"
+
+
+def test_unhandled_exception_logs_the_request_without_its_query(issuer, monkeypatch, caplog):
+    async def timeout(self, request):
+        raise httpx2.ReadTimeout("timed out", request=request)
+
+    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", timeout)
+    with _client(raise_server_exceptions=False) as client:
+        with caplog.at_level(logging.INFO):
+            r = client.get(
+                "/auth/login?next=/videos",
+                headers={"user-agent": "Safari/18"},
+                follow_redirects=False,
+            )
+    assert r.status_code == 500
+    [line] = _events(caplog, "web.request_failed")
+    assert line.levelno == logging.ERROR
+    assert _fields(line) == {
+        "method": "GET",
+        "path": "/auth/login",
+        "error": "ReadTimeout",
+        "agent": "Safari/18",
+    }
+
+
+def test_answered_requests_log_nothing(issuer, caplog):
+    with _client(raise_server_exceptions=False) as client:
+        with caplog.at_level(logging.DEBUG):
+            assert client.get("/healthz").status_code == 200
+            assert client.get("/api/me").status_code == 401
+            assert client.get("/auth/nowhere").status_code == 404
+    assert [r for r in caplog.records if r.name.startswith("savetube")] == []
