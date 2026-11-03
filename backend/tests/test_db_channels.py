@@ -565,6 +565,7 @@ def test_api_jobs_pages_with_offset_and_counts_every_matching_job(settings):
     assert unresolved.headers["X-Total-Count"] == "4"
 
 
+@pytest.mark.own_database
 def test_migration_0006_hands_waiting_archive_jobs_to_the_dispatcher(settings):
     from alembic import command
 

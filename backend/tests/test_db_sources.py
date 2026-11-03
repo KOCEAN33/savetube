@@ -313,6 +313,7 @@ async def test_playlist_sources_carry_their_title(settings):
     await engine.dispose()
 
 
+@pytest.mark.own_database
 def test_migration_0005_moves_rule_settings_onto_channels(settings):
     from alembic import command
 

@@ -306,6 +306,7 @@ async def test_a_bare_unavailable_outside_a_streak_fails_the_job(settings, ended
     assert _block_state(settings) == (0, None)
 
 
+@pytest.mark.own_database
 def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
     from alembic import command
 
@@ -345,6 +346,7 @@ def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
     assert not columns & {"blocked_until", "block_count"}
 
 
+@pytest.mark.own_database
 def test_migration_0012_sets_failed_videos_with_a_queued_archive_job_pending(settings):
     from alembic import command
 

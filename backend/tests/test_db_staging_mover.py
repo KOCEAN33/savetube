@@ -173,6 +173,7 @@ async def test_the_mover_requeues_a_staged_video_whose_files_are_gone(settings, 
     assert len(_events(caplog, "staging.missing")) == 1
 
 
+@pytest.mark.own_database
 def test_migration_0014_turns_staged_videos_pending_on_downgrade(settings):
     from alembic import command
 

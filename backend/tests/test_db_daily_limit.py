@@ -211,6 +211,7 @@ def test_api_daily_limit_window_switch_and_todays_count(settings):
             assert client.put("/api/download-settings", json=bad).status_code == 422, bad
 
 
+@pytest.mark.own_database
 def test_migration_0013_enables_a_window_that_has_both_times(settings):
     from alembic import command
 

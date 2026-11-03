@@ -695,6 +695,7 @@ async def test_a_backfilled_live_aired_long_ago_gets_no_watch(settings):
     assert watch is None
 
 
+@pytest.mark.own_database
 def test_migration_0020_watches_the_lives_stored_in_the_last_7_days(settings):
     from alembic import command
 
@@ -727,6 +728,7 @@ def _info(**fields):
     return "CAST('" + json.dumps(fields) + "' AS jsonb)"
 
 
+@pytest.mark.own_database
 def test_migration_0021_ends_the_watches_of_lives_aired_over_7_days_ago(settings):
     from alembic import command
 

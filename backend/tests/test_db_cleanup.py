@@ -158,6 +158,7 @@ async def test_cleanup_deletes_interrupted_rows_30_days_after_the_video_succeede
     assert _fields(done)["interrupted"] == 2
 
 
+@pytest.mark.own_database
 def test_migration_0008_turns_interrupted_jobs_into_cancelled_on_downgrade(settings):
     from alembic import command
 
