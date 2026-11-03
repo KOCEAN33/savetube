@@ -162,7 +162,7 @@
 - Without `ffprobe` or `ffmpeg` on the path, probe and packets are skipped with a DEBUG line. The image carries both.
 - A failed check logs `download.integrity_failed` at WARNING with the check and its numbers. The run deletes the directory and the pin and downloads from zero once, in the same attempt. A second failure fails the job with `log_tail` "integrity check failed: <check> ...", which counts as an attempt.
 - A passed download logs `download.verified` with the checks that ran. `video.verified_at` and `video.verified_checks` hold the result, and `GET /api/videos` and `GET /api/videos/{id}` carry both.
-- A recording gets probe, without the duration, and packets in the recorder pod before the move. A live has no stream sizes or duration to expect, and the format watch compares the duration with the VOD later. A failed check, or an error in one, logs `record.integrity_failed` at WARNING with the check and keeps the recording: it moves into the tree `complete` with `verified_at` null, because it is the only copy of the live.
+- A recording gets probe, without the duration, and packets in the recorder pod before the move. A live has no stream sizes or duration to expect, and the format watch compares the duration with the VOD later. A failed check, or an error in one, logs `record.integrity_failed` at WARNING with the check and keeps the recording: it moves into the tree `complete` with `verified_at` null, because it is the only copy of the live. The recording's duration then comes from one more probe. When that probe fails, the recorder logs `record.duration_failed` at WARNING with the reason and stores the recording without a duration.
 - The channel's Downloads list shows `interrupted` rows among the finished jobs.
 
 ## Audio copy

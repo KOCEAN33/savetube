@@ -595,9 +595,12 @@ async def test_a_recording_that_fails_its_checks_is_stored_unverified(settings, 
 
 
 @pytest.mark.anyio
-async def test_a_recording_whose_check_errors_is_stored_unverified(settings):
+@pytest.mark.parametrize("crashes", ["packets", "probe"])
+async def test_a_recording_whose_check_errors_is_stored_unverified(settings, crashes):
     class Crashing:
         def probe(self, path):
+            if crashes == "probe":
+                raise OSError("ffprobe crashed")
             streams = [{"codec_type": "video"}, {"codec_type": "audio"}]
             return {"format": {"duration": "60.0"}, "streams": streams}
 

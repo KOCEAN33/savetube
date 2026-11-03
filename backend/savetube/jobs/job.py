@@ -470,9 +470,13 @@ async def _download(
         checks = await _verify_recording(media, info, tools)
         if not info.get("duration"):
             # yt-dlp gives a live no duration. The Videos page shows the file's.
+            # Any error here would fail the job and delete the recording, as in
+            # _verify_recording, so the live is stored without a duration.
             try:
                 duration = await asyncio.to_thread(watch.probe_duration, media, tools)
-            except integrity.IntegrityFailed:
+            except Exception as e:
+                reason = f"{type(e).__name__}: {e}"
+                emit(log, logging.WARNING, "record.duration_failed", reason=reason)
                 duration = None
             if duration is not None:
                 info = {**info, "duration": round(duration)}
