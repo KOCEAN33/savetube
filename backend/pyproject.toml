@@ -50,6 +50,7 @@ select = ["E", "F", "I", "B", "UP", "ASYNC"]
 
 [tool.pytest]
 testpaths = ["tests"]
+markers = ["own_database: the test gets a new, freshly migrated database it may downgrade"]
 
 [tool.pyright]
 venvPath = "."

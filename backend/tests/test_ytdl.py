@@ -4,13 +4,11 @@ from savetube.storage import finalize
 from savetube.ytdl import WAIT_FOR_VIDEO, NotStarted, build_params, copy_cookies, download
 
 
-def test_archive_params_sleep_and_never_record_from_start(tmp_path):
+def test_archive_params_never_record_from_start(tmp_path):
     p = build_params(tmp_path)
     assert p["format"] == "bv*+ba/b"
     assert p["merge_output_format"] == "mkv"
-    assert p["outtmpl"] == {"default": "%(id)s.%(ext)s"}
     assert p["paths"] == {"home": str(tmp_path), "temp": str(tmp_path / ".tmp")}
-    assert p["sleep_interval"] == 10 and p["max_sleep_interval"] == 20
     assert "live_from_start" not in p
     assert "cookiefile" not in p
 

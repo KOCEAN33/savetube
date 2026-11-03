@@ -15,6 +15,7 @@ from conftest import (
     _job_rows,
     _no_probe,
     _poll,
+    _poll_outcome,
     _profiles,
     _run,
     _run_steps,
@@ -25,7 +26,6 @@ from conftest import (
 
 from savetube.db import make_engine, make_sessionmaker
 from savetube.db.models import (
-    Channel,
     Job,
     JobState,
     ListingEntry,
@@ -171,14 +171,37 @@ async def test_members_only_videos_wait_for_a_confirmed_member_profile(settings,
     await engine.dispose()
 
 
-@pytest.mark.anyio
-async def test_members_all_exempts_members_only_videos_from_the_words(settings):
-    from savetube.poll import sync
+MEMBERS_ALL_LISTING = {
+    "channel_id": VESP,
+    "channel": "VESPERBELL",
+    "entries": [
+        {"id": "member_chat", "title": "【メン限】雑談", "availability": "subscriber_only"},
+        {"id": "public_chat", "title": "雑談", "availability": "public"},
+        {"id": "utawaku", "title": "【歌枠】", "availability": "public"},
+    ],
+}
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("members_all", "profiles", "skips", "cancelled"),
+    [
+        # Without a confirmed member profile the switch changes nothing: the
+        # membership check still skips it and cancels its queued job.
+        ("true", (), {"members": 1, "words": 1}, [(101, "member_chat", "members")]),
+        # A member keeps it although its title fails the words. A public video
+        # of the same channel still meets them.
+        ("true", ("main",), {"words": 1}, []),
+        ("false", ("main",), {"words": 2}, [(101, "member_chat", "words")]),
+    ],
+)
+async def test_members_all_exempts_members_only_videos_from_the_words(
+    settings, caplog, members_all, profiles, skips, cancelled
+):
     _sql(
         settings,
-        "INSERT INTO channel (id, name, dir_name) VALUES"
-        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO channel (id, name, dir_name, members_all) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', {members_all})",
         "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
         " include_words) VALUES"
         f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360,"
@@ -190,48 +213,13 @@ async def test_members_all_exempts_members_only_videos_from_the_words(settings):
         "INSERT INTO video_source (video_id, source_id) VALUES ('member_chat', 1)",
         "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
         " (101, 'archive', 'queued', 'member_chat', 0)",
-        "SELECT setval('job_id_seq', 200)",
     )
-    listing = {
-        "channel_id": VESP,
-        "channel": "VESPERBELL",
-        "entries": [
-            {"id": "member_chat", "title": "【メン限】雑談", "availability": "subscriber_only"},
-            {"id": "public_chat", "title": "雑談", "availability": "public"},
-            {"id": "utawaku", "title": "【歌枠】", "availability": "public"},
-        ],
-    }
-    engine = make_engine(settings.sqlalchemy_url)
-    sessionmaker = make_sessionmaker(engine)
-
-    async def run(members_all, profiles):
-        async with sessionmaker() as session:
-            await session.execute(
-                sa.update(Channel).where(Channel.id == VESP).values(members_all=members_all)
-            )
-            synced = await sync(session, await session.get(Source, 1), listing, profiles)
-            queued = sorted(
-                await session.scalars(sa.select(Job.video_id).where(Job.id.in_(synced.job_ids)))
-            )
-            await session.rollback()
-        return dict(synced.skips), queued, synced.drops
-
-    # Without a confirmed member profile the switch changes nothing: the
-    # membership check still skips it and cancels its queued job.
-    assert await run(True, []) == (
-        {"members": 1, "words": 1},
+    settings = _profiles(settings, *profiles)
+    assert await _poll_outcome(settings, 1, MEMBERS_ALL_LISTING, caplog) == (
+        skips,
         ["utawaku"],
-        [(101, "member_chat", "members")],
+        cancelled,
     )
-    # A member keeps it although its title fails the words. A public video
-    # of the same channel still meets them.
-    assert await run(True, ["main"]) == ({"words": 1}, ["utawaku"], [])
-    assert await run(False, ["main"]) == (
-        {"words": 2},
-        ["utawaku"],
-        [(101, "member_chat", "words")],
-    )
-    await engine.dispose()
 
 
 def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplog):

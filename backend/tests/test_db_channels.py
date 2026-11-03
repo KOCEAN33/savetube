@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-import sqlalchemy as sa
 from conftest import (
     ADMIN_URL,
     GUERRILLA,
@@ -20,7 +19,6 @@ from conftest import (
     _no_streams,
     _not_live,
     _profiles,
-    _queue_row,
     _sql,
     _watch,
 )
@@ -503,10 +501,15 @@ def test_api_jobs_carry_the_channel_name_and_the_failure_reason(settings):
         "INSERT INTO job (id, kind, state, video_id, attempts, log_tail) VALUES"
         " (2, 'archive', 'failed', 'busy1', 1,"
         " E'DownloadError: ERROR: \\r[download] Got error: 10 bytes read, 5 more expected'),"
-        " (3, 'archive', 'interrupted', 'busy2', 0, 'worker stopped during the download')",
+        " (3, 'archive', 'interrupted', 'busy2', 0, 'worker stopped during the download'),"
+        " (4, 'archive', 'running', 'busy1', 1, NULL)",
     )
     with _api(settings) as client:
         jobs = client.get("/api/jobs", params={"state": ["failed", "interrupted"]}).json()
+        failed = client.get("/api/jobs", params={"state": "failed"}).json()
+        active = client.get("/api/jobs", params={"state": ["running", "queued"]}).json()
+    assert [j["id"] for j in failed] == [2]
+    assert [j["id"] for j in active] == [4, 1]
     assert [
         (j["id"], j["title"], j["channel_id"], j["channel_name"], j["reason"]) for j in jobs
     ] == [
@@ -563,57 +566,6 @@ def test_api_jobs_pages_with_offset_and_counts_every_matching_job(settings):
     assert past.json() == [] and past.headers["X-Total-Count"] == "5"
     assert [j["id"] for j in unresolved.json()] == [5]
     assert unresolved.headers["X-Total-Count"] == "4"
-
-
-def test_migration_0006_hands_waiting_archive_jobs_to_the_dispatcher(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    cfg = alembic_config(settings.sqlalchemy_url)
-    command.downgrade(cfg, "0005")
-    done = [_queue_row(settings, "succeeded") for _ in range(3)]
-    waiting = _queue_row(settings)
-    taken = _queue_row(settings, "doing")
-    lost = _queue_row(settings, "failed")
-    _sql(
-        settings,
-        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
-        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
-        " ('a', 'UC1', 'videos', 't', 'pending'), ('b', 'UC1', 'videos', 't', 'pending'),"
-        " ('c', 'UC1', 'videos', 't', 'pending'), ('d', 'UC1', 'videos', 't', 'complete')",
-        "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id, deferred_until)"
-        " VALUES"
-        f" (1, 'archive', 'queued', 'a', 0, {waiting}, now() + interval '1 minute'),"
-        f" (2, 'archive', 'queued', 'b', 0, {taken}, NULL),"
-        f" (3, 'archive', 'queued', 'c', 0, {lost}, NULL),"
-        f" (4, 'archive', 'succeeded', 'd', 1, {done[0]}, NULL)",
-    )
-    command.upgrade(cfg, "head")
-    engine = sa.create_engine(settings.sqlalchemy_url)
-    with engine.connect() as c:
-        queue_rows = dict(c.execute(sa.text("SELECT id, status FROM procrastinate_jobs")).all())
-        jobs = {
-            r.id: (r.state, r.queue_job_id, r.deferred_until)
-            for r in c.execute(sa.text("SELECT id, state, queue_job_id, deferred_until FROM job"))
-        }
-    # The running task keeps its row. A failed row stays as the record of a failure.
-    assert queue_rows == {taken: "doing", lost: "failed"}
-    assert jobs == {
-        1: ("queued", None, None),
-        2: ("queued", taken, None),
-        3: ("queued", None, None),
-        4: ("succeeded", done[0], None),
-    }
-
-    command.downgrade(cfg, "0005")
-    with engine.connect() as c:
-        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
-    engine.dispose()
-    # The old code queues only through a poll, which skips a video with a
-    # queued job, so a waiting job without a queue job is cancelled for the
-    # next poll to queue it again.
-    assert states == {1: "cancelled", 2: "queued", 3: "cancelled", 4: "succeeded"}
 
 
 # The thumbnails of a channel tab listing, as yt-dlp lists @VESPERBELL/videos.
@@ -686,19 +638,6 @@ def test_api_lists_a_channels_stored_videos_by_state(settings):
     with _api(settings) as client:
         page = client.get("/api/videos", params={"channel_id": "UC1", "state": "complete"}).json()
     assert [v["id"] for v in page["items"]] == ["v1"] and page["total"] == 1
-
-
-def test_api_filters_jobs_by_several_states(settings):
-    _job_rows(
-        settings,
-        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
-        " (2, 'archive', 'running', 'busy1', 1), (3, 'archive', 'failed', 'busy2', 1)",
-    )
-    with _api(settings) as client:
-        active = client.get("/api/jobs", params={"state": ["running", "queued"]}).json()
-        failed = client.get("/api/jobs", params={"state": "failed"}).json()
-    assert [j["id"] for j in active] == [2, 1]
-    assert [j["id"] for j in failed] == [3]
 
 
 def test_a_channel_page_sees_videos_its_tabs_list_from_another_uploader(settings):

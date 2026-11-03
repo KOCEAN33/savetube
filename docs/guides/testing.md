@@ -3,10 +3,10 @@
 ## DB tests
 
 ```sh
-bash /tmp/savetube-testdb/run-tests.sh <repo root> make check
+make check-db
 ```
 
-Pytest args can replace `make check`. The script reads `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` and the password from `op read 'op://Homelab/savetube-dev-db/password'`. It prints no secret. Parallel runs are safe.
+`make check-db` runs `scripts/test-db.sh make check`. For a subset, run `scripts/test-db.sh uv run --project backend pytest -q <args>`. The script reads `OP_SERVICE_ACCOUNT_TOKEN` from the keychain item `proxmox-talos-lab-op` and the password from `op read 'op://Homelab/savetube-dev-db/password'`, with no user approval. It prints no secret. Parallel runs are safe.
 
 Tests that need ffmpeg use Homebrew `ffmpeg` and `ffprobe` on this Mac. Without them on PATH they skip.
 
@@ -15,7 +15,7 @@ DB tests live in `backend/tests/test_db_*.py`, with shared fixtures and helpers 
 ## Refactor guards
 
 - `backend/tests/test_e2e.py` runs uvicorn and the real `savetube worker` with `yt_dlp.YoutubeDL` faked through a `sitecustomize.py` on `PYTHONPATH`. It fails when an `/api` route has no call.
-- `make e2e-smoke`, run through `run-tests.sh`, drives Playwright over 8 pages. The ids, aria-labels, roles and URL params it targets must stay.
+- `scripts/test-db.sh make e2e-smoke` drives Playwright over 8 pages. The ids, aria-labels, roles and URL params it targets must stay.
 
 ## Local UI
 

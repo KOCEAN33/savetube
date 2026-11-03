@@ -90,7 +90,7 @@ def _enc(settings):
     return settings.archive_root / ".encode"
 
 
-async def _step(settings, *, now=None, skipped=None):
+async def _step(settings, *, now=None, skipped=None, tools=None):
     from savetube.encode import step
     from savetube.integrity import Tools
 
@@ -99,7 +99,7 @@ async def _step(settings, *, now=None, skipped=None):
         await step(
             make_sessionmaker(engine),
             settings,
-            tools=Tools(),
+            tools=tools or Tools(),
             lock=asyncio.Lock(),
             skipped=set() if skipped is None else skipped,
             now=now,
@@ -386,11 +386,11 @@ def _source_media(path):
     return path
 
 
-def _encode(source, out, *, fps=30, pix_fmt="yuv420p10le"):
+def _encode(source, out, *, fps=30, pix_fmt="yuv420p10le", codec="libsvtav1", audio=1, extra=()):
     subprocess.run(
         ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(source),
-         "-map", "0:v", "-map", "0:a", "-c:v", "libsvtav1", "-crf", "50",
-         "-pix_fmt", pix_fmt, "-r", str(fps), "-c:a", "copy", str(out)],
+         "-map", "0:v", *["-map", "0:a"] * audio, "-c:v", codec, "-crf", "50",
+         "-pix_fmt", pix_fmt, "-r", str(fps), "-c:a", "copy", *extra, str(out)],
         check=True,
     )  # fmt: skip
     return out
@@ -550,6 +550,92 @@ async def test_a_result_failing_a_check_moves_to_failed(settings, tmp_path, enco
 
     _assert_failed(settings, job, data)
     assert (directory / "v1.mp4").read_bytes() == source.read_bytes()
+
+
+class _PacketErrors:
+    """ffprobe as it is, ffmpeg's packet pass reporting a broken packet."""
+
+    def __init__(self):
+        from savetube.integrity import Tools
+
+        self.real = Tools()
+
+    def probe(self, path):
+        return self.real.probe(path)
+
+    def packets(self, path):
+        return "[matroska @ 0x1] Invalid packet at offset 4096"
+
+
+def _larger_than_source(source, out, tmp_path):
+    # An attachment pads a valid encode past the source's size.
+    pad = tmp_path / "pad.bin"
+    pad.write_bytes(b"\0" * source.stat().st_size)
+    attach = ["-attach", str(pad), "-metadata:s:t", "mimetype=application/octet-stream"]
+    return _encode(source, out, extra=attach)
+
+
+# Each row breaks one check of encode.md "Checking and swapping a result", and the
+# reason must name it.
+@needs_ffmpeg
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("make", "after", "tools", "named"),
+    [
+        pytest.param(_larger_than_source, None, None, "smaller", id="not-smaller"),
+        pytest.param(
+            lambda s, o, t: _encode(s, o, audio=2), None, None, "audio", id="audio-streams"
+        ),
+        pytest.param(
+            lambda s, o, t: _encode(s, o, codec="libx265"), None, None, "codec", id="video-codec"
+        ),
+        pytest.param(
+            lambda s, o, t: _encode(s, o, extra=["-s", "32x32"]),
+            None,
+            None,
+            "resolution",
+            id="resolution",
+        ),
+        pytest.param(
+            lambda s, o, t: _encode(s, o, extra=["-t", "0.5"]),
+            None,
+            None,
+            "duration",
+            id="duration",
+        ),
+        pytest.param(None, None, _PacketErrors, "packet", id="packet-errors"),
+        pytest.param(
+            None,
+            lambda json_path, mkv: json_path.write_text("{"),
+            None,
+            "unreadable",
+            id="unreadable-job-file",
+        ),
+        pytest.param(
+            None, lambda json_path, mkv: mkv.unlink(), None, "missing", id="missing-result"
+        ),
+    ],
+)
+async def test_a_result_failing_a_probe_or_file_check_moves_to_failed(
+    settings, tmp_path, make, after, tools, named
+):
+    t = datetime.now(UTC)
+    source, directory, job, result = await _with_result(settings, tmp_path, t)
+    if make is not None:
+        result = make(source, tmp_path / "bad.mkv", tmp_path)
+    _done(settings, job, result, t)
+    done = _enc(settings) / "done"
+    if after is not None:
+        after(done / f"{job['job_id']}.json", done / f"{job['job_id']}.mkv")
+
+    await _step(settings, now=t + timedelta(minutes=1), tools=tools and tools())
+
+    row = _state(settings, job["job_id"])
+    assert row.state == "failed", row.reason
+    assert named in row.reason.lower()
+    assert (directory / "v1.mp4").read_bytes() == source.read_bytes()
+    assert not (settings.archive_root / ".originals").exists()
+    assert _video(settings).format_id == "137+140"
 
 
 @needs_ffmpeg

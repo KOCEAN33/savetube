@@ -1,7 +1,12 @@
 """Runs against a real Postgres. SAVETUBE_TEST_DATABASE_URL is an admin URL whose
 role has CREATEDB. Each run creates and drops its own database,
 savetube_test_<unix seconds>_<hex>, so concurrent runs against one server do not collide.
-Setup also drops databases of that pattern older than 24 hours, which killed runs leave behind."""
+Setup also drops databases of that pattern older than 24 hours, which killed runs leave behind.
+
+The run's database is migrated once. Before each test the `settings` fixture puts it back
+to that migrated state: it empties the tables, re-inserts the rows migrations seed and
+resets every sequence. A test marked `own_database` gets a new, freshly migrated database
+of the same name pattern instead, so it can downgrade or drop the schema."""
 
 import os
 import re
@@ -11,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+import psycopg
 import pytest
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
@@ -28,16 +34,33 @@ from savetube.web.app import create_app
 from savetube.web.auth import User, current_user
 
 ADMIN_URL = os.environ.get("SAVETUBE_TEST_DATABASE_URL", "")
-TEST_DB = f"savetube_test_{int(time.time())}_{secrets.token_hex(6)}"
 TEST_DB_RE = re.compile(r"savetube_test_(\d+)_[0-9a-f]+")
 STALE_AFTER_S = 24 * 3600
 
 
+def _db_name():
+    return f"savetube_test_{int(time.time())}_{secrets.token_hex(6)}"
+
+
+TEST_DB = _db_name()
+
+
+def _dsn(name):
+    return urlunsplit(urlsplit(ADMIN_URL)._replace(path=f"/{name}"))
+
+
 @pytest.fixture(scope="session")
-def test_dsn():
-    admin = Settings(database_url=ADMIN_URL)
-    engine = sa.create_engine(admin.sqlalchemy_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as c:
+def admin_engine():
+    engine = sa.create_engine(
+        Settings(database_url=ADMIN_URL).sqlalchemy_url, isolation_level="AUTOCOMMIT"
+    )
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def test_dsn(admin_engine):
+    with admin_engine.connect() as c:
         query = r"SELECT datname FROM pg_database WHERE datname LIKE 'savetube\_test\_%'"
         names = c.execute(sa.text(query)).scalars().all()
         cutoff = time.time() - STALE_AFTER_S
@@ -47,10 +70,85 @@ def test_dsn():
                 c.execute(sa.text(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
         c.execute(sa.text(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
         c.execute(sa.text(f"CREATE DATABASE {TEST_DB}"))
-    yield urlunsplit(urlsplit(ADMIN_URL)._replace(path=f"/{TEST_DB}"))
-    with engine.connect() as c:
+    yield _dsn(TEST_DB)
+    with admin_engine.connect() as c:
         c.execute(sa.text(f"DROP DATABASE IF EXISTS {TEST_DB} WITH (FORCE)"))
+
+
+# Every row a migration leaves behind is a seed. The reset re-inserts each seeded table's
+# rows from JSON read right after migrate, so a seed a later migration adds needs no change.
+_BASELINE_SQL = """
+SELECT
+  (SELECT coalesce(array_agg(tablename::text ORDER BY tablename), '{}')
+     FROM pg_tables WHERE schemaname = 'public') AS tables,
+  (SELECT coalesce(array_agg(format('PERFORM setval(%L, %s, %L)',
+                                    format('%I.%I', schemaname, sequencename),
+                                    coalesce(last_value, start_value), last_value IS NOT NULL)),
+                   '{}')
+     FROM pg_sequences WHERE schemaname = 'public') AS sequences
+"""
+
+
+def _reset_sql(settings):
+    """A DO block that puts the database back to its state right after migrate."""
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.connect() as c:
+        tables, sequences = c.execute(sa.text(_BASELINE_SQL)).one()
+        seeds = {}
+        for t in tables:
+            q = sa.text(
+                "SELECT format('INSERT INTO %I SELECT * FROM"
+                " json_populate_recordset(NULL::%I, %L)',"
+                f" CAST(:t AS text), CAST(:t AS text), json_agg(r)) FROM {_ident(t)} r"
+                " HAVING count(*) > 0"
+            )
+            insert = c.execute(q, {"t": t}).scalar()
+            if insert:
+                seeds[t] = insert
     engine.dispose()
+    empty = ", ".join(_literal(t) for t in tables if t not in seeds)
+    return "\n".join(
+        [
+            "DO $reset$",
+            "DECLARE t text; nonempty boolean; dirty text[] := '{}';",
+            "BEGIN",
+            # TRUNCATE writes new files on the server for each table, so it only gets the
+            # tables a test wrote to.
+            f"FOREACH t IN ARRAY ARRAY[{empty}]::text[] LOOP",
+            "  EXECUTE format('SELECT EXISTS (SELECT 1 FROM %I)', t) INTO nonempty;",
+            "  IF nonempty THEN dirty := dirty || t; END IF;",
+            "END LOOP;",
+            "IF cardinality(dirty) > 0 THEN",
+            "  EXECUTE (SELECT 'TRUNCATE ' || string_agg(format('%I', d), ', ') || ' CASCADE'",
+            "           FROM unnest(dirty) d);",
+            "END IF;",
+            *(f"DELETE FROM {_ident(t)};" for t in seeds),
+            *(f"{insert};" for insert in seeds.values()),
+            *(f"{s};" for s in sequences),
+            "END $reset$",
+        ]
+    )
+
+
+def _ident(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _literal(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+@pytest.fixture(scope="session")
+def migrated(test_dsn):
+    """The run's database, migrated, with the SQL that resets it and a connection to run it.
+
+    The DO block is one statement, so autocommit runs it atomically. psycopg skips
+    placeholder parsing only without params, which is why this is no SQLAlchemy engine."""
+    s = Settings(database_url=test_dsn)
+    migrate(s)
+    reset = _reset_sql(s)
+    with psycopg.connect(s.conninfo, autocommit=True) as conn:
+        yield reset, conn
 
 
 @pytest.fixture
@@ -58,22 +156,35 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture
-def settings(tmp_path, test_dsn):
-    s = Settings(
-        database_url=test_dsn,
+def _settings(tmp_path, dsn):
+    return Settings(
+        database_url=dsn,
         archive_root=tmp_path / "archive",
         session_secret="s",
         oidc_client_id="c",
         oidc_issuer="https://issuer.test",
         public_url="http://testserver",
     )
-    engine = sa.create_engine(s.sqlalchemy_url)
-    with engine.begin() as c:
-        c.execute(sa.text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
-    engine.dispose()
-    migrate(s)
-    return s
+
+
+@pytest.fixture
+def settings(request, tmp_path):
+    if request.node.get_closest_marker("own_database") is None:
+        reset, conn = request.getfixturevalue("migrated")
+        conn.execute(reset)
+        yield _settings(tmp_path, request.getfixturevalue("test_dsn"))
+        return
+    admin_engine = request.getfixturevalue("admin_engine")
+    name = _db_name()
+    with admin_engine.connect() as c:
+        c.execute(sa.text(f"CREATE DATABASE {name}"))
+    try:
+        s = _settings(tmp_path, _dsn(name))
+        migrate(s)
+        yield s
+    finally:
+        with admin_engine.connect() as c:
+            c.execute(sa.text(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
 
 
 def _sql(settings, *statements):
@@ -228,6 +339,31 @@ async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel, prob
         cancel=cancel,
         prober=prober,
     )
+
+
+async def _poll_outcome(settings, source_id, listing, caplog):
+    """One poll of the source: its nonzero skip counts, the videos of the jobs it queued, and
+    the (job, video, reason) of each job it cancelled."""
+    import logging
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        before = set(await session.scalars(sa.select(Job.id)))
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await _poll(sessionmaker, settings, source_id, listing)
+    async with sessionmaker() as session:
+        queued = sorted(await session.scalars(sa.select(Job.video_id).where(Job.id.not_in(before))))
+    await engine.dispose()
+    [done] = _events(caplog, "poll.done")
+    fields = _fields(done)
+    assert "skip_words" in fields, fields
+    skips = {k.removeprefix("skip_"): v for k, v in fields.items() if k.startswith("skip_") and v}
+    cancelled = [
+        (f["job"], f["video"], f["reason"]) for f in map(_fields, _events(caplog, "job.cancelled"))
+    ]
+    return skips, queued, cancelled
 
 
 async def _children(sessionmaker):

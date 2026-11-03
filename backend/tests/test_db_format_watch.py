@@ -534,7 +534,7 @@ async def test_a_recording_stores_the_measured_size_of_each_stream(settings, mon
     ]
 
 
-async def _record_media(settings, write, caplog=None):
+async def _record_media(settings, write, caplog=None, tools=None):
     """Record v1 with a runner that writes the recording with `write`."""
     from savetube.jobs import run
 
@@ -556,7 +556,7 @@ async def _record_media(settings, write, caplog=None):
 
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await run(1, settings, live=True, runner=_Steps(record), sessionmaker=sessionmaker)
+    await run(1, settings, live=True, runner=_Steps(record), sessionmaker=sessionmaker, tools=tools)
     async with sessionmaker() as session:
         video = await session.get(Video, "v1")
         job = await session.get(Job, 1)
@@ -595,15 +595,21 @@ async def test_a_recording_that_fails_its_checks_is_stored_unverified(settings, 
 
 
 @pytest.mark.anyio
-async def test_a_recording_whose_check_errors_is_stored_unverified(settings, monkeypatch):
-    from savetube import integrity
+@pytest.mark.parametrize("crashes", ["packets", "probe"])
+async def test_a_recording_whose_check_errors_is_stored_unverified(settings, crashes):
+    class Crashing:
+        def probe(self, path):
+            if crashes == "probe":
+                raise OSError("ffprobe crashed")
+            streams = [{"codec_type": "video"}, {"codec_type": "audio"}]
+            return {"format": {"duration": "60.0"}, "streams": streams}
 
-    def broken(media, info, tools):
-        raise OSError("ffprobe crashed")
+        def packets(self, path):
+            raise OSError("ffmpeg crashed")
 
-    monkeypatch.setattr(integrity, "verify_recording", broken)
-
-    video, job = await _record_media(settings, lambda p: p.write_bytes(b"recording"))
+    video, job = await _record_media(
+        settings, lambda p: p.write_bytes(b"recording"), tools=Crashing()
+    )
 
     assert job.state is JobState.SUCCEEDED and video.verified_at is None
     assert (settings.archive_root / video.dir_path / "v1.mkv").read_bytes() == b"recording"
@@ -693,115 +699,6 @@ async def test_a_backfilled_live_aired_long_ago_gets_no_watch(settings):
     )
 
     assert watch is None
-
-
-def test_migration_0020_watches_the_lives_stored_in_the_last_7_days(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    config = alembic_config(settings.sqlalchemy_url)
-    command.downgrade(config, "0019")
-    _sql(
-        settings,
-        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
-        "INSERT INTO video (id, channel_id, type, title, state, live_status, completed_at) VALUES"
-        " ('new', 'UC1', 'lives', 't', 'complete', 'is_live', now() - interval '2 days'),"
-        " ('vod', 'UC1', 'lives', 't', 'complete', 'was_live', now() - interval '6 days'),"
-        " ('aged', 'UC1', 'lives', 't', 'complete', 'was_live', now() - interval '8 days'),"
-        " ('plain', 'UC1', 'videos', 't', 'complete', 'not_live', now()),"
-        " ('wait', 'UC1', 'lives', 't', 'staged', 'was_live', now())",
-    )
-
-    command.upgrade(config, "0020")
-
-    rows = _sql_rows(
-        settings,
-        "SELECT w.video_id, w.started_at = v.completed_at FROM format_watch w"
-        " JOIN video v ON v.id = w.video_id ORDER BY 1",
-    )
-    assert rows == [("new", True), ("vod", True)]
-
-
-def _info(**fields):
-    return "CAST('" + json.dumps(fields) + "' AS jsonb)"
-
-
-def test_migration_0021_ends_the_watches_of_lives_aired_over_7_days_ago(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    config = alembic_config(settings.sqlalchemy_url)
-    command.downgrade(config, "0020")
-    now = datetime.now(UTC)
-    recent = int((now - timedelta(days=2)).timestamp())
-    old = int((now - timedelta(days=400)).timestamp())
-    _sql(
-        settings,
-        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
-        "INSERT INTO video (id, channel_id, type, title, state, live_status, completed_at,"
-        " upload_date, info) VALUES"
-        f" ('recent', 'UC1', 'lives', 't', 'complete', 'is_live', now(), NULL,"
-        f"  {_info(release_timestamp=recent)}),"
-        f" ('old', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
-        f"  {_info(release_timestamp=old, timestamp=recent)}),"
-        " ('dated', 'UC1', 'lives', 't', 'complete', 'was_live', now(), '2025-01-02', NULL),"
-        f" ('busy', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
-        f"  {_info(timestamp=old)}),"
-        f" ('kept', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
-        f"  {_info(timestamp=old)}),"
-        f" ('stale', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
-        f"  {_info(timestamp=old)}),"
-        f" ('picked', 'UC1', 'lives', 't', 'complete', 'was_live', now(), NULL,"
-        f"  {_info(timestamp=recent)})",
-        "INSERT INTO format_watch (video_id, started_at, original_path, manual) VALUES"
-        " ('recent', now(), NULL, false), ('old', now(), NULL, false),"
-        " ('dated', now(), NULL, false), ('busy', now(), NULL, false),"
-        " ('kept', now(), '.originals/kept/kept.mkv', false), ('stale', now(), NULL, true),"
-        " ('picked', now(), NULL, true)",
-    )
-    dispatched = _queue_row(settings)
-    _sql(
-        settings,
-        "INSERT INTO job (id, kind, state, video_id, attempts, queue_job_id) VALUES"
-        " (1, 'replace', 'running', 'busy', 1, NULL),"
-        " (2, 'replace', 'queued', 'stale', 0, NULL),"
-        f" (3, 'replace', 'queued', 'recent', 0, {dispatched}),"
-        " (4, 'replace', 'queued', 'picked', 0, NULL)",
-    )
-    originals = settings.archive_root / ".originals" / "kept"
-    originals.mkdir(parents=True)
-    (originals / "kept.mkv").write_bytes(b"recording")
-
-    command.upgrade(config, "head")
-
-    rows = _sql_rows(
-        settings,
-        "SELECT video_id, extract(epoch FROM started_at)::bigint,"
-        " ended_at IS NOT NULL FROM format_watch ORDER BY 1",
-    )
-    jan_2 = int(datetime(2025, 1, 2, tzinfo=UTC).timestamp())
-    assert rows == [
-        ("busy", old, False),
-        ("dated", jan_2, True),
-        ("kept", old, False),
-        ("old", old, True),
-        ("picked", recent, False),
-        ("recent", recent, False),
-        ("stale", old, True),
-    ]
-    assert (originals / "kept.mkv").read_bytes() == b"recording"
-    jobs = _sql_rows(settings, "SELECT id, state, finished_at IS NOT NULL FROM job ORDER BY id")
-    # An old watch's queued replace and a recent automatic one are cancelled.
-    # A recent manual pick waits.
-    assert jobs == [
-        (1, "running", False),
-        (2, "cancelled", True),
-        (3, "cancelled", True),
-        (4, "queued", False),
-    ]
-    assert _sql_rows(settings, f"SELECT id FROM procrastinate_jobs WHERE id = {dispatched}") == []
 
 
 @pytest.mark.anyio

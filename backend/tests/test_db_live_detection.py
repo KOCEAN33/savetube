@@ -143,31 +143,6 @@ async def test_an_upcoming_stream_probed_before_media_type_was_kept_gets_its_rec
     assert [(j.id, j.video_id) for j in jobs] == [(created[0], UPCOMING["id"])]
 
 
-@pytest.mark.anyio
-async def test_a_probed_id_is_not_probed_again(settings):
-    from savetube.live import check_channel
-
-    engine = make_engine(settings.sqlalchemy_url)
-    sessionmaker = make_sessionmaker(engine)
-    calls = []
-
-    def probe(video_id):
-        calls.append(video_id)
-        return {**UPCOMING, "id": video_id, "live_status": "not_live"}
-
-    for _ in range(2):
-        await check_channel(
-            sessionmaker,
-            NASA,
-            fetch_feed=lambda c: _feed("a", "b"),
-            probe=probe,
-            probe_live=_not_live,
-            list_streams=_no_streams,
-        )
-    assert sorted(calls) == ["a", "b"]
-    await engine.dispose()
-
-
 async def _check_once(settings, feed, probe, probe_live=_not_live):
     """One check through its own engine, as a freshly started scheduler runs it."""
     from savetube.live import check_channel
@@ -207,16 +182,20 @@ async def test_a_restarted_scheduler_probes_only_ids_no_earlier_check_probed(set
 
 
 @pytest.mark.anyio
-async def test_an_upcoming_stream_probed_before_a_restart_still_gets_its_record_job(settings):
-    """A record job made after the restart reads the stored probe."""
+@pytest.mark.parametrize("words_on", ["channel", "source"])
+async def test_an_upcoming_stream_probed_before_a_restart_still_gets_its_record_job(
+    settings, words_on
+):
+    """A record job made after the restart, or after a word change, reads the stored probe."""
     calls = []
     _watch(settings)
-    _sql(settings, f"UPDATE channel SET exclude_words = '{{Artemis}}' WHERE id = '{NASA}'")
+    _sql(settings, f"UPDATE {words_on} SET exclude_words = '{{Artemis}}'")
     await _check_once(settings, [UPCOMING["id"]], _counting(calls, {UPCOMING["id"]: UPCOMING}))
-    _sql(settings, f"UPDATE channel SET exclude_words = '{{}}' WHERE id = '{NASA}'")
+    engine = make_engine(settings.sqlalchemy_url)
+    assert await _record_jobs(make_sessionmaker(engine)) == []
+    _sql(settings, f"UPDATE {words_on} SET exclude_words = '{{}}'")
     created = await _check_once(settings, [UPCOMING["id"]], _counting(calls, {}))
     assert calls == [UPCOMING["id"]]
-    engine = make_engine(settings.sqlalchemy_url)
     jobs = await _record_jobs(make_sessionmaker(engine))
     await engine.dispose()
     assert [(j.id, j.scheduled_at) for j in jobs] == [
