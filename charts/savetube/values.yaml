@@ -29,6 +29,9 @@ publicUrl: ""
 
 oidc:
   issuer: https://auth.hiriri.com
+  # The issuer's in-cluster address. The web pod's own calls to the issuer go
+  # there instead of through Cloudflare. Empty calls the issuer URL.
+  internalUrl: http://zitadel.zitadel.svc:8080
   clientId: ""
   # A value of the `groups` claim a user must hold. Empty admits any user the issuer lets through.
   requiredGroup: ""

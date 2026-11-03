@@ -23,6 +23,7 @@
 - `SAVETUBE_LOG_LEVEL` sets the level, and the default is `INFO`. The chart sets it from `logLevel`.
 - Libraries log at WARNING and above. At `DEBUG` they log at INFO and above. Alembic logs at INFO, so the migrate container shows each revision it applies.
 - The uvicorn access log is off below `DEBUG`. The probes hit `/healthz` every few seconds, and the API logs its own writes.
+- An unhandled exception in a web request logs `web.request_failed` at ERROR with `method`, `path`, `error` (the exception type) and `agent` (the user agent). The path drops the query, which carries the OAuth code and state. The traceback follows in uvicorn's own `Exception in ASGI application` line, and the response stays a 500.
 - yt-dlp logs through `savetube.ytdlp`. Its warnings stay WARNING. Its errors log at DEBUG, because the caller logs the same text as `reason=`.
 - The download child process configures its own logging and builds its own hooks, because `spawn` pickles its arguments.
 - A download logs `download.progress` at most once a minute, with percent, bytes, speed and ETA of the current stream. A time interval bounds both the delay and the volume of progress lines for any file size or rate limit.

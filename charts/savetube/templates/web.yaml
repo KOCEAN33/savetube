@@ -85,6 +85,10 @@ spec:
               value: {{ required "publicUrl is required" .Values.publicUrl | quote }}
             - name: SAVETUBE_OIDC_ISSUER
               value: {{ .Values.oidc.issuer | quote }}
+            {{- with .Values.oidc.internalUrl }}
+            - name: SAVETUBE_OIDC_INTERNAL_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: SAVETUBE_OIDC_CLIENT_ID
               value: {{ required "oidc.clientId is required" .Values.oidc.clientId | quote }}
             {{- with .Values.oidc.requiredGroup }}

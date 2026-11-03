@@ -8,6 +8,7 @@ import logging
 from typing import Annotated
 from urllib.parse import urlencode
 
+import httpx2
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse
@@ -24,6 +25,9 @@ SESSION_COOKIE = "savetube_session"
 # Authlib keeps each pending login's state under this key prefix in the session.
 STATE_PREFIX = "_state_zitadel_"
 AUTH_ERROR = "auth_error"
+# Seconds for each call to the issuer. httpx2's default of 5 s timed out on the
+# public route through Cloudflare.
+ISSUER_TIMEOUT = 10.0
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +46,33 @@ def _safe_next(value: str | None) -> str:
     return value
 
 
+class InternalRoute(httpx2.AsyncBaseTransport):
+    """Sends a request for the issuer's host to its internal address, with the
+    issuer's Host header. Other hosts pass through unchanged.
+
+    The public issuer URL hairpins through Cloudflare, 1-3.5 s a call from the
+    cluster. Zitadel picks its instance by the Host header, so the in-cluster
+    service answers with the same public URLs in its metadata.
+    """
+
+    def __init__(self, issuer: str, internal: str, inner: httpx2.AsyncBaseTransport):
+        self._host = httpx2.URL(issuer).host
+        target = httpx2.URL(internal)
+        self._target = {"scheme": target.scheme, "host": target.host, "port": target.port}
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        if request.url.host == self._host:
+            # The Host header was set from the original URL and stays.
+            request.url = request.url.copy_with(**self._target)
+        return await self._inner.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        # Authlib opens and closes a client per call. The shared pool lives as
+        # long as the app.
+        pass
+
+
 def install(app: FastAPI, settings: Settings) -> None:
     if not settings.session_secret.get_secret_value():
         raise RuntimeError("SAVETUBE_SESSION_SECRET is empty")
@@ -50,6 +81,13 @@ def install(app: FastAPI, settings: Settings) -> None:
 
     oauth = OAuth()
     secret = settings.oidc_client_secret
+    # Authlib passes these to every httpx2 client it makes, for the metadata,
+    # token, JWKS and userinfo calls alike.
+    http: dict[str, object] = {"timeout": ISSUER_TIMEOUT}
+    if settings.oidc_internal_url:
+        http["transport"] = InternalRoute(
+            settings.oidc_issuer, settings.oidc_internal_url, httpx2.AsyncHTTPTransport()
+        )
     oauth.register(
         "zitadel",
         client_id=settings.oidc_client_id,
@@ -59,6 +97,7 @@ def install(app: FastAPI, settings: Settings) -> None:
             "scope": SCOPE,
             "code_challenge_method": "S256",
             "token_endpoint_auth_method": "client_secret_basic" if secret else "none",
+            **http,
         },
     )
     client = oauth.create_client("zitadel")

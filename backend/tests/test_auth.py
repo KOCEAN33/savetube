@@ -12,8 +12,10 @@ from joserfc.jwk import RSAKey
 
 from savetube.config import Settings
 from savetube.web.app import create_app
+from savetube.web.auth import InternalRoute
 
 ISSUER = "https://issuer.test"
+INTERNAL = "http://zitadel.test:8080"
 CLIENT_ID = "1234"
 KEY = RSAKey.generate_key(2048, parameters={"kid": "k1", "use": "sig", "alg": "RS256"})
 
@@ -32,6 +34,12 @@ def _id_token(nonce: str) -> str:
     return jwt.encode({"alg": "RS256", "kid": "k1"}, claims, KEY)
 
 
+def _addressed(request: httpx2.Request) -> str:
+    # The issuer URL a request names by its Host header, so a request routed to
+    # the internal address still finds its route.
+    return f"https://{request.headers['host']}{request.url.path}"
+
+
 class FakeIssuer:
     """Answers the outbound httpx2 calls Authlib makes. TestClient's own transport is untouched."""
 
@@ -44,14 +52,12 @@ class FakeIssuer:
 
     def last(self, method: str, path: str) -> httpx2.Request:
         url = f"{ISSUER}{path}"
-        return [r for r in self.requests if r.method == method and str(r.url).split("?")[0] == url][
-            -1
-        ]
+        return [r for r in self.requests if r.method == method and _addressed(r) == url][-1]
 
     async def handle(self, request: httpx2.Request) -> httpx2.Response:
         await request.aread()
         self.requests.append(request)
-        key = (request.method, str(request.url).split("?")[0])
+        key = (request.method, _addressed(request))
         if key not in self.routes:
             return httpx2.Response(404, request=request)
         return httpx2.Response(200, json=self.routes[key], request=request)
@@ -78,15 +84,20 @@ def issuer(monkeypatch):
     return fake
 
 
-def _client(required_group: str | None = "savetube-admin") -> TestClient:
+def _client(
+    required_group: str | None = "savetube-admin",
+    internal_url: str | None = None,
+    raise_server_exceptions: bool = True,
+) -> TestClient:
     settings = Settings(
         public_url="http://testserver",
         session_secret="test-secret",
         oidc_issuer=ISSUER,
         oidc_client_id=CLIENT_ID,
         oidc_required_group=required_group,
+        oidc_internal_url=internal_url,
     )
-    return TestClient(create_app(settings))
+    return TestClient(create_app(settings), raise_server_exceptions=raise_server_exceptions)
 
 
 def _login(client: TestClient, issuer: FakeIssuer, groups: list[str], next: str | None = "/videos"):
@@ -268,3 +279,83 @@ def test_confidential_client_sends_basic_auth(issuer):
         assert r.status_code == 303
         auth = issuer.last("POST", "/oauth/v2/token").headers["authorization"]
         assert auth == "Basic " + base64.b64encode(f"{CLIENT_ID}:shh".encode()).decode()
+
+
+class RecordingTransport(httpx2.AsyncBaseTransport):
+    def __init__(self):
+        self.requests: list[httpx2.Request] = []
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(request)
+        return httpx2.Response(200, request=request)
+
+
+@pytest.mark.anyio
+async def test_internal_route_sends_issuer_requests_inside_with_public_host():
+    inner = RecordingTransport()
+    async with httpx2.AsyncClient(transport=InternalRoute(ISSUER, INTERNAL, inner)) as client:
+        await client.get(f"{ISSUER}/oauth/v2/keys?x=1")
+    [sent] = inner.requests
+    assert str(sent.url) == "http://zitadel.test:8080/oauth/v2/keys?x=1"
+    assert sent.headers["host"] == "issuer.test"
+
+
+@pytest.mark.anyio
+async def test_internal_route_leaves_other_hosts_alone():
+    inner = RecordingTransport()
+    async with httpx2.AsyncClient(transport=InternalRoute(ISSUER, INTERNAL, inner)) as client:
+        await client.get("https://other.test/oauth/v2/keys")
+    [sent] = inner.requests
+    assert str(sent.url) == "https://other.test/oauth/v2/keys"
+    assert sent.headers["host"] == "other.test"
+
+
+def test_internal_url_routes_server_calls_but_not_browser_redirects(issuer):
+    with _client(internal_url=INTERNAL) as client:
+        r, _ = _login(client, issuer, ["savetube-admin"])
+        assert r.status_code == 303
+        logout = client.post("/auth/logout", follow_redirects=False)
+    loc = urlsplit(logout.headers["location"])
+    assert f"{loc.scheme}://{loc.netloc}{loc.path}" == f"{ISSUER}/oidc/v1/end_session"
+    sent = {(q.method, q.url.path) for q in issuer.requests}
+    assert sent == {
+        ("GET", "/.well-known/openid-configuration"),
+        ("POST", "/oauth/v2/token"),
+        ("GET", "/oauth/v2/keys"),
+        ("GET", "/oidc/v1/userinfo"),
+    }
+    for q in issuer.requests:
+        assert (q.url.scheme, q.url.host, q.url.port) == ("http", "zitadel.test", 8080)
+        assert q.headers["host"] == "issuer.test"
+
+
+def test_unhandled_exception_logs_the_request_without_its_query(issuer, monkeypatch, caplog):
+    async def timeout(self, request):
+        raise httpx2.ReadTimeout("timed out", request=request)
+
+    monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", timeout)
+    with _client(raise_server_exceptions=False) as client:
+        with caplog.at_level(logging.INFO):
+            r = client.get(
+                "/auth/login?next=/videos",
+                headers={"user-agent": "Safari/18"},
+                follow_redirects=False,
+            )
+    assert r.status_code == 500
+    [line] = _events(caplog, "web.request_failed")
+    assert line.levelno == logging.ERROR
+    assert _fields(line) == {
+        "method": "GET",
+        "path": "/auth/login",
+        "error": "ReadTimeout",
+        "agent": "Safari/18",
+    }
+
+
+def test_answered_requests_log_nothing(issuer, caplog):
+    with _client(raise_server_exceptions=False) as client:
+        with caplog.at_level(logging.DEBUG):
+            assert client.get("/healthz").status_code == 200
+            assert client.get("/api/me").status_code == 401
+            assert client.get("/auth/nowhere").status_code == 404
+    assert [r for r in caplog.records if r.name.startswith("savetube")] == []
