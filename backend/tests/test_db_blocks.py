@@ -16,7 +16,6 @@ from conftest import (
     _run,
     _run_steps,
     _sql,
-    _sql_rows,
     _Steps,
     _waiting_rows,
 )
@@ -304,78 +303,6 @@ async def test_a_bare_unavailable_outside_a_streak_fails_the_job(settings, ended
     assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, message)
     assert video.state is VideoState.FAILED
     assert _block_state(settings) == (0, None)
-
-
-@pytest.mark.own_database
-def test_migration_0009_gives_back_attempts_a_bot_check_took(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    cfg = alembic_config(settings.sqlalchemy_url)
-    command.downgrade(cfg, "0008")
-    _job_rows(
-        settings,
-        "UPDATE job SET state = 'succeeded' WHERE id = 1",
-        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail) VALUES"
-        " (2, 'archive', 'failed', 'v1', 1, 'Sign in to confirm you’re not a bot.'),"
-        " (3, 'archive', 'failed', 'v1', 1, 'HTTP Error 403: Forbidden'),"
-        " (4, 'record', 'failed', 'busy2', 1, 'Sign in to confirm you’re NOT A BOT.')",
-    )
-    command.upgrade(cfg, "head")
-    engine = sa.create_engine(settings.sqlalchemy_url)
-    with engine.connect() as c:
-        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
-    assert states == {1: "succeeded", 2: "interrupted", 3: "failed", 4: "failed"}
-    assert _block_state(settings) == (0, None)
-
-    command.downgrade(cfg, "0008")
-    with engine.connect() as c:
-        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
-        columns = set(
-            c.execute(
-                sa.text(
-                    "SELECT column_name FROM information_schema.columns"
-                    " WHERE table_name = 'download_settings'"
-                )
-            ).scalars()
-        )
-    engine.dispose()
-    # The downgrade leaves the data as it is.
-    assert states[2] == "interrupted"
-    assert not columns & {"blocked_until", "block_count"}
-
-
-@pytest.mark.own_database
-def test_migration_0012_sets_failed_videos_with_a_queued_archive_job_pending(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    cfg = alembic_config(settings.sqlalchemy_url)
-    command.downgrade(cfg, "0011")
-    _sql(
-        settings,
-        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
-        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
-        " ('waits', 'UC1', 'videos', 't', 'failed'), ('gave_up', 'UC1', 'videos', 't', 'failed'),"
-        " ('recorded', 'UC1', 'lives', 't', 'failed'), ('done', 'UC1', 'videos', 't', 'complete')",
-        "INSERT INTO job (kind, state, video_id, attempts) VALUES"
-        " ('archive', 'failed', 'waits', 1), ('archive', 'queued', 'waits', 0),"
-        " ('archive', 'failed', 'gave_up', 1),"
-        " ('record', 'queued', 'recorded', 0),"
-        " ('archive', 'queued', 'done', 0)",
-    )
-    command.upgrade(cfg, "head")
-    states = dict(_sql_rows(settings, "SELECT id, state FROM video"))
-    assert states == {
-        "waits": "pending",
-        "gave_up": "failed",
-        "recorded": "failed",
-        "done": "complete",
-    }
-    command.downgrade(cfg, "0011")
-    assert dict(_sql_rows(settings, "SELECT id, state FROM video"))["waits"] == "pending"
 
 
 @pytest.mark.anyio

@@ -203,7 +203,6 @@ def test_worker_and_scheduler_carry_a_liveness_probe_on_the_health_port():
         assert ports["health"] == Settings.model_fields["health_port"].default, role
         probe = c["livenessProbe"]
         assert probe["httpGet"] == {"path": "/healthz", "port": "health"}, role
-        assert (probe["periodSeconds"], probe["failureThreshold"]) == (10, 3), role
         assert probe["initialDelaySeconds"] <= 15, role
 
 

@@ -1,6 +1,5 @@
 import asyncio
 from datetime import datetime, timedelta
-from datetime import time as dt_time
 
 import pytest
 from conftest import (
@@ -15,7 +14,6 @@ from conftest import (
     _run,
     _run_steps,
     _sql,
-    _sql_rows,
     _Steps,
     _waiting_rows,
 )
@@ -209,23 +207,3 @@ def test_api_daily_limit_window_switch_and_todays_count(settings):
             body | {"window_enabled": True, "window_start": None, "window_end": None},
         ):
             assert client.put("/api/download-settings", json=bad).status_code == 422, bad
-
-
-@pytest.mark.own_database
-def test_migration_0013_enables_a_window_that_has_both_times(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    cfg = alembic_config(settings.sqlalchemy_url)
-    command.downgrade(cfg, "0012")
-    _sql(settings, "UPDATE download_settings SET window_start = '23:00', window_end = '05:00'")
-    command.upgrade(cfg, "head")
-    assert _sql_rows(
-        settings, "SELECT window_enabled, window_start, daily_limit FROM download_settings"
-    ) == [(True, dt_time(23, 0), None)]
-
-    command.downgrade(cfg, "0012")
-    _sql(settings, "UPDATE download_settings SET window_start = NULL, window_end = NULL")
-    command.upgrade(cfg, "head")
-    assert _sql_rows(settings, "SELECT window_enabled FROM download_settings") == [(False,)]

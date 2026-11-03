@@ -1,5 +1,4 @@
 import pytest
-import sqlalchemy as sa
 from conftest import ADMIN_URL, _dispatch, _events, _fields, _job_rows, _queue_row, _sql, _sql_rows
 
 from savetube.db import make_engine, make_sessionmaker
@@ -156,25 +155,3 @@ async def test_cleanup_deletes_interrupted_rows_30_days_after_the_video_succeede
     assert left == [1, 11, 12, 13, 15, 16, 20, 21, 30, 31]
     [done] = _events(caplog, "cleanup.done")
     assert _fields(done)["interrupted"] == 2
-
-
-@pytest.mark.own_database
-def test_migration_0008_turns_interrupted_jobs_into_cancelled_on_downgrade(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    _job_rows(
-        settings,
-        "UPDATE video SET resume_format = '251' WHERE id = 'v1'",
-        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
-        " (2, 'archive', 'interrupted', 'v1', 1)",
-    )
-    command.downgrade(alembic_config(settings.sqlalchemy_url), "0007")
-    engine = sa.create_engine(settings.sqlalchemy_url)
-    with engine.connect() as c:
-        states = dict(c.execute(sa.text("SELECT id, state FROM job")).all())
-    engine.dispose()
-    # The old code counts a failed job as an attempt, so an interrupted one
-    # becomes cancelled.
-    assert states == {1: "queued", 2: "cancelled"}

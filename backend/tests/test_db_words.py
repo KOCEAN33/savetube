@@ -15,6 +15,8 @@ from conftest import (
     _feed,
     _no_probe,
     _no_streams,
+    _poll,
+    _poll_outcome,
     _record_jobs,
     _sql,
     _watch,
@@ -22,8 +24,6 @@ from conftest import (
 
 from savetube.db import make_engine, make_sessionmaker
 from savetube.db.models import (
-    Channel,
-    Job,
     Source,
     SourceKind,
     Video,
@@ -439,14 +439,21 @@ async def test_keep_all_records_a_live_whatever_its_title(settings):
     await engine.dispose()
 
 
-@pytest.mark.anyio
-async def test_playlists_pass_keeps_every_playlist_entry_the_exclude_words_allow(settings):
-    from savetube.poll import sync
+PASS_ENTRIES = [
+    {"id": "utawaku", "title": UTAWAKU, "live_status": "was_live"},
+    {"id": "chat", "title": "雑談", "live_status": "was_live"},
+    {"id": "notice", "title": "雑談 告知", "live_status": "was_live"},
+]
+PASS_PLAYLIST = {"entries": [{**e, "channel_id": VESP} for e in PASS_ENTRIES]}
+PASS_TAB = {"channel_id": VESP, "channel": "VESPERBELL", "entries": PASS_ENTRIES}
 
+
+def _playlists_pass_rows(settings, playlists_pass="false"):
     _sql(
         settings,
-        "INSERT INTO channel (id, name, dir_name, include_words, exclude_words) VALUES"
-        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', '{{歌枠}}', '{{告知}}')",
+        "INSERT INTO channel (id, name, dir_name, include_words, exclude_words, playlists_pass)"
+        f" VALUES ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', '{{歌枠}}', '{{告知}}',"
+        f" {playlists_pass})",
         "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
         f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360),"
         f" (2, 'https://www.youtube.com/channel/{VESP}/playlists', 'playlists', '{VESP}',"
@@ -459,46 +466,40 @@ async def test_playlists_pass_keeps_every_playlist_entry_the_exclude_words_allow
         "INSERT INTO video_source (video_id, source_id) VALUES ('chat', 3)",
         "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
         " (101, 'archive', 'queued', 'chat', 0)",
-        "SELECT setval('job_id_seq', 200)",
     )
-    entries = [
-        {"id": "utawaku", "title": UTAWAKU, "live_status": "was_live"},
-        {"id": "chat", "title": "雑談", "live_status": "was_live"},
-        {"id": "notice", "title": "雑談 告知", "live_status": "was_live"},
-    ]
-    playlist = {"entries": [{**e, "channel_id": VESP} for e in entries]}
-    tab = {"channel_id": VESP, "channel": "VESPERBELL", "entries": entries}
-    engine = make_engine(settings.sqlalchemy_url)
-    sessionmaker = make_sessionmaker(engine)
 
-    async def run(playlists_pass, source_id, listing):
-        async with sessionmaker() as session:
-            await session.execute(
-                sa.update(Channel).where(Channel.id == VESP).values(playlists_pass=playlists_pass)
-            )
-            synced = await sync(session, await session.get(Source, source_id), listing, [])
-            queued = sorted(
-                await session.scalars(sa.select(Job.video_id).where(Job.id.in_(synced.job_ids)))
-            )
-            await session.rollback()
-        return dict(synced.skips), queued, synced.drops
 
-    # Off: a playlist entry meets the words like a tab entry.
-    assert await run(False, 3, playlist) == (
-        {"words": 2},
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("playlists_pass", "source_id", "listing", "skips", "cancelled"),
+    [
+        # Off: a playlist entry meets the words like a tab entry.
+        ("false", 3, PASS_PLAYLIST, {"words": 2}, [(101, "chat", "words")]),
+        # On: the include words drop for the playlist. An exclude word still skips.
+        ("true", 3, PASS_PLAYLIST, {"words": 1}, []),
+        # A tab of the same channel still meets the include words. The playlist
+        # still passes the queued job, so it stays.
+        ("true", 1, PASS_TAB, {"words": 2}, []),
+        ("false", 1, PASS_TAB, {"words": 2}, [(101, "chat", "words")]),
+    ],
+)
+async def test_playlists_pass_keeps_every_playlist_entry_the_exclude_words_allow(
+    settings, caplog, playlists_pass, source_id, listing, skips, cancelled
+):
+    _playlists_pass_rows(settings, playlists_pass)
+    assert await _poll_outcome(settings, source_id, listing, caplog) == (
+        skips,
         ["utawaku"],
-        [(101, "chat", "words")],
+        cancelled,
     )
-    # On: the include words drop for the playlist. An exclude word still skips.
-    assert await run(True, 3, playlist) == ({"words": 1}, ["utawaku"], [])
-    # A tab of the same channel still meets the include words. The playlist
-    # still passes the queued job, so it stays.
-    assert await run(True, 1, tab) == ({"words": 2}, ["utawaku"], [])
-    assert await run(False, 1, tab) == ({"words": 2}, ["utawaku"], [(101, "chat", "words")])
 
-    async with sessionmaker() as session:
-        await sync(session, await session.get(Source, 3), playlist, [])
-        await session.commit()
+
+@pytest.mark.anyio
+async def test_the_title_preview_follows_the_playlists_pass(settings):
+    _playlists_pass_rows(settings)
+    engine = make_engine(settings.sqlalchemy_url)
+    await _poll(make_sessionmaker(engine), settings, 3, PASS_PLAYLIST)
+    await engine.dispose()
     with _api(settings) as client:
 
         def kept():
@@ -511,65 +512,68 @@ async def test_playlists_pass_keeps_every_playlist_entry_the_exclude_words_allow
         r = client.patch(f"/api/channels/{VESP}", json={"playlists_pass": True})
         assert r.status_code == 200 and r.json()["playlists_pass"] is True
         assert kept() == {"utawaku", "chat"}
-    await engine.dispose()
 
 
-@pytest.mark.anyio
-async def test_keep_all_skips_every_title_word_but_not_the_other_checks(settings):
-    from savetube.poll import sync
+KEEP_ALL_ENTRIES = [
+    {"id": "utawaku", "title": UTAWAKU, "live_status": "was_live"},
+    {"id": "chat", "title": "雑談", "live_status": "was_live"},
+    {"id": "notice", "title": "雑談 告知", "live_status": "was_live"},
+    {"id": "old", "title": "雑談", "live_status": "was_live", "timestamp": 1700000000},
+    {"id": "members", "title": "雑談", "availability": "subscriber_only"},
+    {"id": "soon", "title": "雑談", "live_status": "is_upcoming"},
+]
+KEEP_ALL_TAB = {"channel_id": VESP, "channel": "VESPERBELL", "entries": KEEP_ALL_ENTRIES}
+# Another channel's video in the playlist meets the playlist channel's switch.
+KEEP_ALL_PLAYLIST = {
+    "entries": [{"id": "nasa", "title": "Artemis 告知", "channel_id": NASA, "channel": "NASA"}]
+    + [{**e, "channel_id": VESP} for e in KEEP_ALL_ENTRIES[:2]]
+}
 
+
+def _keep_all_rows(settings, keep_all="false"):
     _sql(
         settings,
         "UPDATE global_words SET include_words = '{歌枠}', exclude_words = '{告知}'",
-        "INSERT INTO channel (id, name, dir_name, include_words, date_after) VALUES"
-        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', '{{3DLIVE}}', '2026-01-01')",
+        "INSERT INTO channel (id, name, dir_name, include_words, date_after, keep_all) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]', '{{3DLIVE}}', '2026-01-01',"
+        f" {keep_all})",
         "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes,"
         " include_words, exclude_words, other_channels) VALUES"
         f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360,"
         "  '{歌枠}', '{雑談}', false),"
         f" (2, 'https://www.youtube.com/playlist?list=PLx', 'playlist', '{VESP}', true, 360,"
         "  '{歌枠}', '{雑談}', true)",
-        "SELECT setval('job_id_seq', 200)",
     )
-    entries = [
-        {"id": "utawaku", "title": UTAWAKU, "live_status": "was_live"},
-        {"id": "chat", "title": "雑談", "live_status": "was_live"},
-        {"id": "notice", "title": "雑談 告知", "live_status": "was_live"},
-        {"id": "old", "title": "雑談", "live_status": "was_live", "timestamp": 1700000000},
-        {"id": "members", "title": "雑談", "availability": "subscriber_only"},
-        {"id": "soon", "title": "雑談", "live_status": "is_upcoming"},
-    ]
-    tab = {"channel_id": VESP, "channel": "VESPERBELL", "entries": entries}
-    # Another channel's video in the playlist meets the playlist channel's switch.
-    playlist = {
-        "entries": [{"id": "nasa", "title": "Artemis 告知", "channel_id": NASA, "channel": "NASA"}]
-        + [{**e, "channel_id": VESP} for e in entries[:2]]
-    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("keep_all", "source_id", "listing", "skips", "queued"),
+    [
+        ("false", 1, KEEP_ALL_TAB, {"words": 4, "live": 1}, ["utawaku"]),
+        (
+            "true",
+            1,
+            KEEP_ALL_TAB,
+            {"live": 1, "members": 1, "date": 1},
+            ["chat", "notice", "utawaku"],
+        ),
+        ("true", 2, KEEP_ALL_PLAYLIST, {}, ["chat", "nasa", "utawaku"]),
+    ],
+)
+async def test_keep_all_skips_every_title_word_but_not_the_other_checks(
+    settings, caplog, keep_all, source_id, listing, skips, queued
+):
+    _keep_all_rows(settings, keep_all)
+    assert await _poll_outcome(settings, source_id, listing, caplog) == (skips, queued, [])
+
+
+@pytest.mark.anyio
+async def test_the_title_preview_follows_keep_all(settings):
+    _keep_all_rows(settings)
     engine = make_engine(settings.sqlalchemy_url)
-    sessionmaker = make_sessionmaker(engine)
-
-    async def run(keep_all, source_id, listing):
-        async with sessionmaker() as session:
-            await session.execute(
-                sa.update(Channel).where(Channel.id == VESP).values(keep_all=keep_all)
-            )
-            synced = await sync(session, await session.get(Source, source_id), listing, [])
-            queued = sorted(
-                await session.scalars(sa.select(Job.video_id).where(Job.id.in_(synced.job_ids)))
-            )
-            await session.rollback()
-        return dict(synced.skips), queued
-
-    assert await run(False, 1, tab) == ({"words": 4, "live": 1}, ["utawaku"])
-    assert await run(True, 1, tab) == (
-        {"live": 1, "members": 1, "date": 1},
-        ["chat", "notice", "utawaku"],
-    )
-    assert await run(True, 2, playlist) == ({}, ["chat", "nasa", "utawaku"])
-
-    async with sessionmaker() as session:
-        await sync(session, await session.get(Source, 1), tab, [])
-        await session.commit()
+    await _poll(make_sessionmaker(engine), settings, 1, KEEP_ALL_TAB)
+    await engine.dispose()
     with _api(settings) as client:
 
         def kept():
@@ -581,8 +585,7 @@ async def test_keep_all_skips_every_title_word_but_not_the_other_checks(settings
         assert kept() == {"utawaku"}
         r = client.patch(f"/api/channels/{VESP}", json={"keep_all": True})
         assert r.status_code == 200 and r.json()["keep_all"] is True
-        assert kept() == {e["id"] for e in entries}
-    await engine.dispose()
+        assert kept() == {e["id"] for e in KEEP_ALL_ENTRIES}
 
 
 @pytest.mark.anyio

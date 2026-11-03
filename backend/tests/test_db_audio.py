@@ -143,37 +143,6 @@ def _tree(root):
     return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
 
 
-@pytest.mark.anyio
-async def test_the_audio_backfill_dry_run_lists_each_video_and_writes_nothing(
-    settings, monkeypatch, tmp_path
-):
-    from savetube.audio import backfill
-    from savetube.integrity import Tools
-
-    root = _stored_videos(settings)
-    before = _tree(root)
-    _fake_bin(monkeypatch, tmp_path, probe=MERGED_PROBE)
-    lines = []
-    engine = make_engine(settings.sqlalchemy_url)
-    counts = await backfill(
-        make_sessionmaker(engine),
-        settings.archive_root,
-        tools=Tools(),
-        dry_run=True,
-        out=lines.append,
-    )
-    await engine.dispose()
-    assert lines == [
-        "a1 would extract A [UC1]/videos/a1/a1.opus",
-        "b2 skipped: has b2.m4a",
-        "c3 failed: video file not found",
-        "would extract 1, skipped 1, failed 1",
-    ]
-    assert counts == {"extracted": 1, "skipped": 1, "failed": 1}
-    assert _tree(root) == before
-    assert _sql_rows(settings, "SELECT DISTINCT size_bytes FROM video") == [(20,)]
-
-
 def test_the_extract_audio_command_dry_run(settings, monkeypatch, tmp_path, capsys):
     from savetube import cli
     from savetube.config import get_settings
@@ -200,6 +169,7 @@ def test_the_extract_audio_command_dry_run(settings, monkeypatch, tmp_path, caps
         "would extract 1, skipped 1, failed 1",
     ]
     assert _tree(root) == before
+    assert _sql_rows(settings, "SELECT DISTINCT size_bytes FROM video") == [(20,)]
 
 
 @pytest.mark.anyio

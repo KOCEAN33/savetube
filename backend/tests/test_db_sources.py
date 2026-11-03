@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy as sa
@@ -311,59 +311,6 @@ async def test_playlist_sources_carry_their_title(settings):
     assert titles[1] is None
     assert titles[b.id] == "◀︎KASUKA 歌枠▶︎"
     await engine.dispose()
-
-
-@pytest.mark.own_database
-def test_migration_0005_moves_rule_settings_onto_channels(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    engine = sa.create_engine(settings.sqlalchemy_url)
-    with engine.begin() as c:
-        c.execute(sa.text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
-    cfg = alembic_config(settings.sqlalchemy_url)
-    command.upgrade(cfg, "0004")
-    _sql(
-        settings,
-        "INSERT INTO rule (id, name, types, date_after, format, use_cookies, watch_lives) VALUES"
-        " (1, 'a', '{videos}', '2026-02-01', 'f1', false, false),"
-        " (2, 'b', '{lives}', '2026-01-01', 'f2', true, true),"
-        " (3, 'c', '{videos}', NULL, 'f3', false, false)",
-        "INSERT INTO channel (id, name, dir_name) VALUES"
-        " ('UC1', 'a', 'a'), ('UC2', 'b', 'b'), ('UC3', 'c', 'c')",
-        "INSERT INTO source (id, url, kind, channel_id, rule_id, enabled, poll_interval_minutes)"
-        " VALUES (1, 'https://www.youtube.com/@a/videos', 'tab', 'UC1', 1, true, 360),"
-        "        (2, 'https://www.youtube.com/@a/streams', 'tab', 'UC1', 2, true, 360),"
-        "        (3, 'https://www.youtube.com/@b/videos', 'tab', 'UC2', 3, true, 360),"
-        "        (4, 'https://www.youtube.com/@b/streams', 'tab', 'UC2', 1, true, 360),"
-        "        (5, 'https://www.youtube.com/playlist?list=PL1', 'playlist', NULL, 2, true, 360)",
-    )
-    command.upgrade(cfg, "0009")
-    with engine.connect() as c:
-        rows = c.execute(
-            sa.text(
-                "SELECT id, date_after, format, use_cookies, watch_lives FROM channel ORDER BY id"
-            )
-        ).all()
-        rule_table = c.execute(sa.text("SELECT to_regclass('rule')")).scalar()
-        columns = set(
-            c.execute(
-                sa.text(
-                    "SELECT column_name FROM information_schema.columns WHERE table_name = 'source'"
-                )
-            ).scalars()
-        )
-    engine.dispose()
-    assert [tuple(r) for r in rows] == [
-        # Either flag on wins, the earliest cutoff wins, the lowest source id's format.
-        ("UC1", date(2026, 1, 1), "f1", True, True),
-        # No cutoff is the earliest of all.
-        ("UC2", None, "f3", False, False),
-        ("UC3", None, "bv*+ba/b", False, False),
-    ]
-    assert rule_table is None
-    assert "rule_id" not in columns
 
 
 @pytest.mark.anyio

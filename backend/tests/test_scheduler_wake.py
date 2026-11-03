@@ -1,9 +1,26 @@
 import asyncio
+import contextlib
 
 import pytest
 
 from savetube import scheduler
-from savetube.scheduler_api import Requests
+from savetube.config import Settings
+
+# The loops scheduler.run starts besides the staging move. Each is faked to do nothing.
+_OTHER_STEPS = [
+    "sample_storage",
+    "record_profiles",
+    "read_accounts",
+    "poll_sources",
+    "dispatch_archives",
+    "reclaim",
+    "clean_incoming",
+    "clean_database",
+    "format_watch",
+    "reencode",
+    "detect_lives",
+    "recorders",
+]
 
 
 async def _settle():
@@ -13,61 +30,47 @@ async def _settle():
 
 
 @pytest.mark.anyio
-async def test_a_loop_runs_its_step_again_at_once_when_woken():
-    wake = asyncio.Event()
-    calls = []
-    ran = asyncio.Event()
-
-    async def step():
-        calls.append(len(calls))
-        ran.set()
-
-    loop = asyncio.create_task(scheduler._every("test", step, 3600, wake=wake))
-    try:
-        await asyncio.wait_for(ran.wait(), 5)
-        ran.clear()
-        await _settle()
-        assert calls == [0]
-        wake.set()
-        await asyncio.wait_for(ran.wait(), 5)
-        await _settle()
-        assert calls == [0, 1]
-    finally:
-        loop.cancel()
-
-
-@pytest.mark.anyio
 async def test_the_staging_loop_moves_at_once_on_a_request_and_again_for_one_made_during_a_move(
-    monkeypatch,
+    monkeypatch, tmp_path
 ):
-    requests = Requests()
+    created = []
     moves = []
     third = asyncio.Event()
+
+    async def nothing(*args, **kwargs):
+        pass
+
+    async def serve(api, port):
+        await asyncio.Event().wait()
+
+    def create_app(settings, sessionmaker, **kwargs):
+        created.append(kwargs["requests"])
 
     async def move_staged(sessionmaker, settings, *, requested=False):
         moves.append(requested)
         if len(moves) == 2:
             # The user asks again while this move runs.
-            requests.ask_move()
+            created[0].ask_move()
         if len(moves) == 3:
             third.set()
 
+    for name in _OTHER_STEPS:
+        monkeypatch.setattr(scheduler, name, nothing)
     monkeypatch.setattr(scheduler, "move_staged", move_staged)
     monkeypatch.setattr(scheduler, "default_sessionmaker", lambda: None)
-    loop = asyncio.create_task(
-        scheduler._every(
-            "staging move",
-            lambda: scheduler.move_requested(None, requests, asyncio.Lock()),
-            3600,
-            wake=requests.move_wake,
-        )
-    )
+    monkeypatch.setattr(scheduler.scheduler_api, "create_app", create_app)
+    monkeypatch.setattr(scheduler.scheduler_api, "serve", serve)
+    monkeypatch.setattr(scheduler.app, "open_async", contextlib.nullcontext)
+    settings = Settings(database_url="postgres://x@127.0.0.1/x", staging_root=tmp_path)
+    run = asyncio.create_task(scheduler.run(settings))
     try:
         await _settle()
         assert moves == [False]
-        requests.ask_move()
+        created[0].ask_move()
         await asyncio.wait_for(third.wait(), 5)
         await _settle()
         assert moves == [False, True, True]
     finally:
-        loop.cancel()
+        run.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run

@@ -11,7 +11,6 @@ from conftest import (
     _finished,
     _job_rows,
     _part,
-    _queue_row,
     _run_steps,
     _sql,
     _sql_rows,
@@ -220,27 +219,75 @@ async def test_a_disowned_run_reports_nothing_onto_the_new_owners_row(settings, 
     assert jobs[1].progress == {"percent": 50.0}
 
 
+def _running_on_a_worker(settings, job_id, heartbeat_age_s):
+    """Job job_id runs as a procrastinate job of a worker whose last heartbeat is
+    heartbeat_age_s old. Returns the queue job's id."""
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.begin() as c:
+        worker = c.execute(
+            sa.text(
+                "INSERT INTO procrastinate_workers (last_heartbeat)"
+                " VALUES (now() - make_interval(secs => :age)) RETURNING id"
+            ),
+            {"age": heartbeat_age_s},
+        ).scalar()
+        queue_job_id = c.execute(
+            sa.text(
+                "INSERT INTO procrastinate_jobs (queue_name, task_name, args)"
+                " VALUES ('archive', 'archive', CAST(:args AS jsonb)) RETURNING id"
+            ),
+            {"args": f'{{"job_id": {job_id}}}'},
+        ).scalar()
+        c.execute(
+            sa.text(
+                "UPDATE procrastinate_jobs SET status = 'doing', worker_id = :w WHERE id = :id"
+            ),
+            {"w": worker, "id": queue_job_id},
+        )
+        c.execute(
+            sa.text(
+                "UPDATE job SET state = 'running', attempts = 1, started_at = now(),"
+                " queue_job_id = :q WHERE id = :id"
+            ),
+            {"q": queue_job_id, "id": job_id},
+        )
+    engine.dispose()
+    return queue_job_id
+
+
 @pytest.mark.anyio
 async def test_reclaim_takes_a_worker_as_stalled_after_300_s_without_a_heartbeat(
     settings, monkeypatch
 ):
+    from procrastinate import PsycopgConnector
+
     from savetube import scheduler
+    from savetube.db import PSYCOPG_CONNECT_ARGS
     from savetube.queue import app
 
-    asked = []
-
-    async def get_stalled_jobs(**kwargs):
-        asked.append(kwargs)
-        return []
-
+    _job_rows(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        " (2, 'archive', 'queued', 'busy1', 0)",
+        "SELECT setval('job_id_seq', 200)",
+    )
+    alive = _running_on_a_worker(settings, 1, 290)
+    stalled = _running_on_a_worker(settings, 2, 310)
     engine = make_engine(settings.sqlalchemy_url)
     monkeypatch.setattr(scheduler, "default_sessionmaker", lambda: make_sessionmaker(engine))
-    monkeypatch.setattr(app.job_manager, "get_stalled_jobs", get_stalled_jobs)
-    await scheduler.reclaim(settings)
+    connector = PsycopgConnector(conninfo=settings.conninfo, kwargs=PSYCOPG_CONNECT_ARGS)
+    with app.replace_connector(connector):
+        async with app.open_async():
+            await scheduler.reclaim(settings)
     await engine.dispose()
-    [kwargs] = asked
-    assert kwargs["seconds_since_heartbeat"] == 300
-    assert (kwargs["queue"], kwargs["task_name"]) == ("archive", "archive")
+    jobs = {
+        i: (state, q)
+        for i, state, q in _sql_rows(settings, "SELECT id, state, queue_job_id FROM job")
+    }
+    # The reclaim also leaves a history row for job 2's stopped run.
+    assert jobs[1] == ("running", alive) and jobs[2] == ("queued", None)
+    statuses = dict(_sql_rows(settings, "SELECT id, status FROM procrastinate_jobs"))
+    assert statuses == {alive: "doing", stalled: "failed"}
 
 
 async def _work(settings, monkeypatch, step, *, reclaim):
@@ -337,14 +384,6 @@ async def test_a_worker_still_ends_its_own_queue_job(settings, caplog, monkeypat
     import gc
     import logging
 
-    from procrastinate import PsycopgConnector
-    from procrastinate.exceptions import ConnectorException
-    from procrastinate.jobs import Job as QueueJob
-    from procrastinate.jobs import Status
-
-    from savetube.db import PSYCOPG_CONNECT_ARGS
-    from savetube.queue import app
-
     _job_rows(settings, "UPDATE channel SET format = 'wa'")
     with caplog.at_level(logging.DEBUG):
         queue_job_id = await _work(settings, monkeypatch, _finished(), reclaim=False)
@@ -354,12 +393,3 @@ async def test_a_worker_still_ends_its_own_queue_job(settings, caplog, monkeypat
     assert [_fields(r)["job"] for r in _events(caplog, "job.done")] == [1]
     rows = _sql_rows(settings, f"SELECT id FROM procrastinate_jobs WHERE id = {queue_job_id}")
     assert rows == []
-
-    # Only a queue job the reclaim failed counts as already ended.
-    ended = _queue_row(settings, "succeeded")
-    job = QueueJob(id=ended, queue="archive", lock=None, queueing_lock=None, task_name="archive")
-    connector = PsycopgConnector(conninfo=settings.conninfo, kwargs=PSYCOPG_CONNECT_ARGS)
-    with app.replace_connector(connector):
-        async with app.open_async():
-            with pytest.raises(ConnectorException):
-                await app.job_manager.finish_job(job, Status.SUCCEEDED, delete_job=True)

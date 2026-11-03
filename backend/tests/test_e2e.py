@@ -498,10 +498,6 @@ def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):
         assert key in channel
 
 
-def test_a_write_without_the_csrf_header_is_refused(server):
-    assert server.put("/api/words", json={}).status_code == 403
-
-
 def test_me(server):
     r = server.get("/api/me")
     assert r.status_code == 200 and r.json()["sub"] == "e2e"

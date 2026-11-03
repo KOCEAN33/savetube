@@ -12,7 +12,6 @@ from joserfc.jwk import RSAKey
 
 from savetube.config import Settings
 from savetube.web.app import create_app
-from savetube.web.auth import _safe_next
 
 ISSUER = "https://issuer.test"
 CLIENT_ID = "1234"
@@ -90,8 +89,9 @@ def _client(required_group: str | None = "savetube-admin") -> TestClient:
     return TestClient(create_app(settings))
 
 
-def _login(client: TestClient, issuer: FakeIssuer, groups: list[str], next: str = "/videos"):
-    r = client.get("/auth/login", params={"next": next}, follow_redirects=False)
+def _login(client: TestClient, issuer: FakeIssuer, groups: list[str], next: str | None = "/videos"):
+    params = {} if next is None else {"next": next}
+    r = client.get("/auth/login", params=params, follow_redirects=False)
     assert r.status_code == 302
     url = urlsplit(r.headers["location"])
     assert f"{url.scheme}://{url.netloc}{url.path}" == f"{ISSUER}/oauth/v2/authorize"
@@ -238,8 +238,11 @@ def test_repeated_callback_keeps_the_session(issuer, caplog):
         ("/\\evil.test/", "/"),
     ],
 )
-def test_next_is_same_origin_only(value, expected):
-    assert _safe_next(value) == expected
+def test_next_is_same_origin_only(issuer, value, expected):
+    with _client() as client:
+        r, _ = _login(client, issuer, ["savetube-admin"], next=value)
+    assert r.status_code == 303
+    assert r.headers["location"] == expected
 
 
 def test_confidential_client_sends_basic_auth(issuer):

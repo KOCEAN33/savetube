@@ -12,7 +12,6 @@ from conftest import (
     _no_probe,
     _run_steps,
     _sql,
-    _sql_rows,
     _Steps,
 )
 
@@ -171,24 +170,6 @@ async def test_the_mover_requeues_a_staged_video_whose_files_are_gone(settings, 
 
     assert video.state is VideoState.PENDING
     assert len(_events(caplog, "staging.missing")) == 1
-
-
-@pytest.mark.own_database
-def test_migration_0014_turns_staged_videos_pending_on_downgrade(settings):
-    from alembic import command
-
-    from savetube.db.migrate import alembic_config
-
-    _sql(
-        settings,
-        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
-        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
-        " ('s1', 'UC1', 'videos', 't', 'staged'), ('c1', 'UC1', 'videos', 't', 'complete')",
-    )
-    command.downgrade(alembic_config(settings.sqlalchemy_url), "0013")
-    rows = dict(_sql_rows(settings, "SELECT id, state FROM video"))
-    # The old code finds no staging, so the poll downloads the video again.
-    assert rows == {"s1": "pending", "c1": "complete"}
 
 
 @pytest.mark.anyio

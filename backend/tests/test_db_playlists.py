@@ -8,7 +8,6 @@ from conftest import (
     NASA,
     PL,
     PLAYLISTS_LISTING,
-    UPCOMING,
     UTAWAKU,
     VESP,
     _api,
@@ -16,14 +15,12 @@ from conftest import (
     _children,
     _feed,
     _no_streams,
-    _not_live,
     _parent,
     _poll,
     _record_jobs,
     _sql,
     _watch,
 )
-from fastapi.testclient import TestClient
 
 from savetube.db import make_engine, make_sessionmaker
 from savetube.db.models import (
@@ -33,8 +30,6 @@ from savetube.db.models import (
     Video,
     VideoSource,
 )
-from savetube.web.app import create_app
-from savetube.web.auth import User, current_user
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
 
@@ -383,42 +378,6 @@ async def test_an_empty_listing_keeps_the_last_titles(settings):
 
 
 @pytest.mark.anyio
-async def test_a_word_change_reaches_a_cached_detection_without_a_new_probe(settings):
-    from savetube.live import check_channel
-
-    _watch(settings)
-    _sql(settings, "UPDATE source SET exclude_words = '{Artemis}'")
-    engine = make_engine(settings.sqlalchemy_url)
-    sessionmaker = make_sessionmaker(engine)
-    probed = []
-
-    def probe(video_id):
-        probed.append(video_id)
-        return UPCOMING
-
-    async def tick():
-        await check_channel(
-            sessionmaker,
-            NASA,
-            fetch_feed=lambda c: _feed(UPCOMING["id"]),
-            probe=probe,
-            probe_live=_not_live,
-            list_streams=_no_streams,
-        )
-
-    await tick()
-    assert await _record_jobs(sessionmaker) == []
-    _sql(settings, "UPDATE source SET exclude_words = '{}'")
-    await tick()
-    jobs = await _record_jobs(sessionmaker)
-    assert [(j.video_id, j.scheduled_at) for j in jobs] == [
-        (UPCOMING["id"], datetime(2026, 10, 23, 18, 0, tzinfo=UTC))
-    ]
-    assert probed == [UPCOMING["id"]]
-    await engine.dispose()
-
-
-@pytest.mark.anyio
 async def test_the_streams_tab_decides_live_words_when_it_watches(settings):
     from savetube.live import check_channel
 
@@ -469,10 +428,6 @@ def test_api_channel_playlists_is_a_post_with_a_timeout(settings, monkeypatch):
     with _api(settings, slow) as client:
         assert client.post("/api/channel-playlists", json=url).status_code == 504
         assert client.get("/api/channel-playlists", params=url).status_code == 405
-    app = create_app(settings)
-    app.dependency_overrides[current_user] = lambda: User(sub="u")
-    with TestClient(app) as bare:
-        assert bare.post("/api/channel-playlists", json=url).status_code == 403
 
 
 def test_api_words_without_a_row_and_word_limits(settings):

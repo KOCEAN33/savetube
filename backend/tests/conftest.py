@@ -341,6 +341,31 @@ async def _poll(sessionmaker, settings, source_id, listing, cancel=_cancel, prob
     )
 
 
+async def _poll_outcome(settings, source_id, listing, caplog):
+    """One poll of the source: its nonzero skip counts, the videos of the jobs it queued, and
+    the (job, video, reason) of each job it cancelled."""
+    import logging
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        before = set(await session.scalars(sa.select(Job.id)))
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await _poll(sessionmaker, settings, source_id, listing)
+    async with sessionmaker() as session:
+        queued = sorted(await session.scalars(sa.select(Job.video_id).where(Job.id.not_in(before))))
+    await engine.dispose()
+    [done] = _events(caplog, "poll.done")
+    fields = _fields(done)
+    assert "skip_words" in fields, fields
+    skips = {k.removeprefix("skip_"): v for k, v in fields.items() if k.startswith("skip_") and v}
+    cancelled = [
+        (f["job"], f["video"], f["reason"]) for f in map(_fields, _events(caplog, "job.cancelled"))
+    ]
+    return skips, queued, cancelled
+
+
 async def _children(sessionmaker):
     async with sessionmaker() as session:
         return list(
