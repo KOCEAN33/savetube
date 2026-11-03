@@ -3,6 +3,7 @@
 ## Login
 
 - The backend is the OpenID Connect client against Zitadel at `https://auth.hiriri.com`: authorization code with PKCE (S256). The browser holds only a signed session cookie with `sub`, name, email and `groups`. No token reaches the frontend.
+- The backend's own calls to Zitadel (metadata, token, JWKS, userinfo) go to `SAVETUBE_OIDC_INTERNAL_URL`, the in-cluster `http://zitadel.zitadel.svc:8080`, with the Host header `auth.hiriri.com`. The public URL hairpins through Cloudflare at 1-3.5 s a call and timed out logins. The browser's authorize and end_session redirects keep the public URLs from the metadata. Each call times out after 10 s.
 - A client secret is optional. Unset means a public client, a Zitadel Web application with authentication method `None`.
 - Zitadel project `savetube`, application `savetube`, role `savetube-admin`. A project of its own, because savetube writes `tank/youtube` and an `internal` grant must not pass its login (homelab-platform `docs/zitadel-oidc-setup.md`).
 - `SAVETUBE_OIDC_REQUIRED_GROUP` checks the flat `groups` claim the `groupsClaim` Action writes, read from the userinfo endpoint. A user without the group gets 403 and no session.

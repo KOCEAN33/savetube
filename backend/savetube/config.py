@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # A value of the Zitadel `groups` claim. Unset admits any user the issuer
     # lets through.
     oidc_required_group: str | None = None
+    # The issuer's in-cluster address, such as http://zitadel.zitadel.svc:8080.
+    # The backend's own calls to the issuer go there, with the issuer's Host
+    # header. Unset calls the issuer URL.
+    oidc_internal_url: str | None = None
 
     metrics_port: int = 9090
     # GET /healthz of the worker and the scheduler, served by their asyncio loop.
