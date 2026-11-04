@@ -4,4 +4,4 @@ Merging: a worktree branch lands on develop locally, without a PR or the user's 
 
 Design: `docs/plan/`, split by topic, indexed by `docs/plan/README.md`. Traps: `docs/traps.md`. Test and repro commands: `docs/guides/testing.md`. Unscheduled work and open questions: `docs/candidates.md`. Handoff: `docs/NEXT.md`, next steps only.
 
-Facts this project shares with the homelab repositories live in llm-wiki `vault/projects/savetube.md`, the card that links the homelab pages it depends on.
+Facts this project shares with the homelab repositories live in llm-wiki `projects/savetube.md`, the card that links the homelab pages it depends on.
