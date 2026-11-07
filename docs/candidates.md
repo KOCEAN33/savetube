@@ -26,6 +26,9 @@ Work not scheduled yet. An item leaves when it is built or rejected.
 - The worker swallows the finish error for any queue row already `failed`. Only the reclaim fails one today.
 - The format fallback treats any HLS run that ends "The downloaded file is empty" with no bytes as a refused format, whatever the cause. The cap of 3 per attempt bounds it.
 - A playlist listing can name the group channel for a member's video, which leaves an empty group channel row once the download stores the video under the member.
+- The scheduler logs `live.check_failed reason="HTTPError: HTTP Error 404: Not Found"` every minute for several channels, VESPERBELL and 猫汰つな among them. The cause is not investigated.
+- After a profile pause ends, every waiting job of that profile may dispatch at once, and each refusal costs a quick run. The YouTube block runs one probe job instead (`concurrency`).
+- The replace run's 403 client fallback and profile block have no test, and migration `0030` has none either.
 
 ## Cleanup
 
