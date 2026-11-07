@@ -2,13 +2,13 @@
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import Text, column, false, func, select, table, update
+from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from savetube.cookies import videos_using
+from savetube.cookies import videos_using, videos_without_member
 from savetube.db.models import CookieProfile, Job, JobState
 from savetube.limits import (
     DISPATCH_ORDER,
@@ -63,6 +63,10 @@ class Dispatched:
     daily_limit: int | None = None
     # When the daily cap resets. None while it lets a download start.
     capped_until: datetime | None = None
+    # Waiting jobs held by a paused cookie profile: its pause's end and count.
+    profile_held: dict[str, tuple[datetime, int]] = field(default_factory=dict)
+    # Waiting members-only jobs with no member profile.
+    no_member: int = 0
 
 
 async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Dispatched:
@@ -98,14 +102,22 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
     deferred = None if limits.paused else opens
     max_concurrent = concurrency(limits)
     waiting_rows = queued & Job.queue_job_id.is_(None)
+    # A members-only job with no member profile waits, with no known end.
+    profile_held = waiting_rows & Job.video_id.in_(videos_without_member())
+    no_member = await _count(session, profile_held)
+    held_by: dict[str, tuple[datetime, int]] = {}
+    await session.execute(
+        update(Job).where(profile_held, Job.deferred_until.is_not(None)).values(deferred_until=None)
+    )
     # A paused profile holds back only the jobs that would download with it.
-    profile_held = false()
     for name, until in await session.execute(
         select(CookieProfile.name, CookieProfile.blocked_until).where(
             CookieProfile.blocked_until > now
         )
     ):
         held = waiting_rows & Job.video_id.in_(videos_using(name, limits.cookie_profile))
+        if count := await _count(session, held & ~profile_held):
+            held_by[name] = (until, count)
         profile_deferred = None if limits.paused else max(until, opens or until)
         await session.execute(
             update(Job)
@@ -161,4 +173,10 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
         today=today,
         daily_limit=limits.daily_limit,
         capped_until=cap_end,
+        profile_held=held_by,
+        no_member=no_member,
     )
+
+
+async def _count(session: AsyncSession, where) -> int:
+    return await session.scalar(select(func.count()).select_from(Job).where(where))

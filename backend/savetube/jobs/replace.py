@@ -17,6 +17,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -40,11 +41,19 @@ from savetube.jobs.guards import (
 from savetube.jobs.job import PAUSED_LOG, _hand_back, _profile_paused
 from savetube.jobs.rows import LOG_TAIL_CHARS, _describe, _interrupt, _owner_lost
 from savetube.jobs.runners import DownloadFailed, Runner
+from savetube.layout import VideoType
 from savetube.limits import admit
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.storage import dir_size
 from savetube.watch import ORIGINAL_KEPT, is_open, media_path, originals_dir, probe_duration
-from savetube.ytdl import build_params, forbidden, video_url, youtube_block
+from savetube.ytdl import (
+    FORBIDDEN_FALLBACK_CLIENTS,
+    build_params,
+    forbidden,
+    video_url,
+    with_clients,
+    youtube_block,
+)
 
 # Every module of the package logs as `savetube.jobs`.
 log = logging.getLogger("savetube.jobs")
@@ -187,6 +196,9 @@ async def _begin(
         video = await session.get(Video, job.video_id)
         watch = await session.get(FormatWatch, job.video_id)
         profile = await cookies.for_video(session, video, cookies.profiles(settings))
+        if video.type is VideoType.MEMBERS and profile is None:
+            await _hand_back(session, job_id, job.video_id, now, reason="no_member")
+            return None
         if await _profile_paused(session, profile, now):
             await _hand_back(session, job_id, job.video_id, now, reason="profile_blocked")
             return None
@@ -249,12 +261,21 @@ async def _replace(
         )
         # Only the media: the stored directory keeps its own sidecar files.
         params.update(writeinfojson=False, writethumbnail=False, writesubtitles=False)
-        info = await _unless_paused(
-            sessionmaker,
-            job_id,
-            begun.run_started,
-            runner(video_url(begun.video_id), params, report),
-        )
+        download = partial(_unless_paused, sessionmaker, job_id, begun.run_started)
+        try:
+            info = await download(runner(video_url(begun.video_id), params, report))
+        except DownloadFailed as e:
+            if not forbidden(str(e)) or youtube_block(str(e)):
+                raise
+            emit(
+                log,
+                logging.WARNING,
+                "download.client_fallback",
+                clients=",".join(FORBIDDEN_FALLBACK_CLIENTS),
+                reason="HTTP Error 403",
+            )
+            fallback = with_clients(params, FORBIDDEN_FALLBACK_CLIENTS)
+            info = await download(runner(video_url(begun.video_id), fallback, report))
     downloaded = _media_path(info) or workdir / "missing"
     await _step(sessionmaker, job_id, begun, "verifying")
     try:

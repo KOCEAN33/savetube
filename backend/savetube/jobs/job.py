@@ -200,6 +200,10 @@ async def _begin(
             if video is not None
             else await cookies.general(session)
         )
+        if not live and members and profile is None:
+            # The next membership check or the poll's cancel ends the wait.
+            await _hand_back(session, job_id, video_id, now, reason="no_member")
+            return None
         if not live and await _profile_paused(session, profile, now):
             await _hand_back(session, job_id, video_id, now, reason="profile_blocked")
             return None
