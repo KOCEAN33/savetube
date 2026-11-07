@@ -11,8 +11,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from savetube import logs
-from savetube.db.models import DownloadSettings, Job, JobKind, JobState
-from savetube.joblog import BLOCKED_LOG, NETWORK_LOG
+from savetube.db.models import CookieProfile, DownloadSettings, Job, JobKind, JobState
+from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, PROFILE_BLOCKED_LOG
 from savetube.jobs.rows import LOG_TAIL_CHARS, _interrupt, _owner_lost
 from savetube.jobs.runners import DownloadFailed
 from savetube.limits import backoff, blocked, load, lock
@@ -118,6 +118,46 @@ async def _blocked(
     return True
 
 
+async def _profile_blocked(
+    sessionmaker: async_sessionmaker,
+    job_id: int,
+    profile: str,
+    e: DownloadFailed,
+    disowned: Callable[[AsyncSession], Awaitable[bool]],
+) -> bool:
+    """Interrupt a job googlevideo refused for `profile`, as `_blocked` does,
+    and pause that profile only. Returns False when the run lost its row."""
+    async with sessionmaker() as session:
+        await lock(session)
+        if await disowned(session):
+            return False
+        row = await session.get(CookieProfile, profile)
+        now = datetime.now(UTC)
+        pause: timedelta | None = None
+        # A profile whose file left the directory has no row to pause.
+        if row is not None and blocked(row, now) is None:
+            row.block_count += 1
+            pause = backoff(row.block_count)
+            row.blocked_until = now + pause
+        job = await session.get(Job, job_id)
+        await _interrupt(session, job, f"{PROFILE_BLOCKED_LOG}: {e}"[:LOG_TAIL_CHARS])
+        await session.commit()
+    if pause is not None:
+        emit(
+            log,
+            logging.WARNING,
+            "dispatch.profile_blocked",
+            profile=profile,
+            until=row.blocked_until.astimezone(TIMEZONE).isoformat(timespec="minutes"),
+            backoff=human_duration(pause.total_seconds()),
+            count=row.block_count,
+            job=job_id,
+            video=job.video_id,
+            reason=logs.cut(str(e)),
+        )
+    return True
+
+
 async def _network_stalls(sessionmaker: async_sessionmaker, video_id: str) -> int:
     """The video's network interruptions that added no bytes, since its last
     failed or succeeded archive job or network interruption that added bytes.
@@ -192,4 +232,17 @@ async def _unblock(session: AsyncSession, now: datetime) -> int:
         return 0
     limits.block_count = 0
     limits.blocked_until = None
+    return count
+
+
+async def _unblock_profile(session: AsyncSession, profile: str | None, now: datetime) -> int:
+    """`_unblock` for one cookie profile after its download succeeded."""
+    if profile is None:
+        return 0
+    row = await session.get(CookieProfile, profile)
+    if row is None or not row.block_count or blocked(row, now) is not None:
+        return 0
+    count = row.block_count
+    row.block_count = 0
+    row.blocked_until = None
     return count

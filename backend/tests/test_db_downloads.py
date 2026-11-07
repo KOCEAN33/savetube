@@ -281,7 +281,7 @@ async def test_a_pinned_format_no_longer_offered_starts_over_and_a_real_failure_
         from savetube.jobs import DownloadFailed
 
         seen.append(sorted(p.name for p in _home(params).rglob("*")))
-        raise DownloadFailed("HTTP Error 403: Forbidden")
+        raise DownloadFailed("HTTP Error 404: Not Found")
 
     runner = _Steps(
         _failing(
@@ -297,7 +297,7 @@ async def test_a_pinned_format_no_longer_offered_starts_over_and_a_real_failure_
     assert seen == [[]]
     [restart] = _events(caplog, "download.restart")
     assert restart.levelno == logging.WARNING and _fields(restart)["format"] == "251"
-    assert jobs[1].state is JobState.FAILED and jobs[1].log_tail == "HTTP Error 403: Forbidden"
+    assert jobs[1].state is JobState.FAILED and jobs[1].log_tail == "HTTP Error 404: Not Found"
     assert video.resume_format is None
     assert not (settings.incoming_root / "v1").exists()
 

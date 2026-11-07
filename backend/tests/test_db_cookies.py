@@ -778,3 +778,43 @@ async def test_a_stored_members_short_needs_a_member_on_the_next_poll(settings):
     async with sessionmaker() as session:
         assert (await session.get(Video, "short")).type is VideoType.MEMBERS
     await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_a_changed_cookie_file_ends_its_profile_pause(settings):
+    from savetube.cookies import read_accounts, record_profiles
+
+    settings = _profiles(settings, "main")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        await record_profiles(session, ["main"], datetime.now(UTC))
+        await session.commit()
+
+    def reader(cookiefile):
+        return ("vivi kikirara", "@vivikikirara")
+
+    await read_accounts(sessionmaker, settings, reader=reader)
+
+    def block_state():
+        engine = sa.create_engine(settings.sqlalchemy_url)
+        with engine.connect() as c:
+            row = c.execute(
+                sa.text("SELECT block_count, blocked_until FROM cookie_profile WHERE name = 'main'")
+            ).one()
+        engine.dispose()
+        return row.block_count, row.blocked_until
+
+    _sql(
+        settings,
+        "UPDATE cookie_profile SET block_count = 2,"
+        " blocked_until = now() + interval '1 hour' WHERE name = 'main'",
+    )
+    # The same file reads no account and keeps the pause.
+    await read_accounts(sessionmaker, settings, reader=reader)
+    assert block_state()[0] == 2
+
+    (settings.cookies_dir / "main.txt").write_text("# main\n# rotated\n")
+    await read_accounts(sessionmaker, settings, reader=reader)
+    assert block_state() == (0, None)
+    await engine.dispose()

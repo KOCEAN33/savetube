@@ -17,8 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from savetube import audio, cookies, formats, integrity, logs, watch
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
-from savetube.db.models import Job, JobKind, JobState, Video, VideoState
-from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, NO_MEMBER, SHUTDOWN_LOG
+from savetube.db.models import CookieProfile, Job, JobKind, JobState, Video, VideoState
+from savetube.joblog import (
+    BLOCKED_LOG,
+    NETWORK_LOG,
+    NO_MEMBER,
+    PROFILE_BLOCKED_LOG,
+    SHUTDOWN_LOG,
+)
 from savetube.jobs.archive import _archive, _media_path
 from savetube.jobs.guards import (
     NETWORK_STALL_LOG,
@@ -26,8 +32,10 @@ from savetube.jobs.guards import (
     Paused,
     _blocked,
     _network_stalls,
+    _profile_blocked,
     _unavailable_streak,
     _unblock,
+    _unblock_profile,
     _unless_paused,
 )
 from savetube.jobs.rows import (
@@ -58,6 +66,7 @@ from savetube.ytdl import (
     NotStarted,
     bare_unavailable,
     build_params,
+    forbidden,
     members_only,
     network_error,
     video_url,
@@ -185,15 +194,15 @@ async def _begin(
         shorts = await from_shorts_tab(session, video_id)
         video = await session.get(Video, video_id)
         pinned = video.resume_format if video is not None else None
-        # A member profile serves its members-only videos only. Every other
-        # download takes the general profile.
         members = video is not None and video.type is VideoType.MEMBERS
-        if members:
-            profile = await cookies.member_profile(
-                session, video.channel_id, cookies.profiles(settings)
-            )
-        else:
-            profile = await cookies.general(session)
+        profile = (
+            await cookies.for_video(session, video, cookies.profiles(settings))
+            if video is not None
+            else await cookies.general(session)
+        )
+        if not live and await _profile_paused(session, profile, now):
+            await _hand_back(session, job_id, video_id, now, reason="profile_blocked")
+            return None
         run_started = await _mark_running(session, job, video_id)
         attempt, limit = await _attempt(session, job, video_id, live=live)
         described = await _describe(session, video_id)
@@ -217,12 +226,27 @@ async def _begin(
     )
 
 
-async def _hand_back(session: AsyncSession, job_id: int, video_id: str, now: datetime) -> None:
-    """Return an archive job the limits refuse to waiting, and log why."""
+async def _profile_paused(session: AsyncSession, profile: str | None, now: datetime) -> bool:
+    row = await session.get(CookieProfile, profile) if profile is not None else None
+    return row is not None and blocked(row, now) is not None
+
+
+async def _hand_back(
+    session: AsyncSession, job_id: int, video_id: str, now: datetime, *, reason: str | None = None
+) -> None:
+    """Return an archive job the limits or a `reason` of the caller's refuse
+    to waiting, and log why."""
     # A core UPDATE: the row loaded above may predate the
     # dispatcher's commit of queue_job_id.
     await session.execute(update(Job).where(Job.id == job_id).values(queue_job_id=None))
     await session.commit()
+    if reason is None:
+        reason = await _refusal(session, now)
+    emit(log, logging.INFO, "job.returned", job=job_id, video=video_id, reason=reason)
+
+
+async def _refusal(session: AsyncSession, now: datetime) -> str:
+    """The first limit that keeps an archive job from starting."""
     current = await load(session)
     if current.paused:
         reason = "paused"
@@ -234,7 +258,7 @@ async def _hand_back(session: AsyncSession, job_id: int, video_id: str, now: dat
         reason = "window"
     else:
         reason = "slots"
-    emit(log, logging.INFO, "job.returned", job=job_id, video=video_id, reason=reason)
+    return reason
 
 
 async def _mark_running(session: AsyncSession, job: Job, video_id: str) -> datetime:
@@ -251,7 +275,8 @@ async def _mark_running(session: AsyncSession, job: Job, video_id: str) -> datet
 async def _attempt(
     session: AsyncSession, job: Job, video_id: str, *, live: bool
 ) -> tuple[int, int | None]:
-    """This run's attempt number, and the attempts an archive job has."""
+    """This run's attempt number, and the attempts an archive job has, None
+    past them (savetube.poll.RETRY_AFTER)."""
     if live:
         return job.attempts, None
     failed = await session.scalar(
@@ -263,7 +288,7 @@ async def _attempt(
             Job.state == JobState.FAILED,
         )
     )
-    return failed + 1, MAX_ARCHIVE_ATTEMPTS
+    return failed + 1, MAX_ARCHIVE_ATTEMPTS if failed < MAX_ARCHIVE_ATTEMPTS else None
 
 
 def _present_label(workdir: Path) -> str | None:
@@ -288,6 +313,8 @@ class _Run:
     started: float
     started_bytes: int
     streams: list[dict[str, Any]] = field(default_factory=list)
+    # The cookie profile of the download that ran last.
+    profile: str | None = None
 
     @classmethod
     def after(
@@ -535,6 +562,7 @@ async def _download_as(
     profile: str | None,
 ) -> tuple[dict[str, Any], list[str] | None]:
     """One download with `profile`'s cookies, verified for an archive job."""
+    r.profile = profile
     # Outside the working directory, so the cookie jar never moves into the tree.
     with tempfile.TemporaryDirectory(prefix="savetube-") as private:
         cookiefile = cookies.cookiefile(settings, profile, Path(private))
@@ -602,10 +630,20 @@ async def _finish(
             video.resume_format = None
             video.verified_at = video.completed_at
             video.verified_checks = checks
-        unblocked = 0 if r.live else await _unblock(session, datetime.now(UTC))
+        now = datetime.now(UTC)
+        unblocked = 0 if r.live else await _unblock(session, now)
+        profile_unblocked = 0 if r.live else await _unblock_profile(session, r.profile, now)
         await session.commit()
     if unblocked:
         emit(log, logging.INFO, "dispatch.unblocked", count=unblocked)
+    if profile_unblocked:
+        emit(
+            log,
+            logging.INFO,
+            "dispatch.profile_unblocked",
+            profile=r.profile,
+            count=profile_unblocked,
+        )
     emit(
         log,
         logging.INFO,
@@ -655,22 +693,32 @@ async def _record_not_started(r: _Run, begun: _Begun) -> None:
 
 
 async def _record_failure(r: _Run, e: Exception) -> bool:
-    """Write the failure to the job row and log it: a YouTube block, a streak
-    of bare "Video unavailable" failures, or a network error interrupts an
+    """Write the failure to the job row and log it: a YouTube block, an HTTP
+    403, a streak of bare "Video unavailable" failures, or a network error interrupts an
     archive job, anything else fails it. Returns whether it wrote, False when
     the run lost its row."""
     message = str(e)
+    archive_failure = not r.live and isinstance(e, DownloadFailed)
     if (
-        not r.live
-        and isinstance(e, DownloadFailed)
-        and (
-            youtube_block(message)
-            # A bare "Video unavailable" alone may be a deleted video.
-            or (
-                bare_unavailable(message)
-                and await _unavailable_streak(
-                    r.sessionmaker, r.video_id, UNAVAILABLE_STREAK - 1, UNAVAILABLE_STREAK_WINDOW
-                )
+        archive_failure
+        and not youtube_block(message)
+        and forbidden(message)
+        and r.profile is not None
+    ):
+        if not await _profile_blocked(r.sessionmaker, r.job_id, r.profile, e, r.disowned):
+            return False
+        r.interrupted(logging.WARNING, PROFILE_BLOCKED_LOG, _present_label(r.workdir))
+        setattr(e, _RECORDED, True)
+        return True
+    if archive_failure and (
+        youtube_block(message)
+        # A cookie-free session refused is this client refused.
+        or forbidden(message)
+        # A bare "Video unavailable" alone may be a deleted video.
+        or (
+            bare_unavailable(message)
+            and await _unavailable_streak(
+                r.sessionmaker, r.video_id, UNAVAILABLE_STREAK - 1, UNAVAILABLE_STREAK_WINDOW
             )
         )
     ):

@@ -184,6 +184,10 @@ class CookieProfile(Base):
     # read, so the read retries once account_checked_at is old enough.
     account_digest: Mapped[str | None] = mapped_column(Text)
     account_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The pause after googlevideo refused this profile's downloads, and the
+    # refusals since its last success or file change.
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    block_count: Mapped[int] = mapped_column(default=0, server_default="0")
 
 
 class Membership(Base):

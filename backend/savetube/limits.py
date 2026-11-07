@@ -7,7 +7,7 @@ from datetime import datetime, time, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from savetube.db.models import DownloadSettings, Job, JobKind, JobState
+from savetube.db.models import CookieProfile, DownloadSettings, Job, JobKind, JobState
 from savetube.tz import TIMEZONE
 
 BLOCK_BACKOFF = timedelta(minutes=30)
@@ -76,8 +76,9 @@ def backoff(count: int) -> timedelta:
     return min(BLOCK_BACKOFF * 2 ** (count - 1), BLOCK_BACKOFF_MAX)
 
 
-def blocked(limits: DownloadSettings, now: datetime) -> datetime | None:
-    """When the pause after a YouTube block ends, None when no pause holds."""
+def blocked(limits: DownloadSettings | CookieProfile, now: datetime) -> datetime | None:
+    """When the pause after a YouTube block, or a cookie profile's, ends, None
+    when no pause holds."""
     until = limits.blocked_until
     return until if until is not None and until > now else None
 

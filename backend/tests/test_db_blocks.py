@@ -13,9 +13,11 @@ from conftest import (
     _finished,
     _job_rows,
     _part,
+    _profiles,
     _run,
     _run_steps,
     _sql,
+    _sql_rows,
     _Steps,
     _waiting_rows,
 )
@@ -421,3 +423,231 @@ def test_api_pauses_and_resumes_archive_downloads(settings, caplog):
     [paused] = _events(caplog, "dispatch.paused")
     [resumed] = _events(caplog, "dispatch.resumed")
     assert paused.levelno == resumed.levelno == logging.INFO
+
+
+FORBIDDEN = "DownloadError: ERROR: unable to download video data: HTTP Error 403: Forbidden"
+
+
+def _member_job_rows(settings, *extra):
+    """Job 1 archives the members-only v1, whose channel's member profile is `main`."""
+    _job_rows(
+        settings,
+        "UPDATE channel SET format = 'wa'",
+        "UPDATE video SET type = 'members' WHERE id = 'v1'",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        " ('UC1', 'main', true, now(), 'v1')",
+        "INSERT INTO cookie_profile (name, seen_at) VALUES ('main', now())",
+        "SELECT setval('job_id_seq', 200)",
+        *extra,
+    )
+    return _profiles(settings, "main")
+
+
+def _profile_state(settings, name):
+    [row] = _sql_rows(
+        settings, f"SELECT block_count, blocked_until FROM cookie_profile WHERE name = '{name}'"
+    )
+    return row.block_count, row.blocked_until
+
+
+def _fails_with(message):
+    async def step(params, report):
+        from savetube.jobs import DownloadFailed
+
+        raise DownloadFailed(message)
+
+    return _Steps(step)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("before_sql", "count", "backoff"),
+    [
+        ("block_count = 0, blocked_until = NULL", 1, timedelta(minutes=30)),
+        # The pause after the first refusal is over: the next one doubles it.
+        ("block_count = 1, blocked_until = now() - interval '1 minute'", 2, timedelta(hours=1)),
+        ("block_count = 9, blocked_until = now() - interval '1 minute'", 10, timedelta(hours=12)),
+    ],
+    ids=["first", "second", "capped"],
+)
+async def test_a_403_with_a_member_profile_pauses_that_profile_only(
+    settings, caplog, before_sql, count, backoff
+):
+    import logging
+
+    settings = _member_job_rows(
+        settings, f"UPDATE cookie_profile SET {before_sql} WHERE name = 'main'"
+    )
+    before = datetime.now(UTC)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _fails_with(FORBIDDEN))
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert history.state == "interrupted"
+    assert history.log_tail == f"refused for this cookie profile: {FORBIDDEN}"
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert video.state is VideoState.PENDING
+    got_count, until = _profile_state(settings, "main")
+    assert got_count == count
+    assert before + backoff <= until <= datetime.now(UTC) + backoff
+    assert _block_state(settings) == (0, None)
+    assert _events(caplog, "job.failed") == []
+    assert _events(caplog, "dispatch.blocked") == []
+    [line] = _events(caplog, "dispatch.profile_blocked")
+    assert line.levelno == logging.WARNING
+    fields = _fields(line)
+    assert (fields["profile"], fields["count"], fields["job"], fields["video"]) == (
+        "main",
+        count,
+        1,
+        "v1",
+    )
+
+
+@pytest.mark.anyio
+async def test_a_403_while_the_profile_is_paused_does_not_lengthen_its_pause(settings, caplog):
+    import logging
+
+    settings = _member_job_rows(settings)
+
+    async def refused_after_another(params, report):
+        from savetube.jobs import DownloadFailed
+
+        # Another job of this profile was refused while this one downloaded.
+        _sql(
+            settings,
+            "UPDATE cookie_profile SET block_count = 1,"
+            " blocked_until = now() + interval '10 minutes' WHERE name = 'main'",
+        )
+        raise DownloadFailed(FORBIDDEN)
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _Steps(refused_after_another))
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.QUEUED, 0)
+    count, until = _profile_state(settings, "main")
+    assert count == 1 and until < datetime.now(UTC) + timedelta(minutes=11)
+    assert _events(caplog, "dispatch.profile_blocked") == []
+
+
+@pytest.mark.anyio
+async def test_a_403_of_a_cookie_free_run_is_a_youtube_block(settings, caplog):
+    import logging
+
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+    before = datetime.now(UTC)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _fails_with(FORBIDDEN))
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert history.state == "interrupted"
+    assert history.log_tail == f"blocked by YouTube: {FORBIDDEN}"
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.QUEUED, 0)
+    count, until = _block_state(settings)
+    assert count == 1
+    assert before + timedelta(minutes=30) <= until <= datetime.now(UTC) + timedelta(minutes=30)
+    assert _events(caplog, "dispatch.profile_blocked") == []
+
+
+@pytest.mark.anyio
+async def test_a_youtube_block_wins_over_a_403_with_a_profile(settings):
+    settings = _member_job_rows(settings)
+    message = f"{BOT_CHECK} {FORBIDDEN}"
+    jobs, _ = await _run_steps(settings, _fails_with(message))
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert history.log_tail == f"blocked by YouTube: {message}"
+    assert _block_state(settings)[0] == 1
+    assert _profile_state(settings, "main") == (0, None)
+
+
+@pytest.mark.anyio
+async def test_a_success_with_the_profile_after_its_pause_resets_it(settings, caplog):
+    import logging
+
+    settings = _member_job_rows(
+        settings,
+        "UPDATE cookie_profile SET block_count = 2, blocked_until = now() - interval '1 minute'"
+        " WHERE name = 'main'",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _Steps(_finished()))
+    assert jobs[1].state is JobState.SUCCEEDED
+    assert _profile_state(settings, "main") == (0, None)
+    [line] = _events(caplog, "dispatch.profile_unblocked")
+    assert (_fields(line)["profile"], _fields(line)["count"]) == ("main", 2)
+
+
+@pytest.mark.anyio
+async def test_a_success_while_the_profile_pause_holds_resets_nothing(settings, caplog):
+    import logging
+
+    settings = _member_job_rows(
+        settings, "UPDATE cookie_profile SET block_count = 1 WHERE name = 'main'"
+    )
+    finish = _finished()
+
+    async def refused_meanwhile(params, report):
+        # Another job of this profile was refused while this one downloaded.
+        _sql(
+            settings,
+            "UPDATE cookie_profile SET block_count = 2,"
+            " blocked_until = now() + interval '10 minutes' WHERE name = 'main'",
+        )
+        return await finish(params, report)
+
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _Steps(refused_meanwhile))
+    assert jobs[1].state is JobState.SUCCEEDED
+    count, until = _profile_state(settings, "main")
+    assert count == 2 and until > datetime.now(UTC)
+    assert _events(caplog, "dispatch.profile_unblocked") == []
+
+
+@pytest.mark.anyio
+async def test_a_worker_hands_back_a_job_whose_profile_is_paused(settings, caplog):
+    import logging
+
+    settings = _member_job_rows(
+        settings,
+        "UPDATE cookie_profile SET block_count = 1,"
+        " blocked_until = now() + interval '1 hour' WHERE name = 'main'",
+    )
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, _fails_with("never downloaded"))
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert list(jobs) == [1]
+    [line] = _events(caplog, "job.returned")
+    assert _fields(line)["reason"] == "profile_blocked"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("general", "blocked", "enqueued", "deferred"),
+    [
+        # The member profile is paused: its members-only job waits, others go.
+        ("burner", "main", [13, 14], [12]),
+        (None, "main", [13, 14], [12]),
+        # The general profile is paused: the members-only job still goes.
+        ("burner", "burner", [12], [13, 14]),
+    ],
+    ids=["member_paused", "member_paused_cookie_free", "general_paused"],
+)
+async def test_dispatch_skips_the_jobs_of_a_paused_profile(
+    settings, general, blocked, enqueued, deferred
+):
+    until = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)
+    general_sql = f"'{general}'" if general else "NULL"
+    _waiting_rows(
+        settings,
+        "UPDATE job SET state = 'succeeded' WHERE id = 10",
+        "UPDATE video SET type = 'members' WHERE id = 'a'",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        " ('UC1', 'main', true, now(), 'a')",
+        "INSERT INTO cookie_profile (name, seen_at) VALUES ('main', now()), ('burner', now())",
+        f"UPDATE download_settings SET max_concurrent = 5, cookie_profile = {general_sql}",
+        f"UPDATE cookie_profile SET block_count = 1, blocked_until = '{until.isoformat()}'"
+        f" WHERE name = '{blocked}'",
+    )
+    got, jobs = await _dispatch(settings, until - timedelta(minutes=1))
+    assert got == enqueued
+    assert {i: jobs[i].deferred_until for i in (12, 13, 14)} == {
+        i: (until if i in deferred else None) for i in (12, 13, 14)
+    }
+    assert _block_state(settings) == (0, None)

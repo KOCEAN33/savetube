@@ -27,18 +27,24 @@ from savetube import audio, cookies, formats, integrity, logs
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import FormatWatch, Job, JobState, Video
-from savetube.joblog import BLOCKED_LOG, SHUTDOWN_LOG
+from savetube.joblog import BLOCKED_LOG, PROFILE_BLOCKED_LOG, SHUTDOWN_LOG
 from savetube.jobs.archive import _media_path
-from savetube.jobs.guards import Disowned, Paused, _blocked, _unless_paused
-from savetube.jobs.job import PAUSED_LOG, _hand_back
+from savetube.jobs.guards import (
+    Disowned,
+    Paused,
+    _blocked,
+    _profile_blocked,
+    _unblock_profile,
+    _unless_paused,
+)
+from savetube.jobs.job import PAUSED_LOG, _hand_back, _profile_paused
 from savetube.jobs.rows import LOG_TAIL_CHARS, _describe, _interrupt, _owner_lost
 from savetube.jobs.runners import DownloadFailed, Runner
-from savetube.layout import VideoType
 from savetube.limits import admit
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.storage import dir_size
 from savetube.watch import ORIGINAL_KEPT, is_open, media_path, originals_dir, probe_duration
-from savetube.ytdl import build_params, video_url, youtube_block
+from savetube.ytdl import build_params, forbidden, video_url, youtube_block
 
 # Every module of the package logs as `savetube.jobs`.
 log = logging.getLogger("savetube.jobs")
@@ -121,25 +127,32 @@ async def run(
             if isinstance(e, asyncio.CancelledError):
                 raise
         except DownloadFailed as e:
-            if youtube_block(str(e)):
 
-                async def disowned(session) -> bool:
-                    return (
-                        await _owner_lost(session, job_id, begun.run_started, for_update=True)
-                        is not None
-                    )
+            async def disowned(session) -> bool:
+                return (
+                    await _owner_lost(session, job_id, begun.run_started, for_update=True)
+                    is not None
+                )
 
+            message = str(e)
+            if not youtube_block(message) and forbidden(message) and begun.profile is not None:
+                owned = await _profile_blocked(sessionmaker, job_id, begun.profile, e, disowned)
+                reason = PROFILE_BLOCKED_LOG
+            elif youtube_block(message) or forbidden(message):
                 owned = await _blocked(sessionmaker, job_id, e, disowned)
+                reason = BLOCKED_LOG
+            else:
+                reason = None
+                owned = await _fail(sessionmaker, job_id, begun, e)
+            if reason is not None:
                 emit(
                     log,
                     logging.WARNING,
                     "job.interrupted",
                     job=job_id,
                     video=begun.video_id,
-                    reason=BLOCKED_LOG,
+                    reason=reason,
                 )
-            else:
-                owned = await _fail(sessionmaker, job_id, begun, e)
         except Exception as e:
             owned = await _fail(sessionmaker, job_id, begun, e)
         finally:
@@ -173,12 +186,10 @@ async def _begin(
             return None
         video = await session.get(Video, job.video_id)
         watch = await session.get(FormatWatch, job.video_id)
-        if video.type is VideoType.MEMBERS:
-            profile = await cookies.member_profile(
-                session, video.channel_id, cookies.profiles(settings)
-            )
-        else:
-            profile = await cookies.general(session)
+        profile = await cookies.for_video(session, video, cookies.profiles(settings))
+        if await _profile_paused(session, profile, now):
+            await _hand_back(session, job_id, job.video_id, now, reason="profile_blocked")
+            return None
         job.deferred_until = None
         job.state = JobState.RUNNING
         job.attempts += 1
@@ -322,7 +333,12 @@ async def _replace(
         job.state = JobState.SUCCEEDED
         job.finished_at = video.verified_at
         job.progress = None
+        unblocked = await _unblock_profile(session, begun.profile, video.verified_at)
         await session.commit()
+    if unblocked:
+        emit(
+            log, logging.INFO, "dispatch.profile_unblocked", profile=begun.profile, count=unblocked
+        )
     emit(
         log,
         logging.INFO,

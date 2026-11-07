@@ -5,10 +5,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Text, column, func, select, table, update
+from sqlalchemy import Text, column, false, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from savetube.db.models import Job, JobState
+from savetube.cookies import videos_using
+from savetube.db.models import CookieProfile, Job, JobState
 from savetube.limits import (
     DISPATCH_ORDER,
     DOWNLOAD_KINDS,
@@ -96,9 +97,25 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
     # The user's pause has no known end, so a waiting job shows none.
     deferred = None if limits.paused else opens
     max_concurrent = concurrency(limits)
+    waiting_rows = queued & Job.queue_job_id.is_(None)
+    # A paused profile holds back only the jobs that would download with it.
+    profile_held = false()
+    for name, until in await session.execute(
+        select(CookieProfile.name, CookieProfile.blocked_until).where(
+            CookieProfile.blocked_until > now
+        )
+    ):
+        held = waiting_rows & Job.video_id.in_(videos_using(name, limits.cookie_profile))
+        profile_deferred = None if limits.paused else max(until, opens or until)
+        await session.execute(
+            update(Job)
+            .where(held, ~profile_held, Job.deferred_until.is_distinct_from(profile_deferred))
+            .values(deferred_until=profile_deferred)
+        )
+        profile_held = profile_held | held
     await session.execute(
         update(Job)
-        .where(queued, Job.queue_job_id.is_(None), Job.deferred_until.is_distinct_from(deferred))
+        .where(waiting_rows, ~profile_held, Job.deferred_until.is_distinct_from(deferred))
         .values(deferred_until=deferred)
     )
     started: list[int] = []
@@ -112,7 +129,7 @@ async def dispatch(session: AsyncSession, now: datetime, enqueue: Enqueue) -> Di
             free = min(free, limits.daily_limit - today - dispatched)
         waiting = await session.scalars(
             select(Job.id)
-            .where(queued, Job.queue_job_id.is_(None))
+            .where(waiting_rows, ~profile_held)
             .order_by(*DISPATCH_ORDER)
             .limit(max(free, 0))
         )

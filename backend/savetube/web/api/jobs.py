@@ -6,7 +6,14 @@ from sqlalchemy import and_, exists, func, select
 from sqlalchemy.orm import aliased
 
 from savetube.db.models import Channel, Job, JobKind, JobState, Video
-from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, NO_MEMBER, SHUTDOWN_LOG, STALLED_LOG
+from savetube.joblog import (
+    BLOCKED_LOG,
+    NETWORK_LOG,
+    NO_MEMBER,
+    PROFILE_BLOCKED_LOG,
+    SHUTDOWN_LOG,
+    STALLED_LOG,
+)
 from savetube.limits import DISPATCH_ORDER
 from savetube.web.api.deps import Session, _of_channel
 from savetube.web.api.schemas import _Out
@@ -22,6 +29,8 @@ def job_reason(log_tail: str | None) -> str | None:
     if not log_tail:
         return None
     text = log_tail.lower()
+    if log_tail.startswith(PROFILE_BLOCKED_LOG):
+        return PROFILE_BLOCKED_LOG
     if log_tail.startswith(BLOCKED_LOG) or youtube_block(log_tail):
         return BLOCKED_LOG
     if log_tail.startswith(STALLED_LOG):

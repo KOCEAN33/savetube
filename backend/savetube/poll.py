@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import and_, delete, func, insert, or_, select
+from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 from yt_dlp.utils import DownloadError
@@ -33,18 +34,21 @@ from savetube.db.models import (
     VideoSource,
     VideoState,
 )
+from savetube.joblog import NO_MEMBER
 from savetube.layout import VideoType, classify
 from savetube.logs import emit, human_duration
 from savetube.pipeline import get_or_create_channel
 from savetube.scan import NO_TAB
 from savetube.sources import InvalidSourceUrl
 from savetube.sources import parse as parse_source_url
-from savetube.ytdl import avatar_url
+from savetube.ytdl import avatar_url, permanent
 
 log = logging.getLogger(__name__)
 
-# Failed archive jobs per video before polls stop queuing it again.
+# Failed archive jobs per video before polls wait RETRY_AFTER between jobs.
 MAX_ARCHIVE_ATTEMPTS = 3
+# Past MAX_ARCHIVE_ATTEMPTS, the wait after each failure that may pass.
+RETRY_AFTER = timedelta(days=7)
 # Live detection owns these. An archive download of one would wait or fail.
 _UNFINISHED_LIVE = frozenset({"is_live", "is_upcoming", "post_live"})
 
@@ -285,19 +289,26 @@ async def sync(
             )
         )
     )
-    failures = dict(
-        (
-            await session.execute(
-                select(Job.video_id, func.count())
-                .where(
-                    Job.video_id.in_(wanted),
-                    Job.kind == JobKind.ARCHIVE,
-                    Job.state == JobState.FAILED,
-                )
-                .group_by(Job.video_id)
+    # Each video's failed archive jobs and its newest failure.
+    failures = {
+        vid: (count, finished_at, log_tail)
+        for vid, count, finished_at, log_tail in await session.execute(
+            select(
+                Job.video_id,
+                func.count().over(partition_by=Job.video_id),
+                Job.finished_at,
+                Job.log_tail,
             )
-        ).all()
-    )
+            .where(
+                Job.video_id.in_(wanted),
+                Job.kind == JobKind.ARCHIVE,
+                Job.state == JobState.FAILED,
+            )
+            .order_by(Job.video_id, Job.finished_at.desc().nulls_last())
+            .ext(distinct_on(Job.video_id))
+        )
+    }
+    now = datetime.now(UTC)
     jobs = []
     for vid in wanted:
         if videos[vid].state in (VideoState.COMPLETE, VideoState.STAGED):
@@ -306,7 +317,7 @@ async def sync(
             result.deleted += 1
         elif vid in active:
             result.in_flight += 1
-        elif failures.get(vid, 0) >= MAX_ARCHIVE_ATTEMPTS:
+        elif vid in failures and _given_up(*failures[vid], now):
             result.gave_up += 1
         else:
             # A retry after a failure waits like a new video.
@@ -322,6 +333,17 @@ async def sync(
         )
     ]
     return result
+
+
+def _given_up(
+    count: int, finished_at: datetime | None, log_tail: str | None, now: datetime
+) -> bool:
+    if count < MAX_ARCHIVE_ATTEMPTS:
+        return False
+    tail = log_tail or ""
+    if tail == NO_MEMBER or permanent(tail):
+        return True
+    return finished_at is None or now - finished_at < RETRY_AFTER
 
 
 async def _link(session: AsyncSession, source_id: int, video_ids: list[str]) -> None:

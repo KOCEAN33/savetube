@@ -3,6 +3,7 @@
 STALLED_LOG = "worker stopped during the download"
 SHUTDOWN_LOG = "worker shut down during the download"
 BLOCKED_LOG = "blocked by YouTube"
+PROFILE_BLOCKED_LOG = "refused for this cookie profile"
 # The `log_tail` prefix of a run a network error interrupted.
 NETWORK_LOG = "network error"
 NO_MEMBER = "no cookie profile is a confirmed member of the channel"
