@@ -78,6 +78,19 @@ SERVER_ERROR_MARKERS = (("http error 500", "giving up after"), ("the downloaded 
 # channel's members on level: ... Join this channel to get access to
 # members-only content and other exclusive perks."
 MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
+# yt-dlp's text when googlevideo refuses the media, such as "unable to download
+# video data: HTTP Error 403: Forbidden", in the same groups as BLOCK_MARKERS.
+# It refuses every video one account's session asks for while other accounts
+# download.
+FORBIDDEN_MARKERS = (("http error 403",),)
+# YouTube's text for a video no later attempt can download, in the same groups
+# as BLOCK_MARKERS. The members-only text counts too (`permanent`).
+PERMANENT_MARKERS = (
+    ("private video",),
+    ("has been removed",),
+    ("account associated with this video has been terminated",),
+    ("copyright claim",),
+)
 # yt-dlp's text when YouTube says only "Video unavailable", with no sentence
 # after it, such as "DownloadError: ERROR: [youtube] <id>: Video unavailable".
 # A throttled client gets this for public videos. A deleted video usually adds
@@ -139,6 +152,20 @@ def members_only(message: str) -> bool:
     """Whether a failure is a members-only video the account may not watch."""
     text = message.lower()
     return any(marker in text for marker in MEMBERS_ONLY_MARKERS)
+
+
+def forbidden(message: str) -> bool:
+    """Whether a failure is googlevideo refusing the media to this session."""
+    text = message.lower()
+    return any(all(part in text for part in group) for group in FORBIDDEN_MARKERS)
+
+
+def permanent(message: str) -> bool:
+    """Whether a failure is one no later attempt gets past."""
+    text = message.lower()
+    return members_only(message) or any(
+        all(part in text for part in group) for group in PERMANENT_MARKERS
+    )
 
 
 def video_url(video_id: str) -> str:

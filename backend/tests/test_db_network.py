@@ -347,17 +347,6 @@ async def test_a_block_with_a_network_error_text_pauses_downloads(settings, capl
     assert _fields(line)["reason"] == "blocked by YouTube"
 
 
-@pytest.mark.anyio
-async def test_an_http_403_still_fails_the_archive_job(settings):
-    message = "ERROR: unable to download video data: HTTP Error 403: Forbidden"
-    _job_rows(settings, "UPDATE channel SET format = 'wa'")
-    jobs, video = await _run_steps(settings, _Steps(_network_step(message)))
-    assert list(jobs) == [1]
-    assert (jobs[1].state, jobs[1].attempts, jobs[1].log_tail) == (JobState.FAILED, 1, message)
-    assert video.resume_format is None
-    assert not (settings.incoming_root / "v1").exists()
-
-
 def _job_ids(settings):
     engine = sa.create_engine(settings.sqlalchemy_url)
     with engine.connect() as c:

@@ -4,8 +4,6 @@ Draft for archiving chosen YouTube channels and playlists, recording lives from 
 
 ## Files
 
-Read this file, then only the files your task touches.
-
 | File | Read when the task touches |
 | --- | --- |
 | `background.md` | tool survey, yt-dlp behaviour the design rests on, why one custom app |

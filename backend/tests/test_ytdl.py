@@ -352,3 +352,36 @@ def test_a_download_prefers_hdr_over_av1_at_the_same_resolution_and_fps(tmp_path
 def test_a_download_prefers_av1_between_two_sdr_formats(tmp_path):
     vp9_sdr = {**_2160P60[0], "format_id": "313", "dynamic_range": "SDR"}
     assert _download_pick(build_params(tmp_path), [_AUDIO, vp9_sdr, _2160P60[1]]) == "401+251"
+
+
+FORBIDDEN = "DownloadError: ERROR: unable to download video data: HTTP Error 403: Forbidden"
+
+
+@pytest.mark.parametrize(
+    ("message", "forbidden"),
+    [
+        (FORBIDDEN, True),
+        ("ERROR: unable to download video data: http error 403: forbidden", True),
+        ("HTTP Error 429: Too Many Requests", False),
+        ("ERROR: [youtube] x: Private video. Sign in if you've been granted access", False),
+    ],
+)
+def test_a_forbidden_refusal_is_http_403(message, forbidden):
+    from savetube.ytdl import forbidden as is_forbidden
+
+    assert is_forbidden(message) is forbidden
+
+
+@pytest.mark.parametrize(
+    ("message", "permanent"),
+    [
+        ("ERROR: [youtube] x: Private video. Sign in if you've been granted access", True),
+        ("Join this channel to get access to members-only content like this video", True),
+        (FORBIDDEN, False),
+        ("HTTP Error 429: Too Many Requests", False),
+    ],
+)
+def test_a_permanent_failure_is_no_fault_of_the_session(message, permanent):
+    from savetube.ytdl import permanent as is_permanent
+
+    assert is_permanent(message) is permanent

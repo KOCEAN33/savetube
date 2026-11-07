@@ -369,3 +369,51 @@ async def test_poll_done_counts_each_skip_reason(settings, caplog):
         "skip_live": 1,
         "skip_private": 0,
     }
+
+
+PRIVATE = "ERROR: [youtube] gave_up: Private video. Sign in if you've been granted access"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("days_ago", "last_tail", "retried"),
+    [
+        (8, "ERROR: unable to download video data: HTTP Error 500", True),
+        (1, "ERROR: unable to download video data: HTTP Error 500", False),
+        (8, PRIVATE, False),
+    ],
+    ids=["a_week_after", "too_soon", "permanent"],
+)
+async def test_a_video_out_of_attempts_gets_one_more_job_a_week_after_its_last_failure(
+    settings, days_ago, last_tail, retried
+):
+    tail = last_tail.replace("'", "''")
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'Chan', 'Chan [UC1]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        " (1, 'https://www.youtube.com/@chan/videos', 'tab', 'UC1', true, 360)",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('gave_up', 'UC1', 'videos', 'g', 'failed')",
+        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail, finished_at) VALUES"
+        " (1, 'archive', 'failed', 'gave_up', 1, 'ERROR: x', now() - interval '20 days'),"
+        " (2, 'archive', 'failed', 'gave_up', 2, 'ERROR: x', now() - interval '15 days'),"
+        f" (3, 'archive', 'failed', 'gave_up', 3, '{tail}', now() - interval '{days_ago} days')",
+        "SELECT setval('job_id_seq', 3)",
+    )
+    listing = {
+        "channel_id": "UC1",
+        "channel": "Chan",
+        "entries": [{"id": "gave_up", "title": "Failed thrice"}],
+    }
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    await _poll(sessionmaker, settings, 1, listing)
+    async with sessionmaker() as session:
+        new = list(await session.scalars(sa.select(Job).where(Job.id > 3)))
+    await engine.dispose()
+    if retried:
+        [job] = new
+        assert (job.kind, job.state, job.video_id) == ("archive", JobState.QUEUED, "gave_up")
+    else:
+        assert new == []

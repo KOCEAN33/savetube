@@ -13,14 +13,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import Select, delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from yt_dlp.utils import DownloadError, YoutubeDLError
 
 from savetube import limits, logs
 from savetube.config import Settings
-from savetube.db.models import Channel, CookieProfile, Membership
+from savetube.db.models import Channel, CookieProfile, Membership, Video
+from savetube.layout import VideoType
 from savetube.logs import emit
 from savetube.ytdl import NotSignedIn, copy_cookies, members_only, youtube_block
 
@@ -155,6 +156,9 @@ async def _read_account(
         emit(log, logging.INFO, "cookies.account", profile=profile, name=name, handle=handle)
         values = dict(account_name=name, account_handle=handle, account_digest=digest)
         ok = True
+    if previous is not None or values["account_digest"] is not None:
+        # New content may hold a session googlevideo serves.
+        values.update(blocked_until=None, block_count=0)
     async with sessionmaker() as session:
         await session.execute(
             update(CookieProfile)
@@ -206,6 +210,34 @@ async def member_profile(session: AsyncSession, channel_id: str, present: list[s
         .order_by(Membership.profile)
         .limit(1)
     )
+
+
+async def for_video(session: AsyncSession, video: Video, present: list[str]) -> str | None:
+    """The profile a download of `video` takes: a member profile serves its
+    members-only videos only, every other download takes the general profile."""
+    if video.type is VideoType.MEMBERS:
+        return await member_profile(session, video.channel_id, present)
+    return await general(session)
+
+
+def videos_using(profile: str, general_profile: str | None) -> Select:
+    """The ids of the videos whose download takes `profile`, as `for_video`
+    picks it, with the present profiles read from `cookie_profile`."""
+    pick = (
+        select(Membership.profile)
+        .where(
+            Membership.channel_id == Video.channel_id,
+            Membership.profile.in_(select(CookieProfile.name)),
+            Membership.is_member,
+        )
+        .order_by(Membership.profile)
+        .limit(1)
+        .scalar_subquery()
+    )
+    takes = (Video.type == VideoType.MEMBERS) & (pick == profile)
+    if profile == general_profile:
+        takes = takes | (Video.type != VideoType.MEMBERS)
+    return select(Video.id).where(takes)
 
 
 async def _due(session: AsyncSession, channel_id: str, present: list[str], now: datetime):

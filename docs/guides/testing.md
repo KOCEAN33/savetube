@@ -21,7 +21,7 @@ DB tests live in `backend/tests/test_db_*.py`, with shared fixtures and helpers 
 
 - Playwright: `uvx --with playwright python -I <script>` with `channel="chrome"`.
 - Frontend: pnpm (`pnpm run typecheck`, `build`, `lint`).
-- `/tmp/savetube-library/serve.sh` serves a worktree build against `savetube_proto`, login skipped. `/tmp/savetube-playback/serve.sh` and `/tmp/savetube-subs/serve.sh` add an archive root.
+- `e2e/app.py` serves the app with login skipped against a database `e2e/seed.py create` seeded. `e2e/run.sh` sets the env it needs, including the frontend build and archive root.
 
 ## yt-dlp repros
 
