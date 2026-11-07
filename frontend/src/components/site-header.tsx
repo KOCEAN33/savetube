@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query"
 import { useLocation } from "react-router"
 
+import { DownloadBlocks } from "@/components/download-blocks"
 import { DownloadPauseToggle } from "@/components/download-pause"
 import { Separator } from "@/components/ui/separator"
 import { SidebarTrigger } from "@/components/ui/sidebar"
@@ -28,7 +29,8 @@ export function SiteHeader() {
           className="mx-2 data-[orientation=vertical]:h-4"
         />
         <h1 className="truncate text-base font-medium">{title}</h1>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <DownloadBlocks />
           <DownloadPauseToggle />
         </div>
       </div>

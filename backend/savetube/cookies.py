@@ -220,10 +220,10 @@ async def for_video(session: AsyncSession, video: Video, present: list[str]) -> 
     return await general(session)
 
 
-def videos_using(profile: str, general_profile: str | None) -> Select:
-    """The ids of the videos whose download takes `profile`, as `for_video`
-    picks it, with the present profiles read from `cookie_profile`."""
-    pick = (
+def _member_pick():
+    """The member profile `for_video` picks for the outer `Video` row, with
+    the present profiles read from `cookie_profile`."""
+    return (
         select(Membership.profile)
         .where(
             Membership.channel_id == Video.channel_id,
@@ -234,10 +234,21 @@ def videos_using(profile: str, general_profile: str | None) -> Select:
         .limit(1)
         .scalar_subquery()
     )
-    takes = (Video.type == VideoType.MEMBERS) & (pick == profile)
+
+
+def videos_using(profile: str, general_profile: str | None) -> Select:
+    """The ids of the videos whose download takes `profile`, as `for_video`
+    picks it."""
+    takes = (Video.type == VideoType.MEMBERS) & (_member_pick() == profile)
     if profile == general_profile:
         takes = takes | (Video.type != VideoType.MEMBERS)
     return select(Video.id).where(takes)
+
+
+def videos_without_member() -> Select:
+    """The ids of the members-only videos no present profile is a confirmed
+    member for, such as after a replaced cookie file dropped the results."""
+    return select(Video.id).where(Video.type == VideoType.MEMBERS, _member_pick().is_(None))
 
 
 async def _due(session: AsyncSession, channel_id: str, present: list[str], now: datetime):

@@ -15,7 +15,15 @@ from savetube.jobs.rows import _pin
 from savetube.jobs.runners import DownloadFailed, Report, Runner
 from savetube.logs import emit, human_bytes
 from savetube.storage import dir_size
-from savetube.ytdl import exclude_formats, format_server_error, video_url
+from savetube.ytdl import (
+    FORBIDDEN_FALLBACK_CLIENTS,
+    exclude_formats,
+    forbidden,
+    format_server_error,
+    video_url,
+    with_clients,
+    youtube_block,
+)
 
 # Every module of the package logs as `savetube.jobs`.
 log = logging.getLogger("savetube.jobs")
@@ -106,12 +114,14 @@ async def _archive(
 
     A format googlevideo refuses before its first byte is excluded from the
     channel's selector, and the download runs again, up to
-    MAX_FORMAT_FALLBACKS times per attempt.
+    MAX_FORMAT_FALLBACKS times per attempt. A download refused with HTTP 403
+    runs again once with FORBIDDEN_FALLBACK_CLIENTS.
     """
     fetch = partial(
         _fetch,
         url=video_url(video_id),
         excluded=[],
+        clients=[],
         runner=runner,
         params=params,
         fmt=fmt,
@@ -154,6 +164,7 @@ async def _fetch(
     *,
     url: str,
     excluded: list[str],
+    clients: list[str],
     runner: Runner,
     params: Callable[[str], dict[str, Any]],
     fmt: str,
@@ -163,7 +174,8 @@ async def _fetch(
 ) -> dict[str, Any]:
     """One download with `pin`, else the channel's selector, again with
     the format googlevideo refused excluded (_refused). `excluded` holds
-    the refused formats across the calls of one attempt."""
+    the refused formats, and `clients` the player clients after a 403,
+    across the calls of one attempt."""
     selector = pin or exclude_formats(fmt, excluded)
     chosen: str | None = None
     # The format refused last, logged with the one the next run picks.
@@ -194,9 +206,20 @@ async def _fetch(
         chosen = None
         parts = _part_sizes(workdir)
         try:
-            return await runner(url, params(selector), seen)
+            return await runner(url, with_clients(params(selector), clients), seen)
         except DownloadFailed as e:
             fallback(None)
+            # A YouTube block refuses this client whatever the player client.
+            if forbidden(str(e)) and not youtube_block(str(e)) and not clients:
+                clients.extend(FORBIDDEN_FALLBACK_CLIENTS)
+                emit(
+                    log,
+                    logging.WARNING,
+                    "download.client_fallback",
+                    clients=",".join(clients),
+                    reason="HTTP Error 403",
+                )
+                continue
             failed = _refused(e, chosen, streams, parts, workdir)
             if failed is None or len(excluded) >= MAX_FORMAT_FALLBACKS:
                 raise

@@ -83,6 +83,10 @@ MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
 # It refuses every video one account's session asks for while other accounts
 # download.
 FORBIDDEN_MARKERS = (("http error 403",),)
+# The player clients a download refused with HTTP 403 tries next. yt-dlp's
+# default falls back to `web_embedded` for a members-only video, whose media
+# googlevideo refuses while `mweb` serves it with the same cookies.
+FORBIDDEN_FALLBACK_CLIENTS = ["mweb"]
 # YouTube's text for a video no later attempt can download, in the same groups
 # as BLOCK_MARKERS. The members-only text counts too (`permanent`).
 PERMANENT_MARKERS = (
@@ -158,6 +162,16 @@ def forbidden(message: str) -> bool:
     """Whether a failure is googlevideo refusing the media to this session."""
     text = message.lower()
     return any(all(part in text for part in group) for group in FORBIDDEN_MARKERS)
+
+
+def with_clients(params: dict[str, Any], clients: list[str]) -> dict[str, Any]:
+    """`params` with the YouTube player clients set to `clients`, yt-dlp's
+    default when empty."""
+    if not clients:
+        return params
+    extractor_args = params.get("extractor_args") or {}
+    youtube = {**extractor_args.get("youtube", {}), "player_client": clients}
+    return {**params, "extractor_args": {**extractor_args, "youtube": youtube}}
 
 
 def permanent(message: str) -> bool:

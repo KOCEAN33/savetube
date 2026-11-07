@@ -14,6 +14,7 @@ from conftest import (
     _job_rows,
     _part,
     _profiles,
+    _queue_row,
     _run,
     _run_steps,
     _sql,
@@ -456,7 +457,8 @@ def _fails_with(message):
 
         raise DownloadFailed(message)
 
-    return _Steps(step)
+    # A 403 runs again once with the fallback clients.
+    return _Steps(step, step)
 
 
 @pytest.mark.anyio
@@ -521,7 +523,7 @@ async def test_a_403_while_the_profile_is_paused_does_not_lengthen_its_pause(set
         raise DownloadFailed(FORBIDDEN)
 
     with caplog.at_level(logging.INFO, logger="savetube"):
-        jobs, _ = await _run_steps(settings, _Steps(refused_after_another))
+        jobs, _ = await _run_steps(settings, _Steps(refused_after_another, refused_after_another))
     assert (jobs[1].state, jobs[1].attempts) == (JobState.QUEUED, 0)
     count, until = _profile_state(settings, "main")
     assert count == 1 and until < datetime.now(UTC) + timedelta(minutes=11)
@@ -651,3 +653,148 @@ async def test_dispatch_skips_the_jobs_of_a_paused_profile(
         i: (until if i in deferred else None) for i in (12, 13, 14)
     }
     assert _block_state(settings) == (0, None)
+
+
+def _refused(params, report):
+    from savetube.jobs import DownloadFailed
+
+    raise DownloadFailed(FORBIDDEN)
+
+
+def _clients(params):
+    return params.get("extractor_args", {}).get("youtube", {}).get("player_client")
+
+
+@pytest.mark.anyio
+async def test_a_403_runs_again_with_the_mweb_client_before_any_profile_block(settings, caplog):
+    import logging
+
+    settings = _member_job_rows(settings)
+    runner = _Steps(_refused, _finished())
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, runner)
+    assert jobs[1].state is JobState.SUCCEEDED
+    assert list(jobs) == [1]
+    assert len(runner.calls) == 2
+    assert _clients(runner.calls[0]) != ["mweb"]
+    assert _clients(runner.calls[1]) == ["mweb"]
+    assert _profile_state(settings, "main") == (0, None)
+    assert _events(caplog, "dispatch.profile_blocked") == []
+    [line] = _events(caplog, "download.client_fallback")
+    assert line.levelno == logging.WARNING
+
+
+@pytest.mark.anyio
+async def test_a_403_after_the_client_fallback_too_pauses_the_profile(settings, caplog):
+    import logging
+
+    settings = _member_job_rows(settings)
+    runner = _Steps(_refused, _refused)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, runner)
+    assert len(runner.calls) == 2
+    assert _clients(runner.calls[1]) == ["mweb"]
+    assert (jobs[1].state, jobs[1].attempts) == (JobState.QUEUED, 0)
+    assert _profile_state(settings, "main")[0] == 1
+    assert len(_events(caplog, "dispatch.profile_blocked")) == 1
+
+
+def _no_member_sql():
+    """Video `a` is members-only, and `main`, the one present profile, is no member."""
+    return (
+        "UPDATE job SET state = 'succeeded' WHERE id = 10",
+        "UPDATE video SET type = 'members' WHERE id = 'a'",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        " ('UC1', 'main', false, now(), 'a')",
+        "INSERT INTO cookie_profile (name, seen_at) VALUES ('main', now())",
+        "UPDATE download_settings SET max_concurrent = 5",
+    )
+
+
+@pytest.mark.anyio
+async def test_dispatch_skips_a_members_only_job_with_no_member_and_sets_no_deferral(settings):
+    _waiting_rows(settings, *_no_member_sql())
+    enqueued, jobs = await _dispatch(settings, datetime(2026, 10, 21, 3, 0, tzinfo=UTC))
+    assert enqueued == [13, 14]
+    assert jobs[12].state is JobState.QUEUED and jobs[12].queue_job_id is None
+    assert jobs[12].deferred_until is None
+
+
+@pytest.mark.anyio
+async def test_a_worker_hands_back_a_members_only_job_with_no_member(settings, caplog):
+    import logging
+
+    _job_rows(
+        settings,
+        "UPDATE video SET type = 'members' WHERE id = 'v1'",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        " ('UC1', 'main', false, now(), 'v1')",
+        "INSERT INTO cookie_profile (name, seen_at) VALUES ('main', now())",
+    )
+    settings = _profiles(settings, "main")
+    runner = _Steps()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, _ = await _run_steps(settings, runner)
+    assert runner.calls == []
+    assert list(jobs) == [1]
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert jobs[1].deferred_until is None
+    [line] = _events(caplog, "job.returned")
+    assert _fields(line)["reason"] == "no_member"
+
+
+async def _dispatch_logged(settings, now, caplog):
+    """One real dispatch, reported through the scheduler's log."""
+    import logging
+
+    from savetube.jobs import dispatch
+    from savetube.scheduler import DispatchLog
+
+    async def enqueue(job_id):
+        return _queue_row(settings)
+
+    engine = make_engine(settings.sqlalchemy_url)
+    async with make_sessionmaker(engine)() as session:
+        d = await dispatch(session, now, enqueue)
+    await engine.dispose()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        DispatchLog(clock=lambda: 0.0)(d)
+    return d
+
+
+@pytest.mark.anyio
+async def test_dispatch_waiting_names_the_paused_profile_holding_every_job(settings, caplog):
+    from savetube.tz import TIMEZONE
+
+    until = datetime(2026, 10, 21, 18, 30, tzinfo=TIMEZONE)
+    _waiting_rows(
+        settings,
+        "UPDATE job SET state = 'succeeded' WHERE id = 10",
+        "UPDATE video SET type = 'members' WHERE id IN ('a', 'b', 'c')",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        " ('UC1', 'main', true, now(), 'a')",
+        "INSERT INTO cookie_profile (name, seen_at) VALUES ('main', now())",
+        "UPDATE download_settings SET max_concurrent = 5",
+        f"UPDATE cookie_profile SET block_count = 1, blocked_until = '{until.isoformat()}'"
+        " WHERE name = 'main'",
+    )
+    d = await _dispatch_logged(settings, until - timedelta(hours=1), caplog)
+    assert d.started == []
+    [line] = _events(caplog, "dispatch.waiting")
+    fields = _fields(line)
+    assert fields["reason"] == "profile_blocked"
+    assert fields["profiles"] == "main@18:30(3)"
+
+
+@pytest.mark.anyio
+async def test_dispatch_waiting_counts_members_only_jobs_with_no_member(settings, caplog):
+    _waiting_rows(
+        settings,
+        *_no_member_sql(),
+        "UPDATE video SET type = 'members' WHERE id IN ('b', 'c')",
+    )
+    d = await _dispatch_logged(settings, datetime(2026, 10, 21, 3, 0, tzinfo=UTC), caplog)
+    assert d.started == []
+    [line] = _events(caplog, "dispatch.waiting")
+    fields = _fields(line)
+    assert (fields["reason"], fields["no_member"]) == ("no_member", 3)

@@ -263,8 +263,13 @@ def test_api_cookie_profiles_the_general_profile_and_memberships(settings, caplo
     with _api(settings) as client:
         assert settings.cookies_dir is None
         assert client.get("/api/cookie-profiles").json() == [
-            {"name": "main", "account_name": None, "account_handle": None},
-            {"name": "throwaway", "account_name": None, "account_handle": None},
+            {"name": "main", "account_name": None, "account_handle": None, "blocked_until": None},
+            {
+                "name": "throwaway",
+                "account_name": None,
+                "account_handle": None,
+                "blocked_until": None,
+            },
         ]
         with caplog.at_level(logging.INFO, logger="savetube"):
             put = client.put(
@@ -402,8 +407,13 @@ async def test_each_profile_account_is_read_once_per_file_content(settings, capl
 
     with _api(settings) as client:
         assert client.get("/api/cookie-profiles").json() == [
-            {"name": "alt", "account_name": None, "account_handle": None},
-            {"name": "main", "account_name": "other", "account_handle": None},
+            {"name": "alt", "account_name": None, "account_handle": None, "blocked_until": None},
+            {
+                "name": "main",
+                "account_name": "other",
+                "account_handle": None,
+                "blocked_until": None,
+            },
         ]
     await engine.dispose()
 
@@ -621,7 +631,7 @@ class _CookieRunner(_Runner):
 async def test_a_members_only_download_takes_a_member_profile_and_no_other(settings, caplog):
     import logging
 
-    from savetube.jobs import NO_MEMBER, run
+    from savetube.jobs import run
 
     _job_rows(
         settings,
@@ -655,16 +665,22 @@ async def test_a_members_only_download_takes_a_member_profile_and_no_other(setti
     # The first present member by name. `a_gone` has no file any more.
     assert await run_job(2) == ("# b_member\n", "b_member")
 
-    # No member left: the job fails without a download, as one attempt.
+    # No member left: the job waits without a download and uses no attempt.
     _sql(
         settings,
         "UPDATE membership SET is_member = false",
         "UPDATE job SET state = 'queued' WHERE id = 2",
     )
-    assert await run_job(2) == ("not run", "none")
+    runner = _CookieRunner()
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        await run(2, settings, live=False, runner=runner, sessionmaker=sessionmaker)
+    assert not hasattr(runner, "cookies")
+    [returned] = [r for r in caplog.records if r.getMessage() == "job.returned"]
+    assert _fields(returned)["reason"] == "no_member"
     async with sessionmaker() as session:
         job = await session.get(Job, 2)
-        assert (job.state, job.attempts, job.log_tail) == (JobState.FAILED, 2, NO_MEMBER)
+        assert (job.state, job.attempts) == (JobState.QUEUED, 1)
     await engine.dispose()
 
 
@@ -818,3 +834,27 @@ async def test_a_changed_cookie_file_ends_its_profile_pause(settings):
     await read_accounts(sessionmaker, settings, reader=reader)
     assert block_state() == (0, None)
     await engine.dispose()
+
+
+def test_api_cookie_profiles_shows_the_end_of_a_profile_pause_that_holds(settings):
+    _sql(
+        settings,
+        "INSERT INTO cookie_profile (name, seen_at, block_count, blocked_until) VALUES"
+        " ('main', now(), 2, '2099-01-01T00:00:00Z'),"
+        " ('alt', now(), 1, '2020-01-01T00:00:00Z')",
+    )
+    with _api(settings) as client:
+        assert client.get("/api/cookie-profiles").json() == [
+            {
+                "name": "alt",
+                "account_name": None,
+                "account_handle": None,
+                "blocked_until": None,
+            },
+            {
+                "name": "main",
+                "account_name": None,
+                "account_handle": None,
+                "blocked_until": "2099-01-01T00:00:00Z",
+            },
+        ]

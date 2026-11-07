@@ -72,6 +72,8 @@ export interface CookieProfile {
   // The YouTube account the file signs in. Null until the scheduler reads it.
   account_name: string | null
   account_handle: string | null
+  // The end of the pause after googlevideo refused this profile. Null when none holds.
+  blocked_until: string | null
 }
 
 export interface Source {
@@ -391,6 +393,8 @@ export interface DownloadSettingsIn {
 
 export interface DownloadSettings extends DownloadSettingsIn {
   timezone: string
+  // The pause after a YouTube block. Read-only, and past once it ends.
+  blocked_until: string | null
   // The user's pause of archive downloads. Set only through setDownloadsPaused.
   paused: boolean
   // Archive downloads succeeded today, plus running ones. Read-only.

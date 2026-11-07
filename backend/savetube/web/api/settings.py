@@ -222,6 +222,8 @@ class CookieProfileOut(_Out):
     # The account the file signs in, null until a read succeeds.
     account_name: str | None
     account_handle: str | None
+    # The end of the pause after googlevideo refused the profile, null when none holds.
+    blocked_until: datetime | None
 
 
 @router.get("/cookie-profiles")
@@ -229,4 +231,13 @@ async def cookie_profiles(session: Session) -> list[CookieProfileOut]:
     """The profiles the scheduler last found in SAVETUBE_COOKIES_DIR, by name.
     The web pod does not mount them."""
     rows = await session.scalars(select(CookieProfile).order_by(CookieProfile.name))
-    return [CookieProfileOut.model_validate(r) for r in rows]
+    now = datetime.now(UTC)
+    return [
+        CookieProfileOut(
+            name=r.name,
+            account_name=r.account_name,
+            account_handle=r.account_handle,
+            blocked_until=limits.blocked(r, now),
+        )
+        for r in rows
+    ]
