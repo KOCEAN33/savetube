@@ -111,13 +111,22 @@ async def poll_sources(settings: Settings, requests: scheduler_api.Requests) -> 
             requests.ask_poll(source_id)
 
 
+def _held_label(d: Dispatched) -> str:
+    """The paused profiles holding jobs back, such as `main@18:30(55)`."""
+    return ",".join(
+        f"{name}@{until.astimezone(TIMEZONE):%H:%M}({count})"
+        for name, (until, count) in sorted(d.profile_held.items())
+    )
+
+
 class DispatchLog:
     """Logs a dispatch that changes something: jobs sent, a new reason to wait,
     and a summary every 10 minutes while a job waits or runs."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
-        self._reason: str | None = None
+        # The last logged wait: its reason and its paused profiles.
+        self._reason: tuple[str | None, str] = (None, "")
         self._summary_at: float | None = None
 
     def __call__(self, d: Dispatched) -> None:
@@ -147,11 +156,24 @@ class DispatchLog:
                 reason = "blocked"
             elif d.capped_until is not None:
                 reason = "daily_limit"
+            elif sum(n for _, n in d.profile_held.values()) + d.no_member >= d.waiting:
+                reason = "profile_blocked" if d.profile_held else "no_member"
             else:
                 reason = "window" if d.opens is not None else "slots"
-        if reason != self._reason:
-            self._reason = reason
-            if reason in ("window", "blocked"):
+        held = _held_label(d)
+        if (reason, held) != self._reason:
+            self._reason = (reason, held)
+            if reason in ("profile_blocked", "no_member"):
+                emit(
+                    log,
+                    logging.INFO,
+                    "dispatch.waiting",
+                    reason=reason,
+                    profiles=held or None,
+                    no_member=d.no_member or None,
+                    waiting=d.waiting,
+                )
+            elif reason in ("window", "blocked"):
                 emit(
                     log,
                     logging.INFO,
@@ -180,6 +202,8 @@ class DispatchLog:
                     reason=reason,
                     running=d.running + len(d.started),
                     max=d.max_concurrent,
+                    profiles=held or None,
+                    no_member=d.no_member or None,
                     waiting=d.waiting,
                 )
         now = self._clock()
@@ -201,6 +225,8 @@ class DispatchLog:
                 if d.blocked_until
                 else "none",
                 paused="yes" if d.paused else "no",
+                profiles_blocked=held or "none",
+                no_member=d.no_member,
             )
 
 
