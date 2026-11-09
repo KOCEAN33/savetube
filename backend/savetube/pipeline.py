@@ -93,6 +93,7 @@ async def store(
     video_type = classify(info, from_shorts_tab=from_shorts_tab)
     rel = video_dir(channel.dir_name, video_type, info)
     final = archive_root / rel
+    video = await session.get(Video, info["id"]) or Video(id=info["id"])
     if ready_root is None:
         finalize(incoming, final)
     else:
@@ -100,9 +101,12 @@ async def store(
         if final.exists():
             raise FileExistsError(final)
         final = ready_root / info["id"]
+        if video.state is not VideoState.STAGED:
+            # An attempt that moved its download here and failed before its
+            # commit left it, and nothing moves a video no row stages.
+            shutil.rmtree(final, ignore_errors=True)
         finalize(incoming, final)
 
-    video = await session.get(Video, info["id"]) or Video(id=info["id"])
     session.add(video)
     upload_date = info.get("upload_date")
     video.channel_id = channel.id

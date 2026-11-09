@@ -160,3 +160,118 @@ def test_api_daily_stats_bucket_by_the_seoul_day(settings):
         {"day": "2026-10-21", "bytes": 120, "count": 2},
         {"day": "2026-10-22", "bytes": 3, "count": 1},
     ]
+
+
+FINAL_DIR = "Original [UC1]/lives/2026-03-15 첫 방송 ⧸ part 1 [dQw4w9WgXcQ]"
+
+
+async def _store_setup(settings, video_state):
+    """Channel UC1 and job 1 for INFO's video, its row in `video_state` (None: no row).
+    Returns the sessionmaker, the engine, the job id and a filled download dir."""
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        session.add(Channel(id="UC1", name="Original", dir_name="Original [UC1]"))
+        if video_state is not None:
+            session.add(
+                Video(
+                    id=INFO["id"],
+                    channel_id="UC1",
+                    type=VideoType.VIDEOS,
+                    title="?",
+                    state=video_state,
+                )
+            )
+        await session.flush()
+        job = Job(kind=JobKind.RECORD, video_id=INFO["id"] if video_state is not None else None)
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    incoming = settings.incoming_root / str(job_id)
+    incoming.mkdir(parents=True)
+    (incoming / "dQw4w9WgXcQ.mkv").write_bytes(b"n" * 100)
+    (incoming / "dQw4w9WgXcQ.info.json").write_bytes(b"{}")
+    return engine, sessionmaker, job_id, incoming
+
+
+async def _store(settings, sessionmaker, job_id, incoming, ready_root):
+    async with sessionmaker() as session:
+        job = await session.get(Job, job_id)
+        await store(
+            session,
+            job=job,
+            info=INFO,
+            incoming=incoming,
+            archive_root=settings.archive_root,
+            ready_root=ready_root,
+        )
+        await session.commit()
+
+
+def _stale_ready(settings):
+    ready_root = settings.archive_root.parent / "staging" / "ready"
+    stale = ready_root / INFO["id"]
+    stale.mkdir(parents=True)
+    (stale / "dQw4w9WgXcQ.mkv").write_bytes(b"o" * 7)
+    (stale / "dQw4w9WgXcQ.f299.mp4.part").write_bytes(b"o" * 3)
+    return ready_root, stale
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "video_state",
+    [VideoState.PENDING, VideoState.DOWNLOADING, VideoState.FAILED, None],
+    ids=["pending", "downloading", "failed", "no-row"],
+)
+async def test_store_replaces_a_ready_dir_a_dead_attempt_left_behind(settings, video_state):
+    """An attempt renamed its download into ready/<id>/, then its commit failed:
+    the row never became staged, and every retry hit FileExistsError."""
+    ready_root, stale = _stale_ready(settings)
+    engine, sessionmaker, job_id, incoming = await _store_setup(settings, video_state)
+
+    await _store(settings, sessionmaker, job_id, incoming, ready_root)
+
+    assert sorted(p.name for p in stale.iterdir()) == ["dQw4w9WgXcQ.info.json", "dQw4w9WgXcQ.mkv"]
+    assert (stale / "dQw4w9WgXcQ.mkv").read_bytes() == b"n" * 100
+    assert not incoming.exists()
+    async with sessionmaker() as session:
+        video = await session.get(Video, INFO["id"])
+        assert video.state is VideoState.STAGED
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_store_keeps_a_ready_dir_whose_video_is_staged(settings):
+    ready_root, stale = _stale_ready(settings)
+    engine, sessionmaker, job_id, incoming = await _store_setup(settings, VideoState.STAGED)
+
+    with pytest.raises(FileExistsError):
+        await _store(settings, sessionmaker, job_id, incoming, ready_root)
+
+    assert sorted(p.name for p in stale.iterdir()) == [
+        "dQw4w9WgXcQ.f299.mp4.part",
+        "dQw4w9WgXcQ.mkv",
+    ]
+    assert (stale / "dQw4w9WgXcQ.mkv").read_bytes() == b"o" * 7
+    await engine.dispose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("staged", [False, True], ids=["archive", "staged"])
+async def test_store_refuses_a_place_that_exists_in_the_archive_tree(settings, staged):
+    ready_root = settings.archive_root.parent / "staging" / "ready" if staged else None
+    if ready_root is not None:
+        ready_root.mkdir(parents=True)
+    taken = settings.archive_root / FINAL_DIR
+    taken.mkdir(parents=True)
+    (taken / "keep.mkv").write_bytes(b"k")
+    engine, sessionmaker, job_id, incoming = await _store_setup(settings, VideoState.PENDING)
+
+    with pytest.raises(FileExistsError):
+        await _store(settings, sessionmaker, job_id, incoming, ready_root)
+
+    assert [p.name for p in taken.iterdir()] == ["keep.mkv"]
+    if ready_root is not None:
+        assert not (ready_root / INFO["id"]).exists()
+    await engine.dispose()
