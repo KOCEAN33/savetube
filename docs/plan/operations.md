@@ -7,7 +7,7 @@
   - A cookie profile signed out: its account read failed (access.md), the `cookie_signed_out` rule of the card. A later successful read clears the record, so a second sign-out sends again.
 - The scheduler checks every tick and posts each item once to `SAVETUBE_DISCORD_WEBHOOK_URL`, a savetube channel of its own, not an Alertmanager receiver. A `notification` row (kind, key, sent time) records each sent item. An empty URL sends nothing.
 - A message holds the kind, the title, the channel, the reason, and the link to the video page or Settings. A failed post logs `notify.failed` at WARNING, records nothing, and retries next tick. A sent one logs `notify.sent`.
-- The chart sets the URL on the scheduler from `discord.existingSecret`. homelab-workloads reads it from the 1Password item `savetube-discord`, field `url`.
+- The chart sets the URL on the scheduler from `discord.existingSecret`. homelab-workloads reads it from the 1Password item `savetube`, field `discord-webhook-url`.
 - `/metrics` exposes job counts by state and the last successful cookie check. Alert rules cover failed recorder Jobs and an expired cookie.
 - A daily canary Job runs a short from-start capture of a known 24/7 public stream. It catches a yt-dlp break before a real live does.
 
