@@ -7,7 +7,7 @@ The encoder is its own private repo, `KOCEAN33/media-encoder`, at `/Users/kocean
 ## Which videos
 
 - A `complete` video whose stored video stream is H.264 or VP9, outside the max quality tier once tiers exist (candidates.md, Quality tiers), and whose last format probe offers no AV1 at the stored height or above. A video YouTube still serves as AV1 is downloaded again instead.
-- Settings turn re-encoding on or off and pick the profile. The default profile is `vtuber-av1-hq-cq46`.
+- Settings turn re-encoding on or off and pick the profile. A video's title can move its job to a 30 fps profile (Profiles).
 - A video with a queued or running replace job, an open live recording, an open format watch, or an original already kept aside is skipped. So is a video with an encode job queued, claimed, failed or succeeded.
 - The last format probe is the format watch's stored list, else the format list of the download's info dict. A video with neither counts as offered AV1.
 - The largest stored videos queue first.
@@ -20,8 +20,17 @@ A profile names a fixed encode. The encoder repo owns each profile's ffmpeg argu
 | --- | --- |
 | `vtuber-av1-hq-cq46` | AV1 10-bit (`av1_nvenc`, `-tune hq`, `-cq 46`, hierarchical B-frames), 30 fps when the source runs above 30, the source's resolution, audio streams copied, Matroska |
 | `vtuber-av1-uhq-cq46` | AV1 10-bit (`av1_nvenc`, `-tune uhq`, `-cq 46`, hierarchical B-frames), 30 fps when the source runs above 30, the source's resolution, audio streams copied, Matroska |
+| `vtuber-av1-hq-cq46-srcfps` | `vtuber-av1-hq-cq46` at the source's frame rate |
+| `vtuber-av1-uhq-cq46-srcfps` | `vtuber-av1-uhq-cq46` at the source's frame rate |
 
 `vtuber-av1-cq46` is the retired name of `vtuber-av1-uhq-cq46`. savetube accepts it only for a job queued under it, and settings cannot pick it.
+
+The default profile is `vtuber-av1-hq-cq46-srcfps`. A game or a 3D live streamed at 60 fps keeps 60 fps, but a mostly still stream gains little from it. So when settings pick a `-srcfps` profile, a video whose title names a still stream queues under the same profile without `-srcfps`, at 30 fps:
+
+- Still words: `歌枠`, `うたわく`, `ASMR`, `雑談`, `karaoke`, `singing stream`, `free talk`, `freetalk`.
+- A title with `3D` never counts as still: a 3D live often names `歌枠` too.
+- The match is case-insensitive substring, as for a source's title words (`savetube.words.matches`).
+- Settings that pick a 30 fps profile queue every video under it.
 
 The profile choice rests on a measured 10-minute clip of `hSLDqEi-yCE` (1080p60 H.264, 3.3 Mbps), with VMAF scored against the source resampled to 30 fps. `vtuber-av1-hq-cq46` gives 18% of the source's video bytes at VMAF 86.8 in 47 s. `vtuber-av1-uhq-cq46` gives 24% at VMAF 89.3 in 100 s. The source streams are low-bitrate, so the default takes the smaller, faster `vtuber-av1-hq-cq46`.
 

@@ -198,10 +198,11 @@ async def test_a_lone_bare_unavailable_with_nothing_to_check_fails_as_before(
     assert _block_state(settings) == (0, None)
 
 
-@pytest.mark.anyio
-async def test_a_streak_of_bare_unavailable_blocks_without_a_check(settings, monkeypatch, caplog):
+def _streak(settings, *others):
+    """The 2 other videos' archive jobs that failed on a bare "Video unavailable"
+    within the last hour, with `others` as the other videos."""
     _job_rows(settings, "SELECT setval('job_id_seq', 200)")
-    _others(settings, PROBEABLE, ("other0", "failed", None, None), ("other1", "failed", None, None))
+    _others(settings, *others, ("other0", "failed", None, None), ("other1", "failed", None, None))
     _sql(
         settings,
         "INSERT INTO job (id, kind, state, video_id, attempts, log_tail, finished_at) VALUES"
@@ -210,6 +211,29 @@ async def test_a_streak_of_bare_unavailable_blocks_without_a_check(settings, mon
         f" (101, 'archive', 'failed', 'other1', 1, '{UNAVAILABLE.replace('v1', 'other1')}',"
         "  now() - interval '5 minutes')",
     )
+
+
+@pytest.mark.anyio
+async def test_a_streak_of_bare_unavailable_whose_check_plays_marks_the_video_gone(
+    settings, monkeypatch, caplog
+):
+    # Deleted videos retried one after another end in a streak too.
+    _streak(settings, PROBEABLE)
+    probe = _Probe()
+    jobs, video = await _archive(settings, monkeypatch, caplog, UNAVAILABLE, probe)
+    assert probe.calls == ["seen"]
+    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, UNAVAILABLE)
+    assert video.state is VideoState.GONE
+    _assert_gone_logged(caplog)
+    assert _events(caplog, "dispatch.blocked") == []
+    assert _block_state(settings) == (0, None)
+
+
+@pytest.mark.anyio
+async def test_a_streak_of_bare_unavailable_with_nothing_to_check_is_a_youtube_block(
+    settings, monkeypatch, caplog
+):
+    _streak(settings)
     probe = _Probe()
     jobs, video = await _archive(settings, monkeypatch, caplog, UNAVAILABLE, probe)
     assert probe.calls == []

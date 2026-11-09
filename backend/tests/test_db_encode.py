@@ -22,6 +22,7 @@ needs_ffmpeg = pytest.mark.skipif(
 )
 
 PROFILE = "vtuber-av1-uhq-cq46"
+SRCFPS = "vtuber-av1-uhq-cq46-srcfps"
 # The uhq profile's old name, accepted only for jobs queued under it.
 RETIRED = "vtuber-av1-cq46"
 H264 = {
@@ -82,8 +83,8 @@ def _stored(settings, video_id="v1", *, media=b"m" * 1000, info=None, state="com
     return directory
 
 
-def _enable(settings):
-    _sql(settings, "UPDATE encode_settings SET enabled = true")
+def _enable(settings, profile=PROFILE):
+    _sql(settings, f"UPDATE encode_settings SET enabled = true, profile = '{profile}'")
 
 
 def _enc(settings):
@@ -169,6 +170,32 @@ async def test_nothing_is_queued_under_a_retired_profile(settings):
 
     assert _jobs(settings) == []
     assert not list(_enc(settings).glob("queue/*"))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("profile", "title", "queued"),
+    [
+        pytest.param(SRCFPS, "【歌枠】夜のうた", PROFILE, id="still"),
+        pytest.param(SRCFPS, "asmr 耳かき", PROFILE, id="still-any-case"),
+        pytest.param(
+            "vtuber-av1-hq-cq46-srcfps", "【雑談】free talk", "vtuber-av1-hq-cq46", id="still-hq"
+        ),
+        pytest.param(SRCFPS, "【3D LIVE】歌枠スペシャル", SRCFPS, id="3d-live"),
+        pytest.param(SRCFPS, "【Minecraft】建築", SRCFPS, id="game"),
+        pytest.param(PROFILE, "【Minecraft】建築", PROFILE, id="30-fps-setting"),
+    ],
+)
+async def test_a_still_title_queues_under_the_30_fps_profile(settings, profile, title, queued):
+    _stored(settings)
+    _sql(settings, f"UPDATE video SET title = '{title}' WHERE id = 'v1'")
+    _enable(settings, profile)
+
+    await _step(settings, now=datetime.now(UTC))
+
+    _, job = _queue_file(settings)
+    [row] = _jobs(settings)
+    assert (job["profile"], row.profile) == (queued, queued)
 
 
 @pytest.mark.anyio
@@ -418,10 +445,10 @@ def _done(settings, job, result, t, **override):
     return data
 
 
-async def _with_result(settings, tmp_path, t, **encode):
+async def _with_result(settings, tmp_path, t, profile=PROFILE, **encode):
     source = _source_media(tmp_path / "source.mp4")
     directory = _stored(settings, media=source.read_bytes())
-    _enable(settings)
+    _enable(settings, profile)
     await _step(settings, now=t)
     path, job = _queue_file(settings)
     path.unlink()
@@ -551,6 +578,21 @@ async def test_a_result_failing_a_check_moves_to_failed(settings, tmp_path, enco
 
     _assert_failed(settings, job, data)
     assert (directory / "v1.mp4").read_bytes() == source.read_bytes()
+
+
+@needs_ffmpeg
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("fps", "state"), [pytest.param(60, "succeeded", id="60"), pytest.param(30, "failed", id="30")]
+)
+async def test_a_srcfps_result_keeps_the_60_fps_source_rate(settings, tmp_path, fps, state):
+    t = datetime.now(UTC)
+    _, _, job, result = await _with_result(settings, tmp_path, t, profile=SRCFPS, fps=fps)
+    _done(settings, job, result, t, profile=SRCFPS)
+
+    await _step(settings, now=t + timedelta(minutes=1))
+
+    assert _state(settings, job["job_id"]).state == state
 
 
 class _PacketErrors:
@@ -807,8 +849,13 @@ def test_api_settings_start_off_and_save(settings):
 
     assert first == {
         "enabled": False,
-        "profile": PROFILE,
-        "profiles": ["vtuber-av1-hq-cq46", "vtuber-av1-uhq-cq46"],
+        "profile": SRCFPS,
+        "profiles": [
+            "vtuber-av1-hq-cq46",
+            "vtuber-av1-uhq-cq46",
+            "vtuber-av1-hq-cq46-srcfps",
+            SRCFPS,
+        ],
         "summary": {
             "saved_bytes": 0, "source_bytes": 0, "held_bytes": 0,
             "succeeded": 0, "failed": 0, "open": 0,
