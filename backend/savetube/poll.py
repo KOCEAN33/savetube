@@ -315,6 +315,8 @@ async def sync(
             result.stored += 1
         elif videos[vid].state is VideoState.DELETED:
             result.deleted += 1
+        elif videos[vid].state is VideoState.GONE:
+            result.gave_up += 1
         elif vid in active:
             result.in_flight += 1
         elif vid in failures and _given_up(*failures[vid], now):

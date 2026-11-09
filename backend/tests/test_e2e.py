@@ -455,6 +455,9 @@ def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):
     assert job["title"] == TITLE and job["channel_name"] == INFO["channel"]
     for key in ("reason", "log_tail", "attempts", "progress", "deferred_until", "finished_at"):
         assert key in job
+    assert job["retryable"] is False
+    r = server.post(f"/api/jobs/{seeded['job']}/retry", headers=WRITE)
+    assert r.status_code == 409
 
     r = server.get("/api/jobs/counts", params={"kind": "archive", "channel_id": CHANNEL_ID})
     assert r.status_code == 200

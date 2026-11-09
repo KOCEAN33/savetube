@@ -118,6 +118,10 @@ export interface Job {
   // A running download's current stream, updated every few seconds, or the
   // step after its last byte.
   progress: JobProgress | JobStep | null
+  // A failed archive job whose video POST /api/jobs/{id}/retry queues again.
+  retryable: boolean
+  // The video's state, "gone" once YouTube no longer serves it.
+  video_state: string | null
 }
 
 // GET /api/pods: the recorder Jobs from the Kubernetes API.

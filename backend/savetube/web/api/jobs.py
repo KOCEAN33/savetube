@@ -1,11 +1,12 @@
+import logging
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Query, Response
-from sqlalchemy import and_, exists, func, select
+from fastapi import APIRouter, HTTPException, Query, Response
+from sqlalchemy import ColumnElement, and_, exists, func, or_, select
 from sqlalchemy.orm import aliased
 
-from savetube.db.models import Channel, Job, JobKind, JobState, Video
+from savetube.db.models import Channel, Job, JobKind, JobState, Video, VideoState
 from savetube.joblog import (
     BLOCKED_LOG,
     NETWORK_LOG,
@@ -15,7 +16,8 @@ from savetube.joblog import (
     STALLED_LOG,
 )
 from savetube.limits import DISPATCH_ORDER
-from savetube.web.api.deps import Session, _of_channel
+from savetube.logs import emit
+from savetube.web.api.deps import Session, _of_channel, log
 from savetube.web.api.schemas import _Out
 from savetube.ytdl import members_only, network_error, strip_noise, youtube_block
 
@@ -71,6 +73,24 @@ class JobOut(_Out):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    # A failed archive job whose video POST /api/jobs/{id}/retry queues again.
+    retryable: bool
+    # The video's state, `gone` once YouTube no longer serves it.
+    video_state: VideoState | None
+
+
+def _retryable() -> ColumnElement[bool]:
+    """A failed archive job, the newest job of its video, whose video is not
+    stored or deleted. Past its attempts, polls wait days between retries."""
+    later = aliased(Job)
+    return and_(
+        Job.kind == JobKind.ARCHIVE,
+        Job.state == JobState.FAILED,
+        Video.state.not_in(
+            [VideoState.COMPLETE, VideoState.STAGED, VideoState.DELETED, VideoState.GONE]
+        ),
+        ~exists().where(later.video_id == Job.video_id, later.id > Job.id),
+    )
 
 
 @router.get("/jobs")
@@ -113,7 +133,8 @@ async def jobs(
             ~and_(
                 Job.kind == JobKind.ARCHIVE,
                 Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),
-                resolved,
+                # No run fixes a video YouTube no longer serves.
+                or_(resolved, Video.state == VideoState.GONE),
             )
         )
     total = await session.scalar(
@@ -124,7 +145,7 @@ async def jobs(
     )
     response.headers["X-Total-Count"] = str(total or 0)
     q = (
-        select(Job, Video.title, Video.channel_id, Channel.name)
+        select(Job, Video.title, Video.channel_id, Channel.name, Video.state, _retryable())
         .outerjoin(Video, Video.id == Job.video_id)
         .outerjoin(Channel, Channel.id == Video.channel_id)
         .where(*where)
@@ -132,7 +153,14 @@ async def jobs(
         .limit(limit)
         .offset(offset)
     )
-    own = JobOut.model_fields.keys() - {"title", "channel_id", "channel_name", "reason"}
+    own = JobOut.model_fields.keys() - {
+        "title",
+        "channel_id",
+        "channel_name",
+        "reason",
+        "retryable",
+        "video_state",
+    }
     return [
         JobOut(
             **{f: getattr(j, f) for f in own},
@@ -140,9 +168,34 @@ async def jobs(
             channel_id=cid,
             channel_name=name,
             reason=job_reason(j.log_tail),
+            retryable=bool(retryable),
+            video_state=video_state,
         )
-        for j, title, cid, name in await session.execute(q)
+        for j, title, cid, name, video_state, retryable in await session.execute(q)
     ]
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_job(session: Session, job_id: int) -> dict[str, int]:
+    """Queue a new archive job for a retryable job's video. Returns its id."""
+    job = await session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="no such job")
+    ok = await session.scalar(
+        select(_retryable())
+        .select_from(Job)
+        .join(Video, Video.id == Job.video_id)
+        .where(Job.id == job_id)
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="the job is not a retryable failure")
+    video = await session.get(Video, job.video_id)
+    video.state = VideoState.PENDING
+    new = Job(kind=JobKind.ARCHIVE, video_id=job.video_id)
+    session.add(new)
+    await session.commit()
+    emit(log, logging.INFO, "job.retried", job=job_id, video=job.video_id, new_job=new.id)
+    return {"job_id": new.id}
 
 
 @router.get("/jobs/counts")

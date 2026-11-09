@@ -25,6 +25,8 @@ from playwright.sync_api import Page, expect, sync_playwright
 
 BASE = sys.argv[1].rstrip("/")
 MANIFEST = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+# An optional directory for screenshots of the checked pages.
+SHOTS = sys.argv[3] if len(sys.argv) > 3 else None
 PIXEL = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 )
@@ -132,6 +134,8 @@ def check_downloads(page: Page) -> str:
     assert query_of(first.value.url).get("unresolved") == ["true"], first.value.url
     expect(page.get_by_role("table").last).to_be_visible()
     settle(page)
+    # A failure of a video YouTube removed counts as resolved.
+    expect(page.get_by_text("Removed upload")).to_have_count(0)
 
     hide = page.get_by_role("checkbox", name="Hide resolved")
     expect(hide).to_be_checked()
@@ -149,7 +153,20 @@ def check_downloads(page: Page) -> str:
     assert failed.value.ok
     expect(page).to_have_url(re.compile(r"[?&]state=failed"))
     settle(page)
-    return "hide resolved and state filter sent"
+
+    expect(page.get_by_role("row").filter(has_text="Removed upload")).to_contain_text("gone")
+    retry = page.get_by_role("button", name="Retry", exact=True)
+    expect(retry).to_have_count(1)
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/downloads-failed.png", full_page=True)
+    with page.expect_response(
+        lambda r: re.fullmatch(r"/api/jobs/\d+/retry", path_of(r.url)) is not None
+    ) as retried:
+        retry.click()
+    assert retried.value.ok, retried.value.status
+    # The failed job is no longer its video's newest.
+    expect(retry).to_have_count(0)
+    return "hide resolved, state filter and retry sent"
 
 
 def check_channel(page: Page) -> str:

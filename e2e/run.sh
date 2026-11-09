@@ -63,7 +63,8 @@ until curl -fsS "$base/healthz" >/dev/null 2>&1; do
 done
 
 echo "== smoke"
-uvx --with playwright python -I "$root/e2e/smoke.py" "$base" "$work/seed.json" || {
+uvx --with playwright python -I "$root/e2e/smoke.py" "$base" "$work/seed.json" \
+  ${SAVETUBE_E2E_SHOTS:+"$SAVETUBE_E2E_SHOTS"} || {
   echo "-- server log" >&2
   cat "$work/server.log" >&2
   exit 1

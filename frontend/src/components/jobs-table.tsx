@@ -1,8 +1,11 @@
 import { Fragment, useState, type MouseEvent } from "react"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
 
 import { Clock } from "@/components/clock"
+import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Table,
   TableBody,
@@ -13,9 +16,10 @@ import {
 } from "@/components/ui/table"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
 import { recorderOf } from "@/hooks/use-pods"
-import type { Job, JobState, MissReason, Pods } from "@/lib/api"
+import { mutations, type Job, type JobState, type MissReason, type Pods } from "@/lib/api"
 import { JOB_STATES, jobStateVariant } from "@/lib/channel"
 import { formatClock, formatDateTime, formatLength } from "@/lib/format"
+import { queryKeys } from "@/lib/query-keys"
 import { cn } from "@/lib/utils"
 
 const MISS_REASON_LABEL: Record<MissReason, string> = {
@@ -102,173 +106,204 @@ export function JobsTable({
   empty: string
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set())
+  const queryClient = useQueryClient()
+  // Polls skip a video past its attempts for days, so a failure is retried by hand.
+  const retry = useMutation({
+    mutationFn: mutations.retryJob,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }),
+  })
   const columns = (live ? 6 : 5) + (channelName ? 1 : 0)
   // Fixed widths outside the title, so the queued and finished tables of one
   // page line up whatever their rows hold. A narrow screen scrolls sideways.
   const fixed = !live
   return (
-    <Table className={fixed ? "min-w-5xl table-fixed" : undefined}>
-      <TableHeader className="bg-muted">
-        <TableRow>
-          <TableHead>Video</TableHead>
-          {channelName && <TableHead className={fixed ? "w-40" : undefined}>Channel</TableHead>}
-          <TableHead className={fixed ? "w-48" : undefined}>State</TableHead>
-          {live ? (
-            <>
-              <TableHead>Start</TableHead>
-              <TableHead className="text-right">Length</TableHead>
-              <TableHead>Recorder</TableHead>
-            </>
-          ) : (
-            <>
-              <TableHead className="w-28">Queued</TableHead>
-              <TableHead className="w-28">Started</TableHead>
-              <TableHead className="w-28">Finished</TableHead>
-            </>
-          )}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {jobs.length === 0 && (
+    <>
+      {retry.error && <ErrorBox error={retry.error} />}
+      <Table className={fixed ? "min-w-5xl table-fixed" : undefined}>
+        <TableHeader className="bg-muted">
           <TableRow>
-            <TableCell colSpan={columns} className="text-center text-muted-foreground">
-              {empty}
-            </TableCell>
+            <TableHead>Video</TableHead>
+            {channelName && <TableHead className={fixed ? "w-40" : undefined}>Channel</TableHead>}
+            <TableHead className={fixed ? "w-48" : undefined}>State</TableHead>
+            {live ? (
+              <>
+                <TableHead>Start</TableHead>
+                <TableHead className="text-right">Length</TableHead>
+                <TableHead>Recorder</TableHead>
+              </>
+            ) : (
+              <>
+                <TableHead className="w-28">Queued</TableHead>
+                <TableHead className="w-28">Started</TableHead>
+                <TableHead className="w-28">Finished</TableHead>
+              </>
+            )}
           </TableRow>
-        )}
-        {jobs.map((j) => {
-          // A click on a failed or interrupted row opens its reason and log_tail below it.
-          const expandable = hasFailureReason(j)
-          const expanded = expandable && open.has(j.id)
-          function toggle(e: MouseEvent) {
-            if ((e.target as HTMLElement).closest("a")) return
-            const next = new Set(open)
-            if (expanded) next.delete(j.id)
-            else next.add(j.id)
-            setOpen(next)
-          }
-          return (
-            <Fragment key={j.id}>
-              <TableRow
-                className={expandable ? "cursor-pointer" : undefined}
-                onClick={expandable ? toggle : undefined}
-              >
-                {/* w-full with max-w-0 gives this column the leftover width and truncates
-                    inside it. min-w-48 keeps a title readable once the other columns fill
-                    a narrow table, which then scrolls sideways. */}
-                <TableCell className="w-full max-w-0 min-w-48">
-                  {j.video_id ? (
-                    <div className="flex items-center gap-2">
-                      <Link
-                        className="min-w-0 truncate hover:underline"
-                        title={j.title ?? j.video_id}
-                        to={`/videos/${encodeURIComponent(j.video_id)}`}
-                      >
-                        {j.title ?? j.video_id}
-                      </Link>
-                      <VideoYouTubeLink id={j.video_id} title={j.title} iconOnly />
-                    </div>
-                  ) : (
-                    "-"
-                  )}
-                </TableCell>
-                {channelName && (
-                  <TableCell>
-                    {j.channel_id ? (
-                      <span
-                        className={cn(
-                          "inline-flex max-w-full items-center gap-1.5",
-                          !fixed && "max-w-48",
-                        )}
-                      >
+        </TableHeader>
+        <TableBody>
+          {jobs.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={columns} className="text-center text-muted-foreground">
+                {empty}
+              </TableCell>
+            </TableRow>
+          )}
+          {jobs.map((j) => {
+            // A click on a failed or interrupted row opens its reason and log_tail below it.
+            const expandable = hasFailureReason(j)
+            const expanded = expandable && open.has(j.id)
+            function toggle(e: MouseEvent) {
+              if ((e.target as HTMLElement).closest("a")) return
+              const next = new Set(open)
+              if (expanded) next.delete(j.id)
+              else next.add(j.id)
+              setOpen(next)
+            }
+            return (
+              <Fragment key={j.id}>
+                <TableRow
+                  className={expandable ? "cursor-pointer" : undefined}
+                  onClick={expandable ? toggle : undefined}
+                >
+                  {/* w-full with max-w-0 gives this column the leftover width and truncates
+                      inside it. min-w-48 keeps a title readable once the other columns fill
+                      a narrow table, which then scrolls sideways. */}
+                  <TableCell className="w-full max-w-0 min-w-48">
+                    {j.video_id ? (
+                      <div className="flex items-center gap-2">
                         <Link
                           className="min-w-0 truncate hover:underline"
-                          title={channelName.get(j.channel_id) ?? j.channel_id}
-                          to={`/channels/${encodeURIComponent(j.channel_id)}`}
+                          title={j.title ?? j.video_id}
+                          to={`/videos/${encodeURIComponent(j.video_id)}`}
                         >
-                          {channelName.get(j.channel_id) ?? j.channel_id}
+                          {j.title ?? j.video_id}
                         </Link>
-                        <ChannelYouTubeLink
-                          id={j.channel_id}
-                          name={channelName.get(j.channel_id)}
-                        />
-                      </span>
+                        <VideoYouTubeLink id={j.video_id} title={j.title} iconOnly />
+                      </div>
                     ) : (
                       "-"
                     )}
                   </TableCell>
-                )}
-                {/* The reason shows on hover and in the opened row, so a closed row stays one line. */}
-                <TableCell className="whitespace-nowrap">
-                  <Badge
-                    variant={jobStateVariant(j.state)}
-                    aria-expanded={expandable ? expanded : undefined}
-                    title={j.reason ?? undefined}
-                  >
-                    {j.state}
-                  </Badge>
-                  {j.attempts > 1 && (
-                    <span
-                      className="ml-2 text-xs text-muted-foreground"
-                      title={`${j.attempts} attempts`}
+                  {channelName && (
+                    <TableCell>
+                      {j.channel_id ? (
+                        <span
+                          className={cn(
+                            "inline-flex max-w-full items-center gap-1.5",
+                            !fixed && "max-w-48",
+                          )}
+                        >
+                          <Link
+                            className="min-w-0 truncate hover:underline"
+                            title={channelName.get(j.channel_id) ?? j.channel_id}
+                            to={`/channels/${encodeURIComponent(j.channel_id)}`}
+                          >
+                            {channelName.get(j.channel_id) ?? j.channel_id}
+                          </Link>
+                          <ChannelYouTubeLink
+                            id={j.channel_id}
+                            name={channelName.get(j.channel_id)}
+                          />
+                        </span>
+                      ) : (
+                        "-"
+                      )}
+                    </TableCell>
+                  )}
+                  {/* The reason shows on hover and in the opened row, so a closed row stays one line. */}
+                  <TableCell className="whitespace-nowrap">
+                    <Badge
+                      variant={jobStateVariant(j.state)}
+                      aria-expanded={expandable ? expanded : undefined}
+                      title={j.reason ?? undefined}
                     >
-                      ×{j.attempts}
-                    </span>
-                  )}
-                  {j.state === "queued" && j.deferred_until && (
-                    <span
-                      className="ml-2 text-xs text-muted-foreground"
-                      title={`Waits until ${formatDateTime(j.deferred_until)}`}
-                    >
-                      until {formatClock(j.deferred_until)}
-                    </span>
-                  )}
-                  {j.miss_reason && (
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {MISS_REASON_LABEL[j.miss_reason]}
-                    </span>
-                  )}
-                </TableCell>
-                {live ? (
-                  <>
-                    <TableCell className="tabular-nums">
-                      <LiveStart job={j} />
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">{liveLength(j)}</TableCell>
-                    <TableCell className="tabular-nums">
-                      <RecorderCell pods={pods} jobId={j.id} />
-                    </TableCell>
-                  </>
-                ) : (
-                  <>
-                    <TableCell className="truncate tabular-nums">
-                      <Clock iso={j.created_at} />
-                    </TableCell>
-                    <TableCell className="truncate tabular-nums">
-                      <Clock iso={j.started_at} />
-                    </TableCell>
-                    <TableCell className="truncate tabular-nums">
-                      <Clock iso={j.finished_at} />
-                    </TableCell>
-                  </>
-                )}
-              </TableRow>
-              {expanded && (
-                <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={columns} className="max-w-0 whitespace-normal">
-                    <p className="mb-1 text-sm font-medium">{j.reason}</p>
-                    {j.log_tail && (
-                      <pre className="max-h-60 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap break-all">
-                        {j.log_tail}
-                      </pre>
+                      {j.state}
+                    </Badge>
+                    {j.attempts > 1 && (
+                      <span
+                        className="ml-2 text-xs text-muted-foreground"
+                        title={`${j.attempts} attempts`}
+                      >
+                        ×{j.attempts}
+                      </span>
+                    )}
+                    {j.state === "queued" && j.deferred_until && (
+                      <span
+                        className="ml-2 text-xs text-muted-foreground"
+                        title={`Waits until ${formatDateTime(j.deferred_until)}`}
+                      >
+                        until {formatClock(j.deferred_until)}
+                      </span>
+                    )}
+                    {j.miss_reason && (
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {MISS_REASON_LABEL[j.miss_reason]}
+                      </span>
+                    )}
+                    {j.video_state === "gone" && (
+                      <span
+                        className="ml-2 text-xs text-muted-foreground"
+                        title="YouTube no longer serves this video, so no retry runs."
+                      >
+                        gone
+                      </span>
+                    )}
+                    {j.retryable && (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        className="ml-2"
+                        disabled={retry.isPending}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          retry.mutate(j.id)
+                        }}
+                      >
+                        Retry
+                      </Button>
                     )}
                   </TableCell>
+                  {live ? (
+                    <>
+                      <TableCell className="tabular-nums">
+                        <LiveStart job={j} />
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{liveLength(j)}</TableCell>
+                      <TableCell className="tabular-nums">
+                        <RecorderCell pods={pods} jobId={j.id} />
+                      </TableCell>
+                    </>
+                  ) : (
+                    <>
+                      <TableCell className="truncate tabular-nums">
+                        <Clock iso={j.created_at} />
+                      </TableCell>
+                      <TableCell className="truncate tabular-nums">
+                        <Clock iso={j.started_at} />
+                      </TableCell>
+                      <TableCell className="truncate tabular-nums">
+                        <Clock iso={j.finished_at} />
+                      </TableCell>
+                    </>
+                  )}
                 </TableRow>
-              )}
-            </Fragment>
-          )
-        })}
-      </TableBody>
-    </Table>
+                {expanded && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={columns} className="max-w-0 whitespace-normal">
+                      <p className="mb-1 text-sm font-medium">{j.reason}</p>
+                      {j.log_tail && (
+                        <pre className="max-h-60 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap break-all">
+                          {j.log_tail}
+                        </pre>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
+            )
+          })}
+        </TableBody>
+      </Table>
+    </>
   )
 }

@@ -16,6 +16,7 @@ DB tests live in `backend/tests/test_db_*.py`, with shared fixtures and helpers 
 
 - `backend/tests/test_e2e.py` runs uvicorn and the real `savetube worker` with `yt_dlp.YoutubeDL` faked through a `sitecustomize.py` on `PYTHONPATH`. It fails when an `/api` route has no call.
 - `scripts/test-db.sh make e2e-smoke` drives Playwright over 8 pages. The ids, aria-labels, roles and URL params it targets must stay.
+- `SAVETUBE_E2E_SHOTS=<dir>` makes the smoke save its screenshots there: the Downloads page filtered to failed jobs.
 
 ## Local UI
 
