@@ -66,6 +66,7 @@ from savetube.ytdl import (
     NotStarted,
     bare_unavailable,
     build_params,
+    degraded_formats,
     forbidden,
     members_only,
     network_error,
@@ -698,17 +699,13 @@ async def _record_not_started(r: _Run, begun: _Begun) -> None:
 
 async def _record_failure(r: _Run, e: Exception) -> bool:
     """Write the failure to the job row and log it: a YouTube block, an HTTP
-    403, a streak of bare "Video unavailable" failures, or a network error interrupts an
-    archive job, anything else fails it. Returns whether it wrote, False when
-    the run lost its row."""
+    403, a degraded format list, a streak of bare "Video unavailable"
+    failures, or a network error interrupts an archive job, anything else
+    fails it. Returns whether it wrote, False when the run lost its row."""
     message = str(e)
     archive_failure = not r.live and isinstance(e, DownloadFailed)
-    if (
-        archive_failure
-        and not youtube_block(message)
-        and forbidden(message)
-        and r.profile is not None
-    ):
+    refused = forbidden(message) or degraded_formats(message)
+    if archive_failure and not youtube_block(message) and refused and r.profile is not None:
         if not await _profile_blocked(r.sessionmaker, r.job_id, r.profile, e, r.disowned):
             return False
         r.interrupted(logging.WARNING, PROFILE_BLOCKED_LOG, _present_label(r.workdir))
@@ -717,7 +714,7 @@ async def _record_failure(r: _Run, e: Exception) -> bool:
     if archive_failure and (
         youtube_block(message)
         # A cookie-free session refused is this client refused.
-        or forbidden(message)
+        or refused
         # A bare "Video unavailable" alone may be a deleted video.
         or (
             bare_unavailable(message)
