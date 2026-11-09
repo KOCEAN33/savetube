@@ -703,20 +703,27 @@ async def _record_not_started(r: _Run, begun: _Begun) -> None:
 
 async def _record_failure(r: _Run, e: Exception, settings: Settings) -> bool:
     """Write the failure to the job row and log it: a YouTube block, an HTTP
-    403, a degraded format list, a streak of bare "Video unavailable"
-    failures, or a network error interrupts an archive job, anything else
-    fails it. A failure that says the video is removed or private, or a bare
-    "Video unavailable" while another video plays, also marks the video
-    gone. Returns whether it wrote, False when the run lost its row."""
+    403, a degraded format list, a bare "Video unavailable" while another
+    video does not play, or ends a streak when no check tells, or a network
+    error interrupts an archive job, anything else fails it. A failure that
+    says the video is removed or private, or a bare "Video unavailable"
+    while another video plays, also marks the video gone. Returns whether it
+    wrote, False when the run lost its row."""
     message = str(e)
     archive_failure = not r.live and isinstance(e, DownloadFailed)
     refused = forbidden(message) or degraded_formats(message)
     # A bare "Video unavailable" is a deleted video or this client refused.
     unavailable = archive_failure and bare_unavailable(message)
-    streak = unavailable and await _unavailable_streak(
-        r.sessionmaker, r.video_id, UNAVAILABLE_STREAK - 1, UNAVAILABLE_STREAK_WINDOW
+    plays = await _another_plays(r, settings) if unavailable else None
+    # Deleted videos retried together also make a streak, so it counts only
+    # when the check cannot tell.
+    streak = (
+        unavailable
+        and plays is None
+        and await _unavailable_streak(
+            r.sessionmaker, r.video_id, UNAVAILABLE_STREAK - 1, UNAVAILABLE_STREAK_WINDOW
+        )
     )
-    plays = await _another_plays(r, settings) if unavailable and not streak else None
     if archive_failure and not youtube_block(message) and refused and r.profile is not None:
         if not await _profile_blocked(r.sessionmaker, r.job_id, r.profile, e, r.disowned):
             return False
