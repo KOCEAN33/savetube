@@ -51,6 +51,13 @@ database:
   existingSecret: savetube-db
   key: url
 
+discord:
+  # A Secret holding the webhook URL of the savetube Discord channel. The
+  # scheduler posts failed recordings and signed-out cookie profiles there.
+  # Empty posts nothing.
+  existingSecret: ""
+  key: url
+
 archive:
   # The PVC holding the archive tree and its .incoming/ directory, on one filesystem.
   existingClaim: ""

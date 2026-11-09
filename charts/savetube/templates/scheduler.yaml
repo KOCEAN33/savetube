@@ -101,6 +101,16 @@ spec:
                   fieldPath: metadata.namespace
             - name: SAVETUBE_RECORDER_CRONJOB
               value: {{ include "savetube.fullname" . }}-recorder
+            {{- with .Values.discord.existingSecret }}
+            # Links in a Discord post point here.
+            - name: SAVETUBE_PUBLIC_URL
+              value: {{ required "publicUrl is required" $.Values.publicUrl | quote }}
+            - name: SAVETUBE_DISCORD_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.discord.key }}
+            {{- end }}
           securityContext:
             {{- include "savetube.containerSecurityContext" . | nindent 12 }}
           volumeMounts:

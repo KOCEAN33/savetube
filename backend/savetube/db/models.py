@@ -505,6 +505,18 @@ class AttentionDismissal(Base):
     )
 
 
+class Notification(Base):
+    """An item the scheduler posted to Discord, so it posts once
+    (docs/plan/operations.md, Notifications and monitoring)."""
+
+    __tablename__ = "notification"
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    # A record job id, or a cookie profile name.
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class StorageSample(Base):
     __tablename__ = "storage_sample"
 

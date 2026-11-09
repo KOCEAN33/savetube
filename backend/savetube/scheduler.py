@@ -25,6 +25,7 @@ from savetube.integrity import Tools
 from savetube.jobs import Dispatched, clean_incoming, dispatch, reclaim_stalled
 from savetube.live import check_logged, watched_channels
 from savetube.logs import emit, human_bytes
+from savetube.notify import notify
 from savetube.poll import due_sources, poll_source
 from savetube.queue import ARCHIVE_QUEUE, app, enqueue
 from savetube.recorders import start_recorders
@@ -329,6 +330,10 @@ async def move_requested(
         await move_staged(default_sessionmaker(), settings, requested=requests.take_move())
 
 
+async def notifications(settings: Settings) -> None:
+    await notify(default_sessionmaker(), settings, datetime.now(UTC))
+
+
 async def _every(
     name: str,
     step: Callable[[], Awaitable[None]],
@@ -430,6 +435,7 @@ async def run(settings: Settings) -> None:
             tg.create_task(_every("re-encoding", lambda: reencode(settings, encodes, skipped)))
             tg.create_task(scheduler_api.serve(api, settings.scheduler_api_port))
             tg.create_task(_every("live detection", lambda: detect_lives(settings)))
+            tg.create_task(_every("notifications", lambda: notifications(settings)))
             # Kubernetes sets this in every pod. A scheduler outside a cluster,
             # as in compose.yaml, has no API to make recorder Jobs with.
             if os.environ.get("KUBERNETES_SERVICE_HOST"):

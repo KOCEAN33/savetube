@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import formats
+from savetube.attention import record_failed, signed_out
 from savetube.db.models import (
     AttentionDismissal,
     Channel,
@@ -93,12 +94,7 @@ async def _jobs(session: AsyncSession) -> list[AttentionOut]:
                 & Job.state.in_([JobState.FAILED, JobState.INTERRUPTED])
                 & ~resolved_failure()
             )
-            | (
-                (Job.kind == JobKind.RECORD)
-                & Job.state.in_([JobState.FAILED, JobState.MISSED])
-                # A VOD stored later holds the live.
-                & (Video.state != VideoState.COMPLETE)
-            )
+            | record_failed()
         )
     )
     out = []
@@ -247,12 +243,7 @@ async def _sources(session: AsyncSession) -> list[AttentionOut]:
 
 
 async def _cookies(session: AsyncSession) -> list[AttentionOut]:
-    # A failed read clears the digest (docs/plan/access.md).
-    rows = await session.scalars(
-        select(CookieProfile).where(
-            CookieProfile.account_digest.is_(None), CookieProfile.account_checked_at.is_not(None)
-        )
-    )
+    rows = await session.scalars(select(CookieProfile).where(signed_out()))
     return [
         _item(
             "cookie_signed_out",

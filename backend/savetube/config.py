@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # header. Unset calls the issuer URL.
     oidc_internal_url: str | None = None
 
+    # The savetube Discord channel's webhook. Unset posts nothing
+    # (docs/plan/operations.md, Notifications and monitoring).
+    discord_webhook_url: SecretStr | None = None
+
     metrics_port: int = 9090
     # GET /healthz of the worker and the scheduler, served by their asyncio loop.
     health_port: int = 8081
