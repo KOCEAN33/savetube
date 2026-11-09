@@ -40,6 +40,7 @@ from savetube.jobs.rows import LOG_TAIL_CHARS
 from savetube.logs import emit, human_bytes
 from savetube.storage import dir_size
 from savetube.watch import ORIGINAL_KEPT, is_open, media_path, probe_duration
+from savetube.words import matches
 
 log = logging.getLogger(__name__)
 
@@ -67,15 +68,39 @@ class Profile:
     vcodec: str
     codec_name: str
     ten_bit: bool
-    max_fps: float
+    # None keeps the source's rate.
+    max_fps: float | None
+    # The profile a still stream's job takes instead (docs/plan/encode.md, Profiles).
+    still: str | None = None
 
 
 _AV1_30 = Profile(vcodec="av01", codec_name="av1", ten_bit=True, max_fps=30)
-PROFILES = {"vtuber-av1-hq-cq46": _AV1_30, "vtuber-av1-uhq-cq46": _AV1_30}
+PROFILES = {
+    "vtuber-av1-hq-cq46": _AV1_30,
+    "vtuber-av1-uhq-cq46": _AV1_30,
+    "vtuber-av1-hq-cq46-srcfps": Profile(
+        vcodec="av01", codec_name="av1", ten_bit=True, max_fps=None, still="vtuber-av1-hq-cq46"
+    ),
+    "vtuber-av1-uhq-cq46-srcfps": Profile(
+        vcodec="av01", codec_name="av1", ten_bit=True, max_fps=None, still="vtuber-av1-uhq-cq46"
+    ),
+}
 # Old names nothing queues under any more. A job file already queued under one
 # still passes its checks.
 RETIRED_PROFILES = {"vtuber-av1-cq46": _AV1_30}
-DEFAULT_PROFILE = "vtuber-av1-hq-cq46"
+DEFAULT_PROFILE = "vtuber-av1-hq-cq46-srcfps"
+STILL_WORDS = [
+    "歌枠",
+    "うたわく",
+    "ASMR",
+    "雑談",
+    "karaoke",
+    "singing stream",
+    "free talk",
+    "freetalk",
+]
+# A 3D live often names 歌枠 too.
+NOT_STILL_WORDS = ["3D"]
 
 
 class Rejected(Exception):
@@ -397,7 +422,7 @@ async def _check(
     )
     if fps is None or source_fps is None:
         raise Rejected("frame rate unknown")
-    want = min(source_fps, profile.max_fps)
+    want = source_fps if profile.max_fps is None else min(source_fps, profile.max_fps)
     if abs(fps - want) > FPS_SLACK:
         raise Rejected(f"{fps:.2f} fps, profile wants {want:.2f}")
     duration = float((new.get("format") or {}).get("duration") or 0)
@@ -587,9 +612,12 @@ async def fill(
                 # The info dict is large. Keep the session from holding each one.
                 session.expunge(video)
                 continue
+            still = PROFILES[config.profile].still
             job = EncodeJob(
                 video_id=video_id,
-                profile=config.profile,
+                profile=still
+                if still and matches(video.title, STILL_WORDS, NOT_STILL_WORDS)
+                else config.profile,
                 source_path=stored.relative_to(settings.archive_root).as_posix(),
                 source_size=stored.stat().st_size,
                 created_at=now,
