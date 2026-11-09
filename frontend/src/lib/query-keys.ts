@@ -25,6 +25,7 @@ export const queryKeys = {
   video: (id: string) => ["video", id] as const,
   subtitles: (videoId: string) => ["video", videoId, "subtitles"] as const,
   formatWatch: (videoId: string) => ["video", videoId, "formats"] as const,
+  heldReplaces: () => ["held-replaces"] as const,
   videos: (filter: {
     q: string
     type: string | undefined

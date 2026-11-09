@@ -9,11 +9,12 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import formats
 from savetube.db.models import (
+    Channel,
     EncodeJob,
     EncodeState,
     FormatWatch,
@@ -110,6 +111,23 @@ class FormatWatchOut(BaseModel):
     replace: ReplaceOut | None
     # The re-encode the stored video stream came from.
     encode: EncodeOut | None
+
+
+class UpgradeOut(BaseModel):
+    kind: Literal["audio", "video"]
+    format_id: str
+    codec: str
+
+
+class HeldOut(BaseModel):
+    video_id: str
+    title: str
+    channel_name: str
+    # VOD minus stored, in seconds.
+    duration_diff: float
+    # The picks that rank above the stored streams, video first.
+    upgrade: list[UpgradeOut]
+    checked_at: datetime | None
 
 
 class PickIn(BaseModel):
@@ -278,6 +296,46 @@ async def _watched(session: AsyncSession, video_id: str) -> tuple[FormatWatch, V
     if watch is None:
         return None
     return watch, await session.get(Video, video_id)
+
+
+@router.get("/formats/held")
+async def held_replaces(session: Session) -> list[HeldOut]:
+    """The replaces only a pick starts: the videos whose watch logs
+    `watch.held` instead of queueing (watch._queue)."""
+    rows = await session.execute(
+        select(FormatWatch, Video, Channel.name)
+        .join(Video, Video.id == FormatWatch.video_id)
+        .join(Channel, Channel.id == Video.channel_id)
+        .where(
+            Video.state == VideoState.COMPLETE,
+            FormatWatch.manual.is_(False),
+            func.abs(FormatWatch.vod_duration - FormatWatch.stored_duration) > formats.HOLD_SECONDS,
+        )
+        .order_by(FormatWatch.started_at.desc().nulls_last(), Video.id)
+    )
+    out = []
+    for watch, video, channel_name in rows:
+        up = [p for p in formats.picks(watch.formats or [], video.info or {}).values() if p.above]
+        if not up or await replace_active(session, video.id) is not None:
+            continue
+        out.append(
+            HeldOut(
+                video_id=video.id,
+                title=video.title,
+                channel_name=channel_name,
+                duration_diff=round(watch.vod_duration - watch.stored_duration, 1),
+                upgrade=[
+                    UpgradeOut(
+                        kind=p.kind,
+                        format_id=str(p.format["format_id"]),
+                        codec=_codec(p.format, p.kind),
+                    )
+                    for p in sorted(up, key=lambda p: p.kind != "video")
+                ],
+                checked_at=watch.checked_at,
+            )
+        )
+    return out
 
 
 @router.get("/videos/{video_id}/formats")

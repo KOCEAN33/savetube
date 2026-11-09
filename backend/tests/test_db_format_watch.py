@@ -810,6 +810,39 @@ def test_api_pick_of_a_held_video_needs_a_confirm(settings):
     assert confirmed.status_code == 200 and confirmed.json()["held"] is True
 
 
+def test_api_lists_a_held_replace_until_a_pick(settings):
+    # Stored 12 s short of the VOD. The VOD's Opus 251 ranks above the stored
+    # AAC, its video does not rank above the stored H.264 137.
+    _watched_with_formats(settings, stored_duration=8300.0)
+
+    with _api(settings) as api:
+        held = api.get("/api/formats/held").json()
+        api.post("/api/videos/v1/formats/pick", json={"format_ids": ["251"], "confirm": True})
+        # The picked replace failed: the pick still ends the automatic replaces.
+        _sql(settings, "UPDATE job SET state = 'failed', finished_at = now()")
+        after = api.get("/api/formats/held").json()
+
+    assert [(h["video_id"], h["duration_diff"], h["upgrade"]) for h in held] == [
+        ("v1", 12.0, [{"kind": "audio", "format_id": "251", "codec": "Opus"}])
+    ]
+    assert after == []
+
+
+def test_api_lists_no_held_replace_while_a_replace_is_queued(settings):
+    _watched_with_formats(settings, stored_duration=8300.0)
+    _replace_row(settings)
+
+    with _api(settings) as api:
+        assert api.get("/api/formats/held").json() == []
+
+
+def test_api_lists_no_held_replace_within_2_s(settings):
+    _watched_with_formats(settings, stored_duration=8310.5)
+
+    with _api(settings) as api:
+        assert api.get("/api/formats/held").json() == []
+
+
 def test_api_stored_rows_without_a_size_estimate_it_from_bitrate_and_duration(settings):
     # WBJ_RECORDING's streams carry no size, as a recording made before the
     # recorder measured its streams. Stored for 8312 s.

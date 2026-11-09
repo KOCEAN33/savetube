@@ -435,6 +435,8 @@ def test_the_api_serves_the_stored_video(server, downloaded, media):
 def test_a_video_that_is_no_live_has_no_format_watch(server, downloaded):
     r = server.get(f"/api/videos/{VIDEO_ID}/formats")
     assert r.status_code == 200 and r.json() is None
+    r = server.get("/api/formats/held")
+    assert r.status_code == 200 and r.json() == []
     r = server.post(
         f"/api/videos/{VIDEO_ID}/formats/pick", json={"format_ids": ["251"]}, headers=WRITE
     )

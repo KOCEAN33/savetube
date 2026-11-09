@@ -13,6 +13,7 @@ import type {
   EncodePages,
   EncodeSettingsIn,
   FormatWatch,
+  HeldReplace,
   Job,
   JobKind,
   JobState,
@@ -151,6 +152,7 @@ export const api = {
   // Null for a video without a row: no format watch and no probe yet.
   formatWatch: (id: string) =>
     get<FormatWatch | null>(`/api/videos/${encodeURIComponent(id)}/formats`),
+  heldReplaces: () => get<HeldReplace[]>("/api/formats/held"),
   subtitles: (id: string) => get<Subtitle[]>(`/api/videos/${encodeURIComponent(id)}/subtitles`),
   subtitleUrl: (id: string, lang: string) =>
     `/api/videos/${encodeURIComponent(id)}/subtitles/${encodeURIComponent(lang)}`,

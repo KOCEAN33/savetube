@@ -226,6 +226,19 @@ export interface FormatRow {
   reason: string | null
 }
 
+// A replace only a pick starts: the VOD and the stored file differ by more
+// than 2 s (docs/plan/live.md, Format watch).
+export interface HeldReplace {
+  video_id: string
+  title: string
+  channel_name: string
+  // VOD minus stored, in seconds.
+  duration_diff: number
+  // The picks that rank above the stored streams, video first.
+  upgrade: { kind: "audio" | "video"; format_id: string; codec: string }[]
+  checked_at: string | null
+}
+
 // The format watch of a stored live, or a user's probe of any complete video
 // (docs/plan/live.md, Format watch).
 export interface FormatWatch {

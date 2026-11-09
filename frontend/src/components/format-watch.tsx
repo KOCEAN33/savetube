@@ -32,7 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { api, mutations, type FormatRow, type FormatWatch } from "@/lib/api"
-import { formatBytes, formatClock, formatDuration, formatKbps } from "@/lib/format"
+import { formatBytes, formatClock, formatDuration, formatKbps, signedSeconds } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 import { cn } from "@/lib/utils"
@@ -45,11 +45,6 @@ function resolution(row: FormatRow): string {
   if (row.kind === "audio") return "audio"
   if (row.height == null) return "-"
   return `${row.height}p${row.fps ? Math.round(row.fps) : ""}`
-}
-
-function signedSeconds(diff: number | null): string {
-  if (diff == null) return "-"
-  return `${diff > 0 ? "+" : ""}${diff.toFixed(1)} s`
 }
 
 // The whole file before and after a re-encode, such as "file 11.1 GiB → 4.8 GiB (-56%)".
