@@ -313,6 +313,14 @@ def seed(session: Session, archive_root: Path) -> dict:
             state=VideoState.FAILED,
         ),
         video(
+            "e2eGone0001",
+            MAIN,
+            VideoType.VIDEOS,
+            "Removed upload",
+            date(2026, 10, 9),
+            state=VideoState.GONE,
+        ),
+        video(
             "e2eRec00001",
             MAIN,
             VideoType.LIVES,
@@ -364,6 +372,15 @@ def seed(session: Session, archive_root: Path) -> dict:
                 log_tail="ERROR: [youtube] e2eFail0001: Video unavailable",
                 started_at=NOW - timedelta(hours=2),
                 finished_at=NOW - timedelta(hours=2),
+            ),
+            Job(
+                kind=JobKind.ARCHIVE,
+                state=JobState.FAILED,
+                video_id="e2eGone0001",
+                attempts=1,
+                log_tail="ERROR: [youtube] e2eGone0001: This video has been removed by the uploader",
+                started_at=NOW - timedelta(hours=3),
+                finished_at=NOW - timedelta(hours=3),
             ),
             Job(
                 kind=JobKind.ARCHIVE,

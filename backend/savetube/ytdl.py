@@ -205,12 +205,15 @@ def with_clients(params: dict[str, Any], clients: list[str]) -> dict[str, Any]:
     return {**params, "extractor_args": {**extractor_args, "youtube": youtube}}
 
 
+def gone(message: str) -> bool:
+    """Whether a failure says YouTube removed the video or hid it."""
+    text = message.lower()
+    return any(all(part in text for part in group) for group in PERMANENT_MARKERS)
+
+
 def permanent(message: str) -> bool:
     """Whether a failure is one no later attempt gets past."""
-    text = message.lower()
-    return members_only(message) or any(
-        all(part in text for part in group) for group in PERMANENT_MARKERS
-    )
+    return members_only(message) or gone(message)
 
 
 def video_url(video_id: str) -> str:

@@ -132,7 +132,7 @@ async def _record(session: AsyncSession, info: dict[str, Any]) -> Job | None:
     if existing is not None:
         return None
     video = await session.get(Video, video_id)
-    if video is not None and video.state is VideoState.DELETED:
+    if video is not None and video.state in (VideoState.DELETED, VideoState.GONE):
         return None
     if video is None:
         await get_or_create_channel(session, info)

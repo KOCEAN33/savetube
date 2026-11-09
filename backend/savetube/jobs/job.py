@@ -68,8 +68,10 @@ from savetube.ytdl import (
     build_params,
     degraded_formats,
     forbidden,
+    gone,
     members_only,
     network_error,
+    probe_video,
     video_url,
     youtube_block,
 )
@@ -90,6 +92,8 @@ PAUSED_LOG = "paused by user"
 # detection probes a refused id again (savetube.live.RETRY_UNREADABLE).
 NOT_STARTED_LIMIT = timedelta(hours=24)
 NOT_STARTED_LOG = "the stream did not start within 24 hours of its scheduled start"
+# How long the check that another video plays may take (_another_plays).
+PLAYS_TIMEOUT_SECONDS = 60
 
 
 _RECORDED = "savetube_recorded"
@@ -149,7 +153,7 @@ async def run(
                 return
             raise
         except Exception as e:
-            if await _record_failure(r, e):
+            if await _record_failure(r, e, settings):
                 raise
 
 
@@ -697,14 +701,22 @@ async def _record_not_started(r: _Run, begun: _Begun) -> None:
     )
 
 
-async def _record_failure(r: _Run, e: Exception) -> bool:
+async def _record_failure(r: _Run, e: Exception, settings: Settings) -> bool:
     """Write the failure to the job row and log it: a YouTube block, an HTTP
     403, a degraded format list, a streak of bare "Video unavailable"
     failures, or a network error interrupts an archive job, anything else
-    fails it. Returns whether it wrote, False when the run lost its row."""
+    fails it. A failure that says the video is removed or private, or a bare
+    "Video unavailable" while another video plays, also marks the video
+    gone. Returns whether it wrote, False when the run lost its row."""
     message = str(e)
     archive_failure = not r.live and isinstance(e, DownloadFailed)
     refused = forbidden(message) or degraded_formats(message)
+    # A bare "Video unavailable" is a deleted video or this client refused.
+    unavailable = archive_failure and bare_unavailable(message)
+    streak = unavailable and await _unavailable_streak(
+        r.sessionmaker, r.video_id, UNAVAILABLE_STREAK - 1, UNAVAILABLE_STREAK_WINDOW
+    )
+    plays = await _another_plays(r, settings) if unavailable and not streak else None
     if archive_failure and not youtube_block(message) and refused and r.profile is not None:
         if not await _profile_blocked(r.sessionmaker, r.job_id, r.profile, e, r.disowned):
             return False
@@ -715,13 +727,8 @@ async def _record_failure(r: _Run, e: Exception) -> bool:
         youtube_block(message)
         # A cookie-free session refused is this client refused.
         or refused
-        # A bare "Video unavailable" alone may be a deleted video.
-        or (
-            bare_unavailable(message)
-            and await _unavailable_streak(
-                r.sessionmaker, r.video_id, UNAVAILABLE_STREAK - 1, UNAVAILABLE_STREAK_WINDOW
-            )
-        )
+        or streak
+        or plays is False
     ):
         if not await _blocked(r.sessionmaker, r.job_id, e, r.disowned):
             return False
@@ -737,7 +744,37 @@ async def _record_failure(r: _Run, e: Exception) -> bool:
         and (progressed or await _network_stalls(r.sessionmaker, r.video_id) < MAX_NETWORK_STALLS)
     ):
         return await _record_network(r, e, present, progressed=progressed)
-    return await _record_failed(r, e)
+    return await _record_failed(r, e, gone=archive_failure and (gone(message) or plays is True))
+
+
+async def _another_plays(r: _Run, settings: Settings) -> bool | None:
+    """Whether YouTube serves the newest other stored public video to the
+    run's cookie profile, None when no video or no answer tells."""
+    async with r.sessionmaker() as session:
+        other = await session.scalar(
+            select(Video.id)
+            .where(
+                Video.state == VideoState.COMPLETE,
+                Video.availability == "public",
+                Video.id != r.video_id,
+            )
+            .order_by(Video.completed_at.desc().nulls_last())
+            .limit(1)
+        )
+    if other is None:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="savetube-") as private:
+            cookiefile = cookies.cookiefile(settings, r.profile, Path(private))
+            await asyncio.wait_for(
+                asyncio.to_thread(probe_video, other, cookiefile), PLAYS_TIMEOUT_SECONDS
+            )
+    except TimeoutError:
+        return None
+    except Exception as e:
+        emit(log, logging.INFO, "job.control_refused", video=other, reason=logs.cut(f"{e}"))
+        return False
+    return True
 
 
 async def _record_network(r: _Run, e: Exception, present: int, *, progressed: bool) -> bool:
@@ -760,9 +797,9 @@ async def _record_network(r: _Run, e: Exception, present: int, *, progressed: bo
     return True
 
 
-async def _record_failed(r: _Run, e: Exception) -> bool:
-    """Fail the job and delete its parts. Returns False when the run lost
-    its row."""
+async def _record_failed(r: _Run, e: Exception, *, gone: bool = False) -> bool:
+    """Fail the job and delete its parts, and with `gone` mark the video
+    gone. Returns False when the run lost its row."""
     async with r.sessionmaker() as session:
         if await r.disowned(session):
             return False
@@ -773,7 +810,7 @@ async def _record_failed(r: _Run, e: Exception) -> bool:
         job.state = JobState.FAILED
         job.finished_at = datetime.now(UTC)
         job.log_tail = (str(e) or type(e).__name__)[-LOG_TAIL_CHARS:]
-        await _set_video_state(session, r.video_id, VideoState.FAILED)
+        await _set_video_state(session, r.video_id, VideoState.GONE if gone else VideoState.FAILED)
         if not r.live:
             await _pin(session, r.video_id, None)
         await session.commit()
@@ -791,5 +828,7 @@ async def _record_failed(r: _Run, e: Exception) -> bool:
         # An expected failure is one line. Anything else needs its traceback.
         exc_info=not isinstance(e, DownloadFailed),
     )
+    if gone:
+        emit(log, logging.INFO, "video.gone", job=r.job_id, video=r.video_id, **r.described)
     setattr(e, _RECORDED, True)
     return True

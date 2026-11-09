@@ -40,6 +40,9 @@ class VideoState(enum.StrEnum):
     STAGED = "staged"
     # The user deleted its files. The row stays, so nothing downloads it again.
     DELETED = "deleted"
+    # YouTube no longer serves it: removed, private, or unavailable while
+    # another video plays (savetube.jobs.job). Nothing downloads it again.
+    GONE = "gone"
 
 
 class JobKind(enum.StrEnum):

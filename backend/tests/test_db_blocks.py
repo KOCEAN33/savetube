@@ -304,7 +304,8 @@ async def test_a_bare_unavailable_outside_a_streak_fails_the_job(settings, ended
     )
     jobs, video = await _unavailable_run(settings, message)
     assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, message)
-    assert video.state is VideoState.FAILED
+    # A removed video is gone, so no poll queues it again.
+    assert video.state is (VideoState.GONE if message == REMOVED else VideoState.FAILED)
     assert _block_state(settings) == (0, None)
 
 
