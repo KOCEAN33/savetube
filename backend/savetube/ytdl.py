@@ -42,10 +42,41 @@ WAIT_FOR_VIDEO = (30, 120)
 # A params key of savetube's, not yt-dlp's: the Unix time after which a
 # recording stops waiting for its stream to start. `download` takes it out.
 WAIT_UNTIL = "savetube_wait_until"
+# A params key of savetube's: refuse a degraded format list (`degraded`).
+# `download` takes it out.
+REFUSE_DEGRADED = "savetube_refuse_degraded"
+# The tallest pick a degraded format list gives. YouTube throttling a session
+# serves members-only videos as the progressive 360p format 18 alone, while a
+# later probe offers 1080p.
+DEGRADED_HEIGHT = 360
+# DegradedFormats' text, which reaches the parent inside the child's error.
+DEGRADED_MARKER = "only a degraded format list"
 
 
 class NotStarted(Exception):
     """The stream was still upcoming at the recording's WAIT_UNTIL."""
+
+
+class DegradedFormats(Exception):
+    def __init__(self, info: dict[str, Any]) -> None:
+        super().__init__(f"YouTube offered {DEGRADED_MARKER}: {info.get('format_id')}")
+
+
+def degraded(info: dict[str, Any]) -> bool:
+    """Whether YouTube withheld the adaptive formats. A video uploaded at 360p
+    still offers a video-only format, so its pick does not count. An info
+    dict without a format list shows nothing withheld."""
+    listed = info.get("formats")
+    if not listed or (info.get("height") or 0) > DEGRADED_HEIGHT:
+        return False
+    return not any(
+        f.get("vcodec") not in (None, "none") and f.get("acodec") == "none" for f in listed
+    )
+
+
+def degraded_formats(message: str) -> bool:
+    """Whether a failure is DegradedFormats."""
+    return DEGRADED_MARKER in message
 
 
 # yt-dlp's text when YouTube refuses this client rather than the video. Each
@@ -240,6 +271,7 @@ def build_params(
         # A recording keeps yt-dlp's order: a live stream rarely offers AV1,
         # and a changed pick there cannot be tried again once the live ends.
         params["format_sort"] = FORMAT_SORT
+        params[REFUSE_DEGRADED] = True
     if cookiefile is not None:
         params["cookiefile"] = str(cookiefile)
     if ratelimit is not None:
@@ -396,13 +428,17 @@ def download(
     the info dict once the format is chosen, before the download starts.
 
     With WAIT_UNTIL in `params`, a stream with no format chosen by then
-    raises NotStarted."""
+    raises NotStarted. With REFUSE_DEGRADED, a `degraded` pick raises
+    DegradedFormats before any byte."""
     params = {**params, "logger": YtdlpLogger()}
     wait_until = params.pop(WAIT_UNTIL, None)
+    refuse_degraded = params.pop(REFUSE_DEGRADED, False)
     chosen = threading.Event()
     gave_up = threading.Event()
 
     def before_download(info: dict[str, Any]) -> None:
+        if refuse_degraded and degraded(info):
+            raise DegradedFormats(info)
         chosen.set()
         if on_format is not None:
             on_format(info)

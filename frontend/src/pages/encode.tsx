@@ -56,7 +56,7 @@ function EncodeSettingsForm({
   return (
     <div className="flex flex-col gap-4 p-4">
       <p className="text-sm text-muted-foreground">
-        Queues stored H.264 videos for the external AV1 encoder.
+        Queues stored H.264 and VP9 videos for the external AV1 encoder.
       </p>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
         <div className="flex items-center gap-2">

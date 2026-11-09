@@ -83,7 +83,7 @@ The archive's disks are loud while a download writes to them for hours. With `SA
 <staging>/ready/<video id>/      finished, waiting for the move
 ```
 
-- The download, the integrity checks and the audio copy all run on staging. A passed download is renamed into `ready/` and its video becomes `staged`. Its job succeeds, and `dir_path` already names its place in the tree.
+- The download, the integrity checks and the audio copy all run on staging. A passed download is renamed into `ready/` and its video becomes `staged`. Its job succeeds, and `dir_path` already names its place in the tree. A `ready/<video id>/` whose video is not `staged` was left by an attempt that failed between the rename and its commit, and the next attempt replaces it.
 - A `staged` video is hidden like any video that is not `complete`: no list shows it and nothing plays it. The poll counts it as stored and queues no job for it.
 - The scheduler checks every 60 s whether the staged videos move (`savetube.staging`), and at once on Move now. They move when at least one of these holds:
   - The staged videos hold 80 GiB or more (`MOVE_BATCH_BYTES`), even while a download runs. On a volume smaller than about 95 GiB, the free-space rule fires first.

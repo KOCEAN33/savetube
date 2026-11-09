@@ -798,3 +798,39 @@ async def test_dispatch_waiting_counts_members_only_jobs_with_no_member(settings
     [line] = _events(caplog, "dispatch.waiting")
     fields = _fields(line)
     assert (fields["reason"], fields["no_member"]) == ("no_member", 3)
+
+
+@pytest.mark.anyio
+async def test_a_degraded_format_list_with_a_member_profile_pauses_that_profile(settings, caplog):
+    """Throttling served a members-only video with only 360p format 18: the
+    profile pauses as on a 403, and the attempt does not count."""
+    import logging
+
+    from savetube.ytdl import DEGRADED_MARKER
+
+    degraded = f"DegradedFormats: YouTube offered {DEGRADED_MARKER}: 18"
+    settings = _member_job_rows(settings)
+    before = datetime.now(UTC)
+    with caplog.at_level(logging.INFO, logger="savetube"):
+        jobs, video = await _run_steps(settings, _fails_with(degraded))
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert history.state == "interrupted"
+    assert degraded in history.log_tail
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert video.state is VideoState.PENDING
+    count, until = _profile_state(settings, "main")
+    assert count == 1
+    backoff = timedelta(minutes=30)
+    assert before + backoff <= until <= datetime.now(UTC) + backoff
+    assert _block_state(settings) == (0, None)
+    assert _events(caplog, "job.failed") == []
+    assert _events(caplog, "dispatch.blocked") == []
+    [line] = _events(caplog, "dispatch.profile_blocked")
+    assert line.levelno == logging.WARNING
+    fields = _fields(line)
+    assert (fields["profile"], fields["count"], fields["job"], fields["video"]) == (
+        "main",
+        1,
+        1,
+        "v1",
+    )

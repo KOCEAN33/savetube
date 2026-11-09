@@ -520,7 +520,7 @@ def _youtube_av1(video: Video, watch: FormatWatch | None) -> bool:
 
 
 def candidates():
-    """Complete H.264 videos that no replace, recording, open format watch,
+    """Complete H.264 and VP9 videos that no replace, recording, open format watch,
     kept original or encode job holds, largest first."""
     held_by_job = (
         select(Job.id)
@@ -551,7 +551,7 @@ def candidates():
         .where(
             Video.state == VideoState.COMPLETE,
             Video.dir_path.is_not(None),
-            codec.like("avc1%") | codec.like("h264%"),
+            codec.like("avc1%") | codec.like("h264%") | codec.like("vp9%") | codec.like("vp09%"),
             ~held_by_job,
             ~held_by_watch,
             ~held_by_encode,

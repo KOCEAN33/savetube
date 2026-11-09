@@ -18,6 +18,11 @@ Failures paid for once that the code does not show.
 - respx cannot mock Authlib or Starlette's TestClient, because both use `httpx2`.
 - pytest-cov fails 200 tests with `TypeError: 'InternalTraversal' object is not callable` from SQLAlchemy's Cython `_cache_key_cy.py`, with every coverage core. `DISABLE_SQLALCHEMY_CEXT_RUNTIME=1` does not help. A `sys.monitoring` line collector works: `/tmp/wt-run-split-plugin/linecov_plugin.py`, loaded with `-p linecov_plugin`.
 - `make talos-config` fails off the home LAN. Use `talosctl patch mc --mode no-reboot` over the tailnet.
+- yt-dlp's default player clients fail `tv` on a members-only video ("The page needs to be reloaded") and fall back to `web_embedded`, whose media googlevideo answers with HTTP 403 while extraction succeeds. `--test` fetches too few bytes to show it. Reproduce with a full download, and compare `--extractor-args youtube:player_client=mweb`.
+- A replaced cookie file drops its profile's `membership` rows. Until a poll that lists a members-only video of the channel checks it again, its members-only jobs wait (`no_member`). Ask the scheduler to poll the source now: `kubectl exec deploy/savetube-scheduler -c scheduler -- python -c "import urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8082/poll/<id>', method='POST'))"`.
+- The `savetube-cookies` Secret syncs from 1Password every hour. `kubectl annotate externalsecret savetube-cookies force-sync=$(date +%s) --overwrite` syncs it at once.
+- Argo CD self-heal reverts `kubectl scale` on a savetube Deployment within seconds. Stopping downloads takes the user's pause switch.
+- `kubectl logs` loses a replaced pod's lines. Loki keeps them for 30 days: `curl -s -G https://loki.lab.hiriri.com/loki/api/v1/query_range --data-urlencode 'query={namespace="savetube-prod", container="worker"} |= "..."' --data-urlencode since=720h`.
 
 ## Code
 

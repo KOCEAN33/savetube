@@ -385,3 +385,167 @@ def test_a_permanent_failure_is_no_fault_of_the_session(message, permanent):
     from savetube.ytdl import permanent as is_permanent
 
     assert is_permanent(message) is permanent
+
+
+UNREACHABLE = "http://127.0.0.1:9/x"
+
+
+def _combined(format_id, height, url, **extra):
+    return {
+        "format_id": format_id,
+        "url": url,
+        "ext": "mp4",
+        "height": height,
+        "width": height * 16 // 9,
+        "vcodec": "avc1.42001E",
+        "acodec": "mp4a.40.2",
+        **extra,
+    }
+
+
+def _fake_youtube(monkeypatch, formats):
+    """yt_dlp.YoutubeDL answers `fake:v1` with `formats`, nothing else."""
+    import yt_dlp
+    from yt_dlp.extractor.common import InfoExtractor
+
+    class _FakeIE(InfoExtractor):
+        _VALID_URL = r"fake:(?P<id>\w+)"
+
+        def _real_extract(self, url):
+            return {"id": "v1", "title": "t", "formats": [dict(f) for f in formats]}
+
+    class _YoutubeDL(yt_dlp.YoutubeDL):
+        def __init__(self, params):
+            super().__init__(params, auto_init=False)
+            self.add_info_extractor(_FakeIE())
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _YoutubeDL)
+
+
+class _Media:
+    """A local HTTP server that records each path it serves."""
+
+    def __init__(self):
+        import http.server
+        import threading
+
+        self.paths = []
+        paths = self.paths
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                paths.append(self.path)
+                if self.path.endswith(".m3u8"):
+                    body = (
+                        b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n"
+                        b"#EXTINF:1.0,\nseg0.ts\n#EXT-X-ENDLIST\n"
+                    )
+                else:
+                    body = b"\x00" * 4096
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
+
+    def close(self):
+        self.server.shutdown()
+
+
+_NO_SLEEP = {"sleep_interval": 0, "max_sleep_interval": 0, "sleep_interval_requests": 0}
+
+
+def _download_error(url, params):
+    """Run `download`, return its error text, or None when it finished."""
+    try:
+        download(url, params | _NO_SLEEP | {"quiet": True, "noprogress": True})
+    except BaseException as e:  # noqa: BLE001 - any failure is data here
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
+def test_an_archive_refuses_a_throttled_list_of_only_format_18(tmp_path, monkeypatch):
+    """Throttling served members-only videos with only progressive 18 (360p),
+    while a later probe offered 399 (1080p video-only) + 251."""
+    from savetube.ytdl import DEGRADED_MARKER, degraded_formats
+
+    _fake_youtube(monkeypatch, [_combined("18", 360, UNREACHABLE)])
+    with pytest.raises(Exception) as caught:
+        download("fake:v1", build_params(tmp_path) | {"quiet": True, "noprogress": True})
+    text = str(caught.value)
+    assert DEGRADED_MARKER in text
+    assert degraded_formats(text)
+    assert degraded_formats(f"DownloadError: ERROR: [youtube] v1: {text}")
+    # Refused before any byte: no media file landed in the workdir.
+    media = [
+        p for p in tmp_path.rglob("*") if p.is_file() and not p.name.endswith((".json", ".txt"))
+    ]
+    assert media == []
+
+
+def test_degraded_formats_ignores_other_failures():
+    from savetube.ytdl import degraded_formats
+
+    assert not degraded_formats(
+        "DownloadError: ERROR: unable to download video data: HTTP Error 403: Forbidden"
+    )
+    assert not degraded_formats("DownloadError: ERROR: [youtube] v1: Video unavailable")
+
+
+@pytest.mark.parametrize(
+    ("formats", "live"),
+    [
+        # Uploaded at 360p: a video-only 360p format sits next to 18.
+        (
+            [
+                {
+                    "format_id": "134",
+                    "path": "/134",
+                    "ext": "mp4",
+                    "height": 360,
+                    "width": 640,
+                    "vcodec": "avc1.4d401e",
+                    "acodec": "none",
+                },
+                {**_combined("18", 360, ""), "path": "/18"},
+            ],
+            False,
+        ),
+        # A just-ended live offers only combined HLS formats, at 1080p.
+        (
+            [
+                {
+                    **_combined("96", 1080, ""),
+                    "path": "/96.m3u8",
+                    "protocol": "m3u8_native",
+                    "ext": "mp4",
+                }
+            ],
+            False,
+        ),
+        # A recording takes what the stream offers.
+        ([{**_combined("18", 360, ""), "path": "/18"}], True),
+    ],
+    ids=["uploaded-at-360p", "combined-hls-1080p", "recording"],
+)
+def test_download_takes_a_list_that_is_not_degraded(tmp_path, monkeypatch, formats, live):
+    media = _Media()
+    try:
+        served = []
+        for f in formats:
+            f = dict(f)
+            f["url"] = media.base + f.pop("path")
+            served.append(f)
+        _fake_youtube(monkeypatch, served)
+        error = _download_error("fake:v1", build_params(tmp_path, live=live))
+    finally:
+        media.close()
+    assert error is None
+    # The media download ran: a refusal comes before any request.
+    assert media.paths

@@ -200,7 +200,8 @@ def _encode_row(state):
     ("info", "extra_sql", "on_disk", "queued", "remembered"),
     [
         pytest.param(None, [], True, True, False, id="candidate"),
-        pytest.param(_info("v1", video=VP9), [], True, False, False, id="not-h264"),
+        pytest.param(_info("v1", video=VP9), [], True, True, False, id="vp9"),
+        pytest.param(_info("v1", video=AV1_SAME), [], True, False, False, id="already-av1"),
         pytest.param(None, ["UPDATE video SET state = 'downloading'"], True, False, False,
                      id="not-complete"),
         pytest.param(None, ["INSERT INTO job (kind, state, video_id, attempts)"
