@@ -25,7 +25,7 @@ export const queryKeys = {
   video: (id: string) => ["video", id] as const,
   subtitles: (videoId: string) => ["video", videoId, "subtitles"] as const,
   formatWatch: (videoId: string) => ["video", videoId, "formats"] as const,
-  heldReplaces: () => ["held-replaces"] as const,
+  attention: () => ["attention"] as const,
   videos: (filter: {
     q: string
     type: string | undefined
@@ -55,7 +55,6 @@ export const queryKeys = {
   queuedJobs: (scope: string, page: number) => ["jobs", "archive", scope, "queued", page] as const,
   channelRecentJobs: (channelId: string, page: number) =>
     ["jobs", "archive", channelId, "recent", page] as const,
-  problemJobs: () => ["jobs", "archive", "all", "problems"] as const,
   allRecentJobs: (filter: { state: JobState | undefined; unresolved: boolean; page: number }) =>
     ["jobs", "archive", "all", "recent", filter] as const,
   recordJobs: (state: JobState | undefined) => ["jobs", "record", state] as const,

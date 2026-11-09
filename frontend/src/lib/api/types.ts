@@ -226,17 +226,30 @@ export interface FormatRow {
   reason: string | null
 }
 
-// A replace only a pick starts: the VOD and the stored file differ by more
-// than 2 s (docs/plan/live.md, Format watch).
-export interface HeldReplace {
-  video_id: string
+// A Needs attention item on Home (docs/plan/frontend.md, Home).
+export type AttentionKind =
+  | "archive_failed"
+  | "record_failed"
+  | "replace_failed"
+  | "encode_failed"
+  | "held"
+  | "source_failing"
+  | "cookie_signed_out"
+
+export interface AttentionItem {
+  kind: AttentionKind
+  // A job id for a job item, the video id for `held`, the source id for
+  // `source_failing`, the profile name for `cookie_signed_out`.
+  key: string
+  video_id: string | null
+  channel_id: string | null
   title: string
-  channel_name: string
-  // VOD minus stored, in seconds.
-  duration_diff: number
-  // The picks that rank above the stored streams, video first.
-  upgrade: { kind: "audio" | "video"; format_id: string; codec: string }[]
-  checked_at: string | null
+  channel_name: string | null
+  detail: string | null
+  // The full text behind a shortened `detail`.
+  log_tail: string | null
+  at: string | null
+  dismissable: boolean
 }
 
 // The format watch of a stored live, or a user's probe of any complete video

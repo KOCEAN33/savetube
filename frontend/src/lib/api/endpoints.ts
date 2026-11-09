@@ -1,5 +1,7 @@
 import { get, getPage, request, withQuery } from "@/lib/api/client"
 import type {
+  AttentionItem,
+  AttentionKind,
   Channel,
   ChannelIn,
   ChannelPatch,
@@ -13,7 +15,6 @@ import type {
   EncodePages,
   EncodeSettingsIn,
   FormatWatch,
-  HeldReplace,
   Job,
   JobKind,
   JobState,
@@ -46,6 +47,8 @@ type JobQuery = {
 }
 
 export const mutations = {
+  dismissAttention: (items: { kind: AttentionKind; key: string }[]) =>
+    request<void>("POST", "/api/attention/dismiss", { items }),
   createSources: (body: SourceIn) => request<Source[]>("POST", "/api/sources", body),
   updateSource: (id: number, body: SourcePatch) =>
     request<Source>("PATCH", `/api/sources/${id}`, body),
@@ -93,6 +96,7 @@ export const mutations = {
 
 export const api = {
   me: () => get<Me>("/api/me"),
+  attention: () => get<AttentionItem[]>("/api/attention"),
   statsSummary: () => get<StatsSummary>("/api/stats/summary"),
   statsDaily: (days: number) => get<DailyStat[]>("/api/stats/daily", { days }),
   channels: () => get<Channel[]>("/api/channels"),
@@ -152,7 +156,6 @@ export const api = {
   // Null for a video without a row: no format watch and no probe yet.
   formatWatch: (id: string) =>
     get<FormatWatch | null>(`/api/videos/${encodeURIComponent(id)}/formats`),
-  heldReplaces: () => get<HeldReplace[]>("/api/formats/held"),
   subtitles: (id: string) => get<Subtitle[]>(`/api/videos/${encodeURIComponent(id)}/subtitles`),
   subtitleUrl: (id: string, lang: string) =>
     `/api/videos/${encodeURIComponent(id)}/subtitles/${encodeURIComponent(lang)}`,
