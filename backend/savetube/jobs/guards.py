@@ -11,7 +11,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from savetube import logs
-from savetube.db.models import CookieProfile, DownloadSettings, Job, JobKind, JobState
+from savetube.db.models import (
+    CookieProfile,
+    DownloadSettings,
+    Job,
+    JobKind,
+    JobState,
+    Video,
+    VideoState,
+)
 from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, PROFILE_BLOCKED_LOG
 from savetube.jobs.rows import LOG_TAIL_CHARS, _interrupt, _owner_lost
 from savetube.jobs.runners import DownloadFailed
@@ -194,16 +202,19 @@ async def _unavailable_streak(
 ) -> bool:
     """Whether the last `count` failed or succeeded archive jobs of other
     videos, newest by `finished_at`, all failed on a bare "Video unavailable"
-    within `within` of now."""
+    within `within` of now. A failure of a video found gone does not count,
+    so retries of gone videos read as no block."""
     since = datetime.now(UTC) - within
     async with sessionmaker() as session:
         ended = (
             await session.execute(
                 select(Job.state, Job.log_tail, Job.finished_at)
+                .join(Video, Video.id == Job.video_id)
                 .where(
                     Job.kind == JobKind.ARCHIVE,
                     Job.video_id != video_id,
                     Job.state.in_([JobState.FAILED, JobState.SUCCEEDED]),
+                    Video.state != VideoState.GONE,
                 )
                 .order_by(Job.finished_at.desc().nulls_last())
                 .limit(count)

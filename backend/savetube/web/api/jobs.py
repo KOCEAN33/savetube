@@ -50,6 +50,28 @@ def job_reason(log_tail: str | None) -> str | None:
     return line if len(line) <= _REASON_CHARS else line[: _REASON_CHARS - 3] + "..."
 
 
+def resolved_failure() -> ColumnElement[bool]:
+    """A failed or interrupted archive run a later run of its video fixed: a
+    success, or for an interrupted run any later failure. The query must join
+    Video on Job.video_id."""
+    later = aliased(Job)
+    resolved = exists().where(
+        later.video_id == Job.video_id,
+        later.kind == JobKind.ARCHIVE,
+        or_(
+            later.state == JobState.SUCCEEDED,
+            and_(Job.state == JobState.INTERRUPTED, later.state == JobState.FAILED),
+        ),
+        later.finished_at > Job.finished_at,
+    )
+    return and_(
+        Job.kind == JobKind.ARCHIVE,
+        Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),
+        # No run fixes a video YouTube no longer serves.
+        or_(resolved, Video.state == VideoState.GONE),
+    )
+
+
 class JobOut(_Out):
     id: int
     kind: JobKind
@@ -89,7 +111,12 @@ def _retryable() -> ColumnElement[bool]:
         Video.state.not_in(
             [VideoState.COMPLETE, VideoState.STAGED, VideoState.DELETED, VideoState.GONE]
         ),
-        ~exists().where(later.video_id == Job.video_id, later.id > Job.id),
+        # An interrupted row records a run of an earlier job, so it is no newer job.
+        ~exists().where(
+            later.video_id == Job.video_id,
+            later.id > Job.id,
+            later.state != JobState.INTERRUPTED,
+        ),
     )
 
 
@@ -101,7 +128,8 @@ async def jobs(
     # Repeat the parameter for several states.
     state: Annotated[list[JobState] | None, Query()] = None,
     channel_id: str | None = None,
-    # Drop a failed or interrupted archive run once a later run of its video succeeded.
+    # Drop a failed or interrupted archive run once a later run of its video
+    # succeeded, and an interrupted one once a later run of its video ended.
     unresolved: bool = False,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -122,21 +150,7 @@ async def jobs(
     if channel_id:
         where.append(_of_channel(channel_id))
     if unresolved:
-        later = aliased(Job)
-        resolved = exists().where(
-            later.video_id == Job.video_id,
-            later.kind == JobKind.ARCHIVE,
-            later.state == JobState.SUCCEEDED,
-            later.finished_at > Job.finished_at,
-        )
-        where.append(
-            ~and_(
-                Job.kind == JobKind.ARCHIVE,
-                Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),
-                # No run fixes a video YouTube no longer serves.
-                or_(resolved, Video.state == VideoState.GONE),
-            )
-        )
+        where.append(~resolved_failure())
     total = await session.scalar(
         select(func.count())
         .select_from(Job)

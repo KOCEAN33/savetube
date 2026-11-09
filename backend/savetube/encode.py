@@ -54,6 +54,8 @@ QUEUE_DEPTH = 3
 # moves a file between folders in moments.
 LOST_AFTER = timedelta(minutes=10)
 DURATION_SECONDS = 1.0
+# A smaller source saves little, and a low-bitrate one can come out larger.
+MIN_SOURCE_BYTES = 10 * 2**20
 FPS_SLACK = 0.05
 
 _OPEN = (EncodeState.QUEUED, EncodeState.CLAIMED)
@@ -607,7 +609,12 @@ async def fill(
             video = await session.get(Video, video_id)
             watch = await session.get(FormatWatch, video_id)
             stored = media_path(settings.archive_root, video)
-            if _youtube_av1(video, watch) or stored is None or not stored.is_file():
+            if (
+                _youtube_av1(video, watch)
+                or stored is None
+                or not stored.is_file()
+                or stored.stat().st_size < MIN_SOURCE_BYTES
+            ):
                 skipped.add(video_id)
                 # The info dict is large. Keep the session from holding each one.
                 session.expunge(video)

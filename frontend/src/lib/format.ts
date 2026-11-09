@@ -28,6 +28,12 @@ export function formatDuration(seconds: number | null | undefined): string {
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`
 }
 
+/** A duration difference: "+2.5 s" or "-2.0 s". */
+export function signedSeconds(diff: number | null): string {
+  if (diff == null) return "-"
+  return `${diff > 0 ? "+" : ""}${diff.toFixed(1)} s`
+}
+
 /** Totals across many videos: "1,234.5 h". */
 export function formatHours(seconds: number): string {
   return `${(seconds / 3600).toLocaleString("en-US", { maximumFractionDigits: 1 })} h`

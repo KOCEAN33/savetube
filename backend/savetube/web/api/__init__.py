@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from savetube.web.api import (
+    attention,
     channels,
     encode,
     formats,
@@ -22,5 +23,17 @@ __all__ = ["get_scanner", "job_reason", "router"]
 router = APIRouter(
     prefix="/api", dependencies=[Depends(current_user), Depends(require_csrf_header)]
 )
-for module in (settings, stats, channels, sources, scan, jobs, pods, videos, formats, encode):
+for module in (
+    settings,
+    stats,
+    channels,
+    sources,
+    scan,
+    jobs,
+    pods,
+    videos,
+    formats,
+    encode,
+    attention,
+):
     router.include_router(module.router)

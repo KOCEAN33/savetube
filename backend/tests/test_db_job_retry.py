@@ -99,10 +99,11 @@ def test_an_older_failed_job_answers_409(settings):
     [
         "(4, 'record', 'cancelled', 'v1', 0)",
         "(4, 'replace', 'succeeded', 'v1', 1)",
-        "(4, 'archive', 'interrupted', 'v1', 0)",
     ],
-    ids=["record_cancelled", "replace_succeeded", "archive_interrupted"],
+    ids=["record_cancelled", "replace_succeeded"],
 )
+# An interrupted row records a run of an earlier job, so it is no newer job
+# (test_a_newer_interrupted_row_does_not_stop_the_failed_job_from_being_retryable).
 def test_a_newer_job_of_any_kind_or_state_makes_the_failed_job_not_retryable(settings, newer):
     _three_failures(
         settings,
@@ -190,3 +191,65 @@ async def test_a_retry_queues_a_job_for_a_video_the_poll_gave_up_on(settings, ca
     # The next poll leaves the retry's job queued.
     [new] = _sql_rows(settings, f"{JOB_COLUMNS} WHERE id = {new_id}")
     assert (new.kind, new.state, new.video_id) == ("archive", "queued", "v1")
+
+
+def _interrupted_after_failures(settings, *extra):
+    """Video v1 as in production: three failed archive jobs, the last at 11:22, and the
+    history row an earlier block wrote at 03:22, which has the highest id."""
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'Chan', 'Chan [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v1', 'UC1', 'videos', 't', 'failed')",
+        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail, finished_at) VALUES"
+        " (2721, 'archive', 'failed', 'v1', 1, 'ERROR: x', now() - interval '30 hours'),"
+        " (4129, 'archive', 'failed', 'v1', 2, 'ERROR: x', now() - interval '20 hours'),"
+        " (4340, 'archive', 'failed', 'v1', 3, 'ERROR: x', now() - interval '1 hour'),"
+        " (4472, 'archive', 'interrupted', 'v1', 0,"
+        "  'blocked by YouTube: DownloadError: ERROR: [youtube] v1: Video unavailable',"
+        "  now() - interval '9 hours')",
+        "SELECT setval('job_id_seq', 4472)",
+        *extra,
+    )
+
+
+def test_a_newer_interrupted_row_does_not_stop_the_failed_job_from_being_retryable(
+    settings,
+):
+    _interrupted_after_failures(settings)
+    with _api(settings) as client:
+        assert _retryable(client) == {2721: False, 4129: False, 4340: True, 4472: False}
+        response = client.post("/api/jobs/4340/retry")
+        assert response.status_code == 200
+        new_id = response.json()["job_id"]
+        [new] = _sql_rows(settings, f"{JOB_COLUMNS} WHERE id > 4472")
+        assert (new.id, new.kind, new.state, new.video_id) == (new_id, "archive", "queued", "v1")
+        assert _video_state(settings) == "pending"
+        # The retry's queued job is a newer job that is no history row.
+        assert client.post("/api/jobs/4340/retry").status_code == 409
+        assert _retryable(client)[4340] is False
+    assert len(_sql_rows(settings, "SELECT id FROM job")) == 5
+
+
+def test_api_unresolved_drops_an_interrupted_row_a_later_failure_followed(settings):
+    _interrupted_after_failures(
+        settings,
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v2', 'UC1', 'videos', 't', 'pending'), ('v3', 'UC1', 'videos', 't', 'failed')",
+        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail, finished_at) VALUES"
+        # v2: the interrupted row and its job, queued again, with nothing finished after it.
+        " (5000, 'archive', 'queued', 'v2', 0, NULL, NULL),"
+        " (5001, 'archive', 'interrupted', 'v2', 0, 'blocked by YouTube: x',"
+        "  now() - interval '2 hours'),"
+        # v3: the failure finished before the interrupted row, not after it.
+        " (5002, 'archive', 'failed', 'v3', 1, 'ERROR: x', now() - interval '3 hours'),"
+        " (5003, 'archive', 'interrupted', 'v3', 0, 'blocked by YouTube: x',"
+        "  now() - interval '2 hours')",
+        "SELECT setval('job_id_seq', 5003)",
+    )
+    params = {"state": ["failed", "interrupted"], "unresolved": True}
+    with _api(settings) as client:
+        ids = {j["id"] for j in client.get("/api/jobs", params=params).json()}
+    assert 4472 not in ids
+    assert 4340 in ids
+    assert {5001, 5003} <= ids

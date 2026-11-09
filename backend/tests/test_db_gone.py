@@ -305,3 +305,40 @@ def test_api_unresolved_omits_the_failed_job_of_a_gone_video(settings):
         ).json()
     assert sorted(j["id"] for j in every) == [1, 2]
     assert [j["id"] for j in unresolved] == [2]
+
+
+def _streak_of_gone(settings, *others):
+    """The 2 other videos' archive jobs failed on a bare "Video unavailable" minutes ago,
+    and both videos are gone since."""
+    _streak(settings, *others)
+    _sql(settings, "UPDATE video SET state = 'gone' WHERE id IN ('other0', 'other1')")
+
+
+@pytest.mark.anyio
+async def test_failures_of_gone_videos_start_no_streak_so_the_check_runs(
+    settings, monkeypatch, caplog
+):
+    _streak_of_gone(settings, PROBEABLE)
+    probe = _Probe()
+    jobs, video = await _archive(settings, monkeypatch, caplog, UNAVAILABLE, probe)
+    assert probe.calls == ["seen"]
+    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, UNAVAILABLE)
+    assert video.state is VideoState.GONE
+    _assert_gone_logged(caplog)
+    assert _events(caplog, "dispatch.blocked") == []
+    assert _block_state(settings) == (0, None)
+
+
+@pytest.mark.anyio
+async def test_failures_of_gone_videos_with_nothing_to_check_fail_the_job_without_a_block(
+    settings, monkeypatch, caplog
+):
+    _streak_of_gone(settings)
+    probe = _Probe()
+    jobs, video = await _archive(settings, monkeypatch, caplog, UNAVAILABLE, probe)
+    assert probe.calls == []
+    assert (jobs[1].state, jobs[1].log_tail) == (JobState.FAILED, UNAVAILABLE)
+    assert video.state is VideoState.FAILED
+    assert [j.id for j in jobs.values() if j.state == "interrupted"] == []
+    assert _events(caplog, "dispatch.blocked") == []
+    assert _block_state(settings) == (0, None)

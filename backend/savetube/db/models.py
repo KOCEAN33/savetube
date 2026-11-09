@@ -492,6 +492,31 @@ class EncodeJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class AttentionDismissal(Base):
+    """A Needs attention item the user dismissed (docs/plan/frontend.md, Home)."""
+
+    __tablename__ = "attention_dismissal"
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    # A job id, or the video id of a held replace.
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    dismissed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Notification(Base):
+    """An item the scheduler posted to Discord, so it posts once
+    (docs/plan/operations.md, Notifications and monitoring)."""
+
+    __tablename__ = "notification"
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    # A record job id, or a cookie profile name.
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class StorageSample(Base):
     __tablename__ = "storage_sample"
 

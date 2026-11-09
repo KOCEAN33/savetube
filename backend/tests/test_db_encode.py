@@ -4,6 +4,7 @@ files, checking and swapping a result, and the routes."""
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -81,6 +82,12 @@ def _stored(settings, video_id="v1", *, media=b"m" * 1000, info=None, state="com
         f" {_jsonb(info)})",
     )
     return directory
+
+
+@pytest.fixture(autouse=True)
+def _tiny_sources(monkeypatch):
+    """The fixtures' stored files are a few KiB."""
+    monkeypatch.setattr("savetube.encode.MIN_SOURCE_BYTES", 0)
 
 
 def _enable(settings, profile=PROFILE):
@@ -196,6 +203,19 @@ async def test_a_still_title_queues_under_the_30_fps_profile(settings, profile, 
     _, job = _queue_file(settings)
     [row] = _jobs(settings)
     assert (job["profile"], row.profile) == (queued, queued)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("size", "queued"), [(10 * 2**20 - 1, False), (10 * 2**20, True)])
+async def test_a_source_under_10_mib_is_not_queued(settings, monkeypatch, size, queued):
+    monkeypatch.undo()  # the real minimum, not _tiny_sources's
+    directory = _stored(settings)
+    os.truncate(directory / "v1.mp4", size)
+    _enable(settings)
+
+    await _step(settings, now=datetime.now(UTC))
+
+    assert len(_jobs(settings)) == int(queued)
 
 
 @pytest.mark.anyio

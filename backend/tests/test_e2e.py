@@ -435,6 +435,14 @@ def test_the_api_serves_the_stored_video(server, downloaded, media):
 def test_a_video_that_is_no_live_has_no_format_watch(server, downloaded):
     r = server.get(f"/api/videos/{VIDEO_ID}/formats")
     assert r.status_code == 200 and r.json() is None
+    r = server.get("/api/attention")
+    assert r.status_code == 200 and not any(i["kind"] == "held" for i in r.json())
+    r = server.post(
+        "/api/attention/dismiss",
+        json={"items": [{"kind": "source_failing", "key": "1"}]},
+        headers=WRITE,
+    )
+    assert r.status_code == 422
     r = server.post(
         f"/api/videos/{VIDEO_ID}/formats/pick", json={"format_ids": ["251"]}, headers=WRITE
     )

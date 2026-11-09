@@ -10,6 +10,7 @@ The encoder is its own private repo, `KOCEAN33/media-encoder`, at `/Users/kocean
 - Settings turn re-encoding on or off and pick the profile. A video's title can move its job to a 30 fps profile (Profiles).
 - A video with a queued or running replace job, an open live recording, an open format watch, or an original already kept aside is skipped. So is a video with an encode job queued, claimed, failed or succeeded.
 - The last format probe is the format watch's stored list, else the format list of the download's info dict. A video with neither counts as offered AV1.
+- A stored file under 10 MiB is skipped: it saves little, and a low-bitrate one can come out larger than its source.
 - The largest stored videos queue first.
 
 ## Profiles
