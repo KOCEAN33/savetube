@@ -11,7 +11,7 @@ from sqlalchemy import Exists, cast, delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.types import Text
 
-from savetube.attention import record_failed, signed_out
+from savetube.attention import dismissed_job, record_failed, signed_out
 from savetube.config import Settings
 from savetube.db.models import Channel, CookieProfile, Job, Notification, Video
 from savetube.logs import emit
@@ -50,7 +50,7 @@ async def _records(session: AsyncSession, base: str, now: datetime) -> list[Mess
         .join(Video, Video.id == Job.video_id)
         .join(Channel, Channel.id == Video.channel_id)
         .where(record_failed(), Job.finished_at > now - RECENT)
-        .where(~_sent("record_failed", cast(Job.id, Text)))
+        .where(~_sent("record_failed", cast(Job.id, Text)), ~dismissed_job())
         .order_by(Job.id)
     )
     out = []

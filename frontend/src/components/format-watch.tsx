@@ -31,6 +31,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { useDismiss } from "@/hooks/use-dismiss"
 import { api, mutations, type FormatRow, type FormatWatch } from "@/lib/api"
 import { formatBytes, formatClock, formatDuration, formatKbps, signedSeconds } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
@@ -231,7 +232,7 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
           {probe.isError && <ErrorBox error={probe.error} />}
           {open && (
             <>
-              <WatchStatus watch={w} />
+              <WatchStatus videoId={videoId} watch={w} />
               {pick.isError && <ErrorBox error={pick.error} />}
               {(["video", "audio"] as const).map((kind) => (
                 <FormatSection
@@ -432,7 +433,9 @@ function FormatSection({
   )
 }
 
-function WatchStatus({ watch: w }: { watch: FormatWatch }) {
+function WatchStatus({ videoId, watch: w }: { videoId: string; watch: FormatWatch }) {
+  const queryClient = useQueryClient()
+  const dismiss = useDismiss()
   const automatic = w.started_at != null
   let state = "no automatic watch"
   if (w.ended_at != null) state = `ended ${formatClock(w.ended_at)}`
@@ -464,6 +467,23 @@ function WatchStatus({ watch: w }: { watch: FormatWatch }) {
           {w.replace
             ? `${w.replace.format_id ?? "-"}: ${w.replace.state}${w.replace.reason ? `, ${w.replace.reason}` : ""}`
             : "-"}
+          {w.replace?.dismissed && <span className="text-muted-foreground">, dismissed</span>}
+          {w.replace?.state === "failed" && !w.replace.dismissed && (
+            <Button
+              size="xs"
+              variant="ghost"
+              className="ml-2"
+              disabled={dismiss.isPending}
+              onClick={() =>
+                dismiss.mutate([{ kind: "replace_failed", key: String(w.replace?.id) }], {
+                  onSettled: () =>
+                    queryClient.invalidateQueries({ queryKey: queryKeys.formatWatch(videoId) }),
+                })
+              }
+            >
+              Dismiss
+            </Button>
+          )}
           {w.original_kept && (
             <span className="text-muted-foreground">
               {" "}
@@ -475,6 +495,9 @@ function WatchStatus({ watch: w }: { watch: FormatWatch }) {
       </div>
       {w.probe_error && (
         <p className="col-span-full text-xs text-destructive">{w.probe_error}</p>
+      )}
+      {dismiss.error && (
+        <p className="col-span-full text-xs text-destructive">{dismiss.error.message}</p>
       )}
     </dl>
   )

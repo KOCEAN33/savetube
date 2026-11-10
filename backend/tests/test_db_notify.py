@@ -135,3 +135,14 @@ async def test_a_cookie_profile_posts_again_after_it_reads_and_signs_out_again(s
         "**Cookie profile signed out**: member",
         "**Cookie profile signed out**: member",
     ]
+
+
+@pytest.mark.anyio
+async def test_a_dismissed_recording_failure_posts_nothing(settings):
+    _recording(settings, state="missed", miss_reason="ended_before_detection")
+    _sql(settings, "INSERT INTO attention_dismissal (kind, key) VALUES ('record_failed', '7')")
+    discord = _Discord()
+
+    await _notify(settings, discord)
+
+    assert discord.posts == []

@@ -13,6 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import formats
+from savetube.attention import dismissed_job
 from savetube.db.models import (
     EncodeJob,
     EncodeState,
@@ -76,6 +77,8 @@ class ReplaceOut(BaseModel):
     reason: str | None
     created_at: datetime
     finished_at: datetime | None
+    # A failed job the user dismissed (POST /api/attention/dismiss, `replace_failed`).
+    dismissed: bool
 
 
 class EncodeOut(BaseModel):
@@ -194,12 +197,14 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
             else:
                 key = f"stored:{kind}"
             recommended[key] = pick.reason
-    job = await session.scalar(
-        select(Job)
-        .where(Job.video_id == video.id, Job.kind == JobKind.REPLACE)
-        .order_by(Job.id.desc())
-        .limit(1)
-    )
+    job, job_dismissed = (
+        await session.execute(
+            select(Job, dismissed_job())
+            .where(Job.video_id == video.id, Job.kind == JobKind.REPLACE)
+            .order_by(Job.id.desc())
+            .limit(1)
+        )
+    ).one_or_none() or (None, False)
     diff = None
     if watch.vod_duration is not None and watch.stored_duration is not None:
         diff = round(watch.vod_duration - watch.stored_duration, 1)
@@ -249,6 +254,7 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
             reason=job_reason(job.log_tail),
             created_at=job.created_at,
             finished_at=job.finished_at,
+            dismissed=job_dismissed,
         ),
         encode=None
         if encode is None

@@ -288,6 +288,8 @@ export interface FormatWatch {
     reason: string | null
     created_at: string
     finished_at: string | null
+    // A failed job the user dismissed.
+    dismissed: boolean
   } | null
   // The re-encode the stored video stream came from. Sizes of the whole files.
   encode: { profile: string; source_size: number; result_size: number | null } | null
