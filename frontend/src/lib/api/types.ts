@@ -122,6 +122,9 @@ export interface Job {
   retryable: boolean
   // The video's state, "gone" once YouTube no longer serves it.
   video_state: string | null
+  // A failure Needs attention lists: nothing fixed it and no one dismissed it.
+  dismissable: boolean
+  dismissed: boolean
 }
 
 // GET /api/pods: the recorder Jobs from the Kubernetes API.
@@ -453,6 +456,8 @@ export interface EncodeJob {
   log_tail: string | null
   created_at: string
   finished_at: string | null
+  // A failed job the user dismissed. It lists as finished.
+  dismissed: boolean
 }
 
 export interface EncodeSettingsIn {

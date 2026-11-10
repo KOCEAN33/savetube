@@ -146,3 +146,78 @@ def test_a_source_failure_cannot_be_dismissed(settings):
         )
 
     assert r.status_code == 422
+
+
+def _dismiss(api, kind, key):
+    r = api.post("/api/attention/dismiss", json={"items": [{"kind": kind, "key": key}]})
+    assert r.status_code == 204
+
+
+def test_a_dismissed_archive_failure_leaves_the_unresolved_job_list(settings):
+    _videos(settings, "failed", "failed")
+    _job(settings, 1, "archive", "failed", "v1", "2026-11-01T00:00:00Z")
+    _job(settings, 2, "archive", "failed", "v2", "2026-11-02T00:00:00Z")
+
+    def flags(jobs):
+        return {j["id"]: (j["dismissable"], j["dismissed"]) for j in jobs}
+
+    with _api(settings) as api:
+        before = flags(api.get("/api/jobs", params={"unresolved": True}).json())
+        _dismiss(api, "archive_failed", "1")
+        unresolved = [j["id"] for j in api.get("/api/jobs", params={"unresolved": True}).json()]
+        every = flags(api.get("/api/jobs").json())
+
+    assert before == {1: (True, False), 2: (True, False)}
+    assert unresolved == [2]
+    assert every == {1: (False, True), 2: (True, False)}
+
+
+def test_a_failure_a_later_run_fixed_offers_no_dismiss(settings):
+    _videos(settings, "complete")
+    _job(settings, 1, "archive", "failed", "v1", "2026-11-01T00:00:00Z")
+    _job(settings, 2, "archive", "succeeded", "v1", "2026-11-02T00:00:00Z")
+
+    with _api(settings) as api:
+        jobs = {j["id"]: j["dismissable"] for j in api.get("/api/jobs").json()}
+
+    assert jobs == {1: False, 2: False}
+
+
+def test_a_dismissed_encode_failure_moves_to_finished_and_leaves_the_failed_count(settings):
+    _videos(settings, "complete", "complete")
+    _sql(
+        settings,
+        "INSERT INTO encode_job (id, video_id, state, profile, source_path, source_size,"
+        " reason, finished_at) VALUES"
+        " (1, 'v1', 'failed', 'p', 'a.mkv', 1, 'larger', '2026-11-01T00:00:00Z'),"
+        " (2, 'v2', 'failed', 'p', 'b.mkv', 1, 'x', '2026-11-01T00:00:00Z')",
+    )
+
+    def shape(body):
+        return (
+            [(j["id"], j["dismissed"]) for j in body["waiting"]["items"]],
+            body["waiting"]["total"],
+            [(j["id"], j["dismissed"]) for j in body["finished"]["items"]],
+            body["finished"]["total"],
+            body["summary"]["failed"],
+        )
+
+    with _api(settings) as api:
+        before = shape(api.get("/api/encode").json())
+        _dismiss(api, "encode_failed", "1")
+        after = shape(api.get("/api/encode").json())
+
+    assert before == ([(1, False), (2, False)], 2, [], 0, 2)
+    assert after == ([(2, False)], 1, [(1, True)], 1, 1)
+
+
+def test_the_job_list_filters_by_video(settings):
+    _videos(settings, "failed", "failed")
+    _job(settings, 1, "archive", "failed", "v1", "2026-11-01T00:00:00Z")
+    _job(settings, 2, "archive", "failed", "v2", "2026-11-02T00:00:00Z")
+
+    with _api(settings) as api:
+        r = api.get("/api/jobs", params={"video_id": "v2"})
+
+    assert [j["id"] for j in r.json()] == [2]
+    assert r.headers["X-Total-Count"] == "1"

@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import formats
-from savetube.attention import record_failed, signed_out
+from savetube.attention import signed_out
 from savetube.db.models import (
     AttentionDismissal,
     Channel,
@@ -28,7 +28,7 @@ from savetube.db.models import (
 )
 from savetube.watch import replace_active
 from savetube.web.api.deps import Session
-from savetube.web.api.jobs import job_reason, resolved_failure
+from savetube.web.api.jobs import job_reason, open_failure
 
 router = APIRouter()
 
@@ -88,14 +88,7 @@ async def _jobs(session: AsyncSession) -> list[AttentionOut]:
         select(Job, Video.title, Video.channel_id, Channel.name)
         .join(Video, Video.id == Job.video_id)
         .join(Channel, Channel.id == Video.channel_id)
-        .where(
-            (
-                (Job.kind == JobKind.ARCHIVE)
-                & Job.state.in_([JobState.FAILED, JobState.INTERRUPTED])
-                & ~resolved_failure()
-            )
-            | record_failed()
-        )
+        .where(open_failure())
     )
     out = []
     for job, title, channel_id, channel_name in rows:

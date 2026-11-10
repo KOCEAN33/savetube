@@ -15,6 +15,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { ChannelYouTubeLink, VideoYouTubeLink } from "@/components/youtube-link"
+import { useDismiss } from "@/hooks/use-dismiss"
 import { recorderOf } from "@/hooks/use-pods"
 import { mutations, type Job, type JobState, type MissReason, type Pods } from "@/lib/api"
 import { JOB_STATES, jobStateVariant } from "@/lib/channel"
@@ -112,6 +113,7 @@ export function JobsTable({
     mutationFn: mutations.retryJob,
     onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }),
   })
+  const dismiss = useDismiss()
   const columns = (live ? 6 : 5) + (channelName ? 1 : 0)
   // Fixed widths outside the title, so the queued and finished tables of one
   // page line up whatever their rows hold. A narrow screen scrolls sideways.
@@ -119,12 +121,13 @@ export function JobsTable({
   return (
     <>
       {retry.error && <ErrorBox error={retry.error} />}
+      {dismiss.error && <ErrorBox error={dismiss.error} />}
       <Table className={fixed ? "min-w-5xl table-fixed" : undefined}>
         <TableHeader className="bg-muted">
           <TableRow>
             <TableHead>Video</TableHead>
             {channelName && <TableHead className={fixed ? "w-40" : undefined}>Channel</TableHead>}
-            <TableHead className={fixed ? "w-48" : undefined}>State</TableHead>
+            <TableHead className={fixed ? "w-64" : undefined}>State</TableHead>
             {live ? (
               <>
                 <TableHead>Start</TableHead>
@@ -261,6 +264,23 @@ export function JobsTable({
                       >
                         Retry
                       </Button>
+                    )}
+                    {j.dismissable && (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        className="ml-2"
+                        disabled={dismiss.isPending}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          dismiss.mutate([{ kind: `${j.kind}_failed`, key: String(j.id) }])
+                        }}
+                      >
+                        Dismiss
+                      </Button>
+                    )}
+                    {j.dismissed && (
+                      <span className="ml-2 text-xs text-muted-foreground">dismissed</span>
                     )}
                   </TableCell>
                   {live ? (

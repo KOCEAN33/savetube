@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 
+import { Clock } from "@/components/clock"
 import { ErrorBox } from "@/components/query-state"
 import { Button } from "@/components/ui/button"
+import { useDismiss } from "@/hooks/use-dismiss"
 import { api, mutations, type VideoDetail } from "@/lib/api"
 import { thumbUrl } from "@/lib/channel"
 import { queryKeys } from "@/lib/query-keys"
@@ -19,7 +21,8 @@ function Note({ children }: { children: React.ReactNode }) {
 const UNPLAYABLE: Record<string, string> = {
   pending: "Not downloaded yet.",
   downloading: "Downloading. It plays once the download finishes.",
-  failed: "The download failed. The Downloads page shows the reason.",
+  failed: "The download failed.",
+  gone: "YouTube no longer serves this video.",
   deleted: "The files were deleted from the archive.",
 }
 
@@ -52,9 +55,71 @@ function StagedNote() {
   )
 }
 
+// The newest failed run of a video without a stored file: its reason and log
+// in place, with the Retry and Dismiss of its row on the Downloads page.
+function FailedNote({ id, state }: { id: string; state: string }) {
+  const queryClient = useQueryClient()
+  const failure = useQuery({
+    queryKey: queryKeys.videoFailure(id),
+    queryFn: () =>
+      api.jobs({ video_id: id, state: ["failed", "interrupted", "missed"], limit: 1 }),
+  })
+  const retry = useMutation({
+    mutationFn: mutations.retryJob,
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs() })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.video(id) })
+    },
+  })
+  const dismiss = useDismiss()
+  const job = failure.data?.[0]
+  if (!job) return <Note>{UNPLAYABLE[state]}</Note>
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border p-4 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">
+          {UNPLAYABLE[state]} {job.reason ?? job.miss_reason?.replaceAll("_", " ")}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          <Clock iso={job.finished_at} />
+        </span>
+        {job.dismissed && <span className="text-xs text-muted-foreground">dismissed</span>}
+        {job.retryable && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={retry.isPending}
+            onClick={() => retry.mutate(job.id)}
+          >
+            Retry
+          </Button>
+        )}
+        {job.dismissable && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={dismiss.isPending}
+            onClick={() => dismiss.mutate([{ kind: `${job.kind}_failed`, key: String(job.id) }])}
+          >
+            Dismiss
+          </Button>
+        )}
+      </div>
+      {job.log_tail && (
+        <pre className="max-h-60 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap break-all">
+          {job.log_tail}
+        </pre>
+      )}
+      {retry.error && <ErrorBox error={retry.error} />}
+      {dismiss.error && <ErrorBox error={dismiss.error} />}
+    </div>
+  )
+}
+
 // Stands in for the player while the video is not `complete`.
-export function UnplayableNote({ state }: { state: string }) {
+export function UnplayableNote({ id, state }: { id: string; state: string }) {
   if (state === "staged") return <StagedNote />
+  if (state === "failed" || state === "gone") return <FailedNote id={id} state={state} />
   return <Note>{UNPLAYABLE[state] ?? `The video is ${state}.`}</Note>
 }
 

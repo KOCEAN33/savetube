@@ -132,7 +132,7 @@ export function VideoDetailPage() {
                 {v.state === "complete" ? (
                   <VideoPlayer video={v} />
                 ) : (
-                  <UnplayableNote state={v.state} />
+                  <UnplayableNote id={v.id} state={v.state} />
                 )}
                 <dl className="grid grid-cols-2 gap-4 md:grid-cols-4">
                   <Field label="ID">

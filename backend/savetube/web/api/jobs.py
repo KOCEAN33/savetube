@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import ColumnElement, and_, exists, func, or_, select
 from sqlalchemy.orm import aliased
 
+from savetube.attention import dismissed, record_failed
 from savetube.db.models import Channel, Job, JobKind, JobState, Video, VideoState
 from savetube.joblog import (
     BLOCKED_LOG,
@@ -72,6 +73,22 @@ def resolved_failure() -> ColumnElement[bool]:
     )
 
 
+def dismissed_job() -> ColumnElement[bool]:
+    return dismissed(Job.id, "archive_failed", "record_failed", "replace_failed")
+
+
+def open_failure() -> ColumnElement[bool]:
+    """An archive or record failure the Needs attention card lists: nothing
+    fixed it and the user did not dismiss it. The query must join Video on
+    Job.video_id."""
+    archive = and_(
+        Job.kind == JobKind.ARCHIVE,
+        Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),
+        ~resolved_failure(),
+    )
+    return and_(or_(archive, record_failed()), ~dismissed_job())
+
+
 class JobOut(_Out):
     id: int
     kind: JobKind
@@ -99,6 +116,9 @@ class JobOut(_Out):
     retryable: bool
     # The video's state, `gone` once YouTube no longer serves it.
     video_state: VideoState | None
+    # open_failure: POST /api/attention/dismiss takes it off every list.
+    dismissable: bool
+    dismissed: bool
 
 
 def _retryable() -> ColumnElement[bool]:
@@ -128,8 +148,10 @@ async def jobs(
     # Repeat the parameter for several states.
     state: Annotated[list[JobState] | None, Query()] = None,
     channel_id: str | None = None,
+    video_id: str | None = None,
     # Drop a failed or interrupted archive run once a later run of its video
     # succeeded, and an interrupted one once a later run of its video ended.
+    # Drop a dismissed failure too.
     unresolved: bool = False,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -149,8 +171,10 @@ async def jobs(
         where.append(Job.state.in_(state))
     if channel_id:
         where.append(_of_channel(channel_id))
+    if video_id:
+        where.append(Job.video_id == video_id)
     if unresolved:
-        where.append(~resolved_failure())
+        where.extend([~resolved_failure(), ~dismissed_job()])
     total = await session.scalar(
         select(func.count())
         .select_from(Job)
@@ -159,7 +183,16 @@ async def jobs(
     )
     response.headers["X-Total-Count"] = str(total or 0)
     q = (
-        select(Job, Video.title, Video.channel_id, Channel.name, Video.state, _retryable())
+        select(
+            Job,
+            Video.title,
+            Video.channel_id,
+            Channel.name,
+            Video.state,
+            _retryable(),
+            open_failure(),
+            dismissed_job(),
+        )
         .outerjoin(Video, Video.id == Job.video_id)
         .outerjoin(Channel, Channel.id == Video.channel_id)
         .where(*where)
@@ -174,6 +207,8 @@ async def jobs(
         "reason",
         "retryable",
         "video_state",
+        "dismissable",
+        "dismissed",
     }
     return [
         JobOut(
@@ -184,8 +219,12 @@ async def jobs(
             reason=job_reason(j.log_tail),
             retryable=bool(retryable),
             video_state=video_state,
+            dismissable=bool(dismissable),
+            dismissed=dismissed,
         )
-        for j, title, cid, name, video_state, retryable in await session.execute(q)
+        for j, title, cid, name, video_state, retryable, dismissable, dismissed in (
+            await session.execute(q)
+        )
     ]
 
 

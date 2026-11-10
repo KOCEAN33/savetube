@@ -24,6 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { useDismiss } from "@/hooks/use-dismiss"
 import { usePageParam } from "@/hooks/use-page-param"
 import {
   api,
@@ -134,12 +135,14 @@ function EncodeJobsTable({
   busy,
   onCancel,
   onRequeue,
+  onDismiss,
 }: {
   jobs: EncodeJob[]
   empty: string
   busy: boolean
   onCancel: (id: number) => void
   onRequeue: (id: number) => void
+  onDismiss: (id: number) => void
 }) {
   const [open, setOpen] = useState<Set<number>>(new Set())
   const columns = 6
@@ -148,11 +151,11 @@ function EncodeJobsTable({
       <TableHeader className="bg-muted">
         <TableRow>
           <TableHead>Video</TableHead>
-          <TableHead className="w-28">State</TableHead>
+          <TableHead className="w-40">State</TableHead>
           <TableHead className="w-48">Size</TableHead>
           <TableHead className="w-28">Queued</TableHead>
           <TableHead className="w-28">Finished</TableHead>
-          <TableHead className="w-28" />
+          <TableHead className="w-48" />
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -197,6 +200,9 @@ function EncodeJobsTable({
                   >
                     {j.state}
                   </Badge>
+                  {j.dismissed && (
+                    <span className="ml-2 text-xs text-muted-foreground">dismissed</span>
+                  )}
                 </TableCell>
                 <TableCell className="truncate tabular-nums">
                   {formatBytes(j.source_size)} &rarr; {formatBytes(j.result_size)}
@@ -226,6 +232,17 @@ function EncodeJobsTable({
                       onClick={() => onRequeue(j.id)}
                     >
                       Requeue
+                    </Button>
+                  )}
+                  {j.state === "failed" && !j.dismissed && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="ml-2"
+                      disabled={busy}
+                      onClick={() => onDismiss(j.id)}
+                    >
+                      Dismiss
                     </Button>
                   )}
                 </TableCell>
@@ -284,8 +301,11 @@ export function EncodePage() {
     mutationFn: (id: number) => mutations.requeueEncodeJob(id, pages),
     onSuccess,
   })
-  const busy = cancel.isPending || requeue.isPending
-  const errors = [save, cancel, requeue].flatMap((m) => (m.error ? [m.error] : []))
+  // A dismissed failure moves to Finished and its video stays unqueued.
+  const dismiss = useDismiss()
+  const onDismiss = (id: number) => dismiss.mutate([{ kind: "encode_failed", key: String(id) }])
+  const busy = cancel.isPending || requeue.isPending || dismiss.isPending
+  const errors = [save, cancel, requeue, dismiss].flatMap((m) => (m.error ? [m.error] : []))
 
   return (
     <Page>
@@ -312,6 +332,7 @@ export function EncodePage() {
                 busy={busy}
                 onCancel={cancel.mutate}
                 onRequeue={requeue.mutate}
+                onDismiss={onDismiss}
               />
               <Pagination
                 page={waitingPage}
@@ -334,6 +355,7 @@ export function EncodePage() {
                 busy={busy}
                 onCancel={cancel.mutate}
                 onRequeue={requeue.mutate}
+                onDismiss={onDismiss}
               />
               <Pagination
                 page={finishedPage}

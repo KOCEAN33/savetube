@@ -1,9 +1,25 @@
 """Rules the Needs attention card (docs/plan/frontend.md, Home) and the
 Discord notifications (docs/plan/operations.md) share."""
 
-from sqlalchemy import ColumnElement, and_
+from sqlalchemy import ColumnElement, Text, and_, cast, exists
 
-from savetube.db.models import CookieProfile, Job, JobKind, JobState, Video, VideoState
+from savetube.db.models import (
+    AttentionDismissal,
+    CookieProfile,
+    Job,
+    JobKind,
+    JobState,
+    Video,
+    VideoState,
+)
+
+
+def dismissed(key: ColumnElement, *kinds: str) -> ColumnElement[bool]:
+    """The user dismissed the item with this key under one of the kinds. Every
+    list of failures reads it, so a dismissal holds on every page."""
+    return exists().where(
+        AttentionDismissal.kind.in_(kinds), AttentionDismissal.key == cast(key, Text)
+    )
 
 
 def record_failed() -> ColumnElement[bool]:
