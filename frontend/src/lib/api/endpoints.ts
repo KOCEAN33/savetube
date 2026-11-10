@@ -39,7 +39,9 @@ type JobQuery = {
   kind?: JobKind
   state?: JobState[]
   channel_id?: string
-  // Drop a failed or interrupted archive run once a later run of its video succeeded.
+  video_id?: string
+  // Drop a failed or interrupted archive run once a later run of its video
+  // succeeded, and a dismissed failure.
   unresolved?: boolean
   limit?: number
   // newest by default. dispatch: running first, then the order the worker takes the queue.

@@ -2,7 +2,6 @@
 the page that shows it (docs/plan/frontend.md, Home)."""
 
 from datetime import UTC, datetime
-from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -11,13 +10,19 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube import formats
-from savetube.attention import record_failed, signed_out
+from savetube.attention import (
+    DISMISSABLE,
+    JOB_FAILED,
+    Kind,
+    encode_failed,
+    open_failure,
+    signed_out,
+)
 from savetube.db.models import (
     AttentionDismissal,
     Channel,
     CookieProfile,
     EncodeJob,
-    EncodeState,
     FormatWatch,
     Job,
     JobKind,
@@ -28,23 +33,9 @@ from savetube.db.models import (
 )
 from savetube.watch import replace_active
 from savetube.web.api.deps import Session
-from savetube.web.api.jobs import job_reason, resolved_failure
+from savetube.web.api.jobs import job_reason
 
 router = APIRouter()
-
-Kind = Literal[
-    "archive_failed",
-    "record_failed",
-    "replace_failed",
-    "encode_failed",
-    "held",
-    "source_failing",
-    "cookie_signed_out",
-]
-# The other kinds leave the card once fixed.
-DISMISSABLE: frozenset[Kind] = frozenset(
-    {"archive_failed", "record_failed", "replace_failed", "encode_failed", "held"}
-)
 
 _ERROR_CHARS = 120
 
@@ -88,14 +79,7 @@ async def _jobs(session: AsyncSession) -> list[AttentionOut]:
         select(Job, Video.title, Video.channel_id, Channel.name)
         .join(Video, Video.id == Job.video_id)
         .join(Channel, Channel.id == Video.channel_id)
-        .where(
-            (
-                (Job.kind == JobKind.ARCHIVE)
-                & Job.state.in_([JobState.FAILED, JobState.INTERRUPTED])
-                & ~resolved_failure()
-            )
-            | record_failed()
-        )
+        .where(open_failure())
     )
     out = []
     for job, title, channel_id, channel_name in rows:
@@ -105,7 +89,7 @@ async def _jobs(session: AsyncSession) -> list[AttentionOut]:
             detail = job_reason(job.log_tail)
         out.append(
             _item(
-                "archive_failed" if job.kind is JobKind.ARCHIVE else "record_failed",
+                JOB_FAILED[job.kind],
                 job.id,
                 video_id=job.video_id,
                 channel_id=channel_id,
@@ -155,8 +139,7 @@ async def _encodes(session: AsyncSession) -> list[AttentionOut]:
         select(EncodeJob, Video.title, Video.channel_id, Channel.name)
         .join(Video, Video.id == EncodeJob.video_id)
         .join(Channel, Channel.id == Video.channel_id)
-        .where(EncodeJob.id.in_(latest), EncodeJob.state == EncodeState.FAILED)
-        .where(Video.state == VideoState.COMPLETE)
+        .where(EncodeJob.id.in_(latest), encode_failed())
     )
     return [
         _item(

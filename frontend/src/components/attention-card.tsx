@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link } from "react-router"
 
@@ -13,7 +13,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { api, mutations, type AttentionItem, type AttentionKind } from "@/lib/api"
+import { useDismiss } from "@/hooks/use-dismiss"
+import { api, type AttentionItem, type AttentionKind } from "@/lib/api"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
 import { queryKeys } from "@/lib/query-keys"
 
@@ -87,17 +88,13 @@ function AttentionLine({
 // What fails or waits on the user outside the page that shows it, so one card
 // replaces checking every page.
 export function AttentionCard() {
-  const queryClient = useQueryClient()
   const [all, setAll] = useState(false)
   const items = useQuery({
     queryKey: queryKeys.attention(),
     queryFn: api.attention,
     refetchInterval: IDLE_REFETCH_MS,
   })
-  const dismiss = useMutation({
-    mutationFn: mutations.dismissAttention,
-    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.attention() }),
-  })
+  const dismiss = useDismiss()
 
   const rows = items.data ?? []
   if (rows.length === 0) return null

@@ -1403,3 +1403,19 @@ async def test_a_replace_that_fails_its_checks_leaves_the_stored_file(settings, 
     assert watch.original_path is None and video.format_id == "137+140"
     assert not (settings.archive_root / ".originals").exists()
     assert not (settings.archive_root / ".incoming" / "1").exists()
+
+
+def test_api_formats_marks_a_dismissed_failed_replace(settings):
+    _watched_with_formats(settings)
+    _replace_row(settings, state="failed")
+
+    with _api(settings) as api:
+        before = api.get("/api/videos/v1/formats").json()["replace"]
+        r = api.post(
+            "/api/attention/dismiss", json={"items": [{"kind": "replace_failed", "key": "40"}]}
+        )
+        after = api.get("/api/videos/v1/formats").json()["replace"]
+
+    assert r.status_code == 204
+    assert (before["id"], before["dismissed"]) == (40, False)
+    assert (after["id"], after["dismissed"]) == (40, True)
