@@ -56,13 +56,14 @@ function StagedNote() {
 }
 
 // The newest failed run of a video without a stored file: its reason and log
-// in place, with the Retry and Dismiss of its row on the Downloads page.
+// in place, with the Retry and Dismiss of its row on the Downloads page. An
+// interrupted row gets a higher id than the job that then fails, so it is left out.
 function FailedNote({ id, state }: { id: string; state: string }) {
   const queryClient = useQueryClient()
   const failure = useQuery({
     queryKey: queryKeys.videoFailure(id),
     queryFn: () =>
-      api.jobs({ video_id: id, state: ["failed", "interrupted", "missed"], limit: 1 }),
+      api.jobs({ video_id: id, state: ["failed", "missed"], limit: 1 }),
   })
   const retry = useMutation({
     mutationFn: mutations.retryJob,
@@ -99,7 +100,7 @@ function FailedNote({ id, state }: { id: string; state: string }) {
             size="sm"
             variant="ghost"
             disabled={dismiss.isPending}
-            onClick={() => dismiss.mutate([{ kind: `${job.kind}_failed`, key: String(job.id) }])}
+            onClick={() => dismiss.mutate([{ kind: job.dismiss_kind, key: String(job.id) }])}
           >
             Dismiss
           </Button>

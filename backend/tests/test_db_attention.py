@@ -221,3 +221,37 @@ def test_the_job_list_filters_by_video(settings):
 
     assert [j["id"] for j in r.json()] == [2]
     assert r.headers["X-Total-Count"] == "1"
+
+
+def test_a_failed_encode_of_a_deleted_video_waits_on_no_page(settings):
+    _videos(settings, "deleted")
+    _sql(
+        settings,
+        "INSERT INTO encode_job (id, video_id, state, profile, source_path, source_size,"
+        " reason, finished_at) VALUES"
+        " (1, 'v1', 'failed', 'p', 'a.mkv', 1, 'x', '2026-11-01T00:00:00Z')",
+    )
+
+    with _api(settings) as api:
+        encode = api.get("/api/encode").json()
+        listed = _listed(api)
+
+    assert listed == []
+    assert encode["waiting"]["total"] == 0
+    assert encode["summary"]["failed"] == 0
+    assert [j["id"] for j in encode["finished"]["items"]] == [1]
+
+
+def test_a_job_names_the_kind_its_dismissal_takes(settings):
+    _videos(settings, "failed", "pending")
+    _job(settings, 1, "archive", "failed", "v1", "2026-11-01T00:00:00Z")
+    _job(settings, 2, "record", "missed", "v2", "2026-11-02T00:00:00Z", miss_reason="dvr_off")
+
+    with _api(settings) as api:
+        kinds = {j["id"]: j["dismiss_kind"] for j in api.get("/api/jobs").json()}
+        for job_id, kind in kinds.items():
+            _dismiss(api, kind, str(job_id))
+        left = _listed(api)
+
+    assert kinds == {1: "archive_failed", 2: "record_failed"}
+    assert left == []

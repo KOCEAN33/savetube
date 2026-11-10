@@ -125,6 +125,8 @@ export interface Job {
   // A failure Needs attention lists: nothing fixed it and no one dismissed it.
   dismissable: boolean
   dismissed: boolean
+  // The kind its dismissal takes, with the job id as the key.
+  dismiss_kind: AttentionKind
 }
 
 // GET /api/pods: the recorder Jobs from the Kubernetes API.

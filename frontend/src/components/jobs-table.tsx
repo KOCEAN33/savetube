@@ -273,7 +273,7 @@ export function JobsTable({
                         disabled={dismiss.isPending}
                         onClick={(e) => {
                           e.stopPropagation()
-                          dismiss.mutate([{ kind: `${j.kind}_failed`, key: String(j.id) }])
+                          dismiss.mutate([{ kind: j.dismiss_kind, key: String(j.id) }])
                         }}
                       >
                         Dismiss

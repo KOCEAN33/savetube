@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from savetube.attention import dismissed
+from savetube.attention import dismissed, encode_failed
 from savetube.db.models import EncodeJob, EncodeSettings, EncodeState, FormatWatch, Video
 from savetube.encode import PROFILES
 from savetube.logs import emit
@@ -69,7 +69,7 @@ class EncodeSummary(_Out):
     # The part of saved_bytes whose original still waits in `.originals/`.
     held_bytes: int
     succeeded: int
-    # Failed and not dismissed.
+    # savetube.attention.encode_failed.
     failed: int
     # Queued and claimed.
     open: int
@@ -78,7 +78,7 @@ class EncodeSummary(_Out):
 class EncodeOut(EncodeSettingsIn):
     profiles: list[str]
     summary: EncodeSummary
-    # Queued and claimed jobs and the failed ones not dismissed, oldest first.
+    # Queued and claimed jobs and the failed ones a user acts on, oldest first.
     waiting: EncodeJobPage
     # The other jobs, newest first.
     finished: EncodeJobPage
@@ -88,13 +88,10 @@ def _dismissed() -> ColumnElement[bool]:
     return dismissed(EncodeJob.id, "encode_failed")
 
 
-def _failed() -> ColumnElement[bool]:
-    return (EncodeJob.state == EncodeState.FAILED) & ~_dismissed()
-
-
 def _waiting() -> ColumnElement[bool]:
-    """Jobs that wait on the encoder or on a user. The others are finished."""
-    return EncodeJob.state.in_(OPEN) | _failed()
+    """Jobs that wait on the encoder or on a user. The others are finished.
+    The query must join Video on EncodeJob.video_id."""
+    return EncodeJob.state.in_(OPEN) | encode_failed()
 
 
 async def _summary(session: AsyncSession) -> tuple[EncodeSummary, int, int]:
@@ -116,10 +113,12 @@ async def _summary(session: AsyncSession) -> tuple[EncodeSummary, int, int]:
                 total(EncodeJob.source_size, saved),
                 total(saving, saved & FormatWatch.original_path.is_not(None)),
                 func.count().filter(EncodeJob.state == EncodeState.SUCCEEDED),
-                func.count().filter(_failed()),
+                func.count().filter(encode_failed()),
                 func.count().filter(EncodeJob.state.in_(OPEN)),
                 func.count().filter(~_waiting()),
-            ).outerjoin(FormatWatch, FormatWatch.video_id == EncodeJob.video_id)
+            )
+            .join(Video, Video.id == EncodeJob.video_id)
+            .outerjoin(FormatWatch, FormatWatch.video_id == EncodeJob.video_id)
         )
     ).one()
     saved_bytes, source_bytes, held_bytes, succeeded, failed, open_, finished = row
