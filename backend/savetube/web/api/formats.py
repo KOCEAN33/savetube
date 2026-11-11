@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from savetube import formats
 from savetube.attention import dismissed_job
 from savetube.db.models import (
+    STREAMS_ONLY,
     EncodeJob,
     EncodeState,
     FormatWatch,
@@ -168,7 +169,7 @@ def _codec(f: dict[str, Any], kind: formats.Kind) -> str:
 
 async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> FormatWatchOut:
     listed = watch.formats or []
-    info = video.info or {}
+    info = video.stream_info or {}
     stored = formats.stored_streams(info)
     encode = None
     if "video" in stored and formats.encoded(stored["video"]):
@@ -283,7 +284,7 @@ async def _watched(session: AsyncSession, video_id: str) -> tuple[FormatWatch, V
     watch = await session.get(FormatWatch, video_id)
     if watch is None:
         return None
-    return watch, await session.get(Video, video_id)
+    return watch, await session.get(Video, video_id, options=STREAMS_ONLY)
 
 
 @router.get("/videos/{video_id}/formats")
@@ -297,7 +298,7 @@ async def video_formats(session: Session, video_id: str) -> FormatWatchOut | Non
 async def probe_formats(session: Session, request: Request, video_id: str) -> FormatWatchOut:
     """Ask the scheduler to probe the video's formats now. The web pod has no
     cookies, so the scheduler probes."""
-    video = await session.get(Video, video_id)
+    video = await session.get(Video, video_id, options=STREAMS_ONLY)
     if video is None:
         raise HTTPException(status_code=404, detail="no such video")
     if video.state is not VideoState.COMPLETE:
@@ -339,7 +340,7 @@ async def pick_format(session: Session, video_id: str, body: PickIn) -> FormatWa
         raise HTTPException(status_code=404, detail=f"the VOD does not offer {', '.join(missing)}")
     # A recorded stream's id may be picked: a live recording and its VOD share
     # an itag but are different encodes.
-    merged = _merged(formats.stored_streams(video.info or {}), list(listed.values()))
+    merged = _merged(formats.stored_streams(video.stream_info or {}), list(listed.values()))
     chosen: dict[formats.Kind, str] = {}
     for format_id in body.format_ids:
         k = formats.kind(listed[format_id])

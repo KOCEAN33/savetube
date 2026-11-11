@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm import InstrumentedAttribute, defer
 
 from savetube import formats
 from savetube.db.models import Channel, Source, Video, VideoSource, VideoState
@@ -163,6 +163,8 @@ async def videos(
     by_date = Video.upload_date.desc() if order == "newest" else Video.upload_date.asc()
     items = await session.scalars(
         select(Video)
+        # A row's info runs to megabytes, and VideoOut shows none of it.
+        .options(defer(Video.info, raiseload=True))
         .where(*where)
         .order_by(by_date.nulls_last(), Video.id)
         .limit(limit)
@@ -203,27 +205,34 @@ def _delete_failed(video_id: str, status: int, reason: str) -> None:
     )
 
 
-async def _video_dir(request: Request, session: AsyncSession, video_id: str) -> tuple[Video, Path]:
-    """The resolved `<archive root>/<dir_path>` of a complete video, built from
-    its row only and never outside the archive root."""
-    v = await session.get(Video, video_id)
-    if v is None or v.state is not VideoState.COMPLETE or not v.dir_path:
+async def _video_dir(
+    request: Request, session: AsyncSession, video_id: str, field: str
+) -> tuple[Any, Path]:
+    """`info.<field>` and the resolved `<archive root>/<dir_path>` of a complete
+    video, built from its row only and never outside the archive root. The
+    player asks once per Range request, so the row's whole `info` stays unread."""
+    row = (
+        await session.execute(
+            select(Video.state, Video.dir_path, Video.info[field]).where(Video.id == video_id)
+        )
+    ).one_or_none()
+    if row is None or row.state is not VideoState.COMPLETE or not row.dir_path:
         raise HTTPException(status_code=404)
     root = request.app.state.archive_root.resolve()
-    directory = (root / v.dir_path).resolve()
+    directory = (root / row.dir_path).resolve()
     if not directory.is_relative_to(root) or not directory.is_dir():
         raise HTTPException(status_code=404)
-    return v, directory
+    return row[2], directory
 
 
 async def _stored_file(request: Request, session: AsyncSession, video_id: str, ext: str) -> Path:
     """`<video dir>/<video id>.<ext>`. `ext` "" means the media's own extension
     from `info.ext`."""
-    v, directory = await _video_dir(request, session, video_id)
-    ext = ext or (v.info or {}).get("ext")
+    stored_ext, directory = await _video_dir(request, session, video_id, "ext")
+    ext = ext or stored_ext
     if not isinstance(ext, str) or not ext:
         raise HTTPException(status_code=404)
-    path = (directory / f"{v.id}.{ext}").resolve()
+    path = (directory / f"{video_id}.{ext}").resolve()
     if not path.is_relative_to(request.app.state.archive_root.resolve()) or not path.is_file():
         raise HTTPException(status_code=404)
     return path
@@ -231,13 +240,14 @@ async def _stored_file(request: Request, session: AsyncSession, video_id: str, e
 
 async def _subtitle_files(
     request: Request, session: AsyncSession, video_id: str
-) -> tuple[Video, dict[str, Path]]:
-    """Language code to file for each `<video id>.<lang>.vtt` yt-dlp left in the
-    video's directory. The language comes from the listing, never from a request."""
-    v, directory = await _video_dir(request, session, video_id)
+) -> tuple[Any, dict[str, Path]]:
+    """`info.subtitles`, and language code to file for each `<video id>.<lang>.vtt`
+    yt-dlp left in the video's directory. The language comes from the listing,
+    never from a request."""
+    subtitles, directory = await _video_dir(request, session, video_id, "subtitles")
     files = {}
-    for path in directory.glob(f"{glob.escape(v.id)}.*.vtt"):
-        lang = path.name[len(v.id) + 1 : -len(".vtt")]
+    for path in directory.glob(f"{glob.escape(video_id)}.*.vtt"):
+        lang = path.name[len(video_id) + 1 : -len(".vtt")]
         resolved = path.resolve()
         if (
             lang
@@ -246,11 +256,11 @@ async def _subtitle_files(
             and resolved.is_file()
         ):
             files[lang] = resolved
-    return v, dict(sorted(files.items()))
+    return subtitles, dict(sorted(files.items()))
 
 
-def _subtitle_label(info: dict[str, Any] | None, lang: str) -> str:
-    tracks = ((info or {}).get("subtitles") or {}).get(lang)
+def _subtitle_label(subtitles: Any, lang: str) -> str:
+    tracks = subtitles.get(lang) if isinstance(subtitles, dict) else None
     if isinstance(tracks, list):
         for track in tracks:
             if isinstance(track, dict) and isinstance(track.get("name"), str) and track["name"]:
@@ -260,8 +270,8 @@ def _subtitle_label(info: dict[str, Any] | None, lang: str) -> str:
 
 @router.get("/videos/{video_id}/subtitles")
 async def video_subtitles(request: Request, session: Session, video_id: str) -> list[SubtitleOut]:
-    v, files = await _subtitle_files(request, session, video_id)
-    return [SubtitleOut(lang=lang, label=_subtitle_label(v.info, lang)) for lang in files]
+    subtitles, files = await _subtitle_files(request, session, video_id)
+    return [SubtitleOut(lang=lang, label=_subtitle_label(subtitles, lang)) for lang in files]
 
 
 @router.get("/videos/{video_id}/subtitles/{lang}")

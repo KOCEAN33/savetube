@@ -84,6 +84,58 @@ async def test_store_moves_download_and_records_video(settings):
     await engine.dispose()
 
 
+@pytest.mark.anyio
+async def test_store_drops_fragment_lists_and_download_records_from_the_info(settings):
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        session.add(Channel(id="UC1", name="A", dir_name="A [UC1]"))
+        await session.flush()
+        job = Job(kind=JobKind.RECORD, video_id=None)
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    incoming = settings.incoming_root / str(job_id)
+    incoming.mkdir(parents=True)
+    (incoming / "dQw4w9WgXcQ.mkv").write_bytes(b"x")
+    fragment = {"url": "https://rr1.googlevideo.com/sq/1", "duration": 5.0}
+    info = {
+        **INFO,
+        "formats": [
+            {"format_id": "251", "acodec": "opus", "vcodec": "none", "fragments": [fragment]},
+            {"format_id": "299", "acodec": "none", "vcodec": "avc1", "url": "https://x/299"},
+        ],
+        "requested_formats": [
+            {"format_id": "299", "vcodec": "avc1", "fragments": [fragment]},
+            {"format_id": "251", "acodec": "opus"},
+        ],
+        "requested_downloads": [{"filepath": str(incoming / "dQw4w9WgXcQ.mkv")}],
+    }
+
+    async with sessionmaker() as session:
+        job = await session.get(Job, job_id)
+        await store(
+            session, job=job, info=info, incoming=incoming, archive_root=settings.archive_root
+        )
+        await session.commit()
+
+    async with sessionmaker() as session:
+        stored = (await session.get(Video, INFO["id"])).info
+    assert stored == {
+        **INFO,
+        "formats": [
+            {"format_id": "251", "acodec": "opus", "vcodec": "none"},
+            {"format_id": "299", "acodec": "none", "vcodec": "avc1", "url": "https://x/299"},
+        ],
+        "requested_formats": [
+            {"format_id": "299", "vcodec": "avc1"},
+            {"format_id": "251", "acodec": "opus"},
+        ],
+    }
+    await engine.dispose()
+
+
 def test_api_reports_only_stored_videos(settings):
     engine = sa.create_engine(settings.sqlalchemy_url)
     with engine.begin() as c:

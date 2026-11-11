@@ -231,7 +231,7 @@ def check_encode(page: Page) -> str:
     assert first.value.ok, f"/api/encode answered {first.value.status}"
     switch = page.locator("#encode-enabled")
     expect(switch).to_be_visible()
-    expect(page.locator("#encode-profile")).to_be_visible()
+    expect(page.locator("#encode-tune")).to_be_visible()
     expect(page.get_by_role("table")).to_have_count(2)
     settle(page)
     before = switch.get_attribute("aria-checked")

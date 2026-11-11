@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, or_, select
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, defer
 from yt_dlp.utils import DownloadError
 
 from savetube import cookies, limits, logs, words
@@ -195,7 +195,12 @@ async def sync(
         return result
     await _replace_listing(session, source.id, listed)
     ids = list(listed)
-    videos = {v.id: v for v in await session.scalars(select(Video).where(Video.id.in_(ids)))}
+    videos = {
+        v.id: v
+        for v in await session.scalars(
+            select(Video).options(defer(Video.info, raiseload=True)).where(Video.id.in_(ids))
+        )
+    }
     # The Shorts tab lists a members-only short without its availability. A
     # download the general profile was refused stored it as members-only.
     for vid, v in videos.items():

@@ -19,6 +19,7 @@ from savetube.attention import (
     signed_out,
 )
 from savetube.db.models import (
+    STREAMS_ONLY,
     AttentionDismissal,
     Channel,
     CookieProfile,
@@ -162,6 +163,7 @@ async def _held(session: AsyncSession) -> list[AttentionOut]:
     `watch.held` instead of queueing (watch._queue)."""
     rows = await session.execute(
         select(FormatWatch, Video, Channel.name)
+        .options(*STREAMS_ONLY)
         .join(Video, Video.id == FormatWatch.video_id)
         .join(Channel, Channel.id == Video.channel_id)
         .where(
@@ -172,7 +174,11 @@ async def _held(session: AsyncSession) -> list[AttentionOut]:
     )
     out = []
     for watch, video, channel_name in rows:
-        up = [p for p in formats.picks(watch.formats or [], video.info or {}).values() if p.above]
+        up = [
+            p
+            for p in formats.picks(watch.formats or [], video.stream_info or {}).values()
+            if p.above
+        ]
         if not up or await replace_active(session, video.id) is not None:
             continue
         diff = watch.vod_duration - watch.stored_duration

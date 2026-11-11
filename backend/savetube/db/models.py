@@ -16,11 +16,13 @@ from sqlalchemy import (
     Text,
     false,
     func,
+    literal,
     text,
     true,
+    type_coerce,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, column_property, defer, mapped_column, undefer
 
 from savetube.layout import VideoType
 
@@ -272,6 +274,16 @@ _VIDEO_KBPS = (
 )
 
 
+_LISTS = [
+    "formats",
+    "automatic_captions",
+    "subtitles",
+    "thumbnails",
+    "heatmap",
+    "requested_downloads",
+]
+
+
 class Video(Base):
     __tablename__ = "video"
 
@@ -290,6 +302,11 @@ class Video(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     state: Mapped[VideoState] = mapped_column(_enum(VideoState), default=VideoState.PENDING)
     info: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # `info` without the lists that make up most of it: the top-level fields
+    # and `requested_formats` that formats.stored_streams reads.
+    stream_info: Mapped[dict[str, Any] | None] = column_property(
+        type_coerce(info.op("-")(literal(_LISTS, ARRAY(Text))), JSONB), deferred=True
+    )
     # The format ids an interrupted archive download chose, so its retry
     # resumes the parts in `.incoming/<video id>/`. Null without parts.
     resume_format: Mapped[str | None] = mapped_column(Text)
@@ -453,7 +470,26 @@ class EncodeSettings(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1, autoincrement=False)
     enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
-    profile: Mapped[str] = mapped_column(Text, server_default="vtuber-av1-hq-cq46-srcfps")
+    # The encode options a job file carries (docs/plan/encode.md, Profiles).
+    tune: Mapped[str] = mapped_column(Text, server_default="hq")
+    cq: Mapped[int] = mapped_column(server_default="46")
+    # None keeps the source's frame rate.
+    fps_cap: Mapped[float | None] = mapped_column(Float)
+    # The cap for a title still_words matches.
+    still_fps_cap: Mapped[float | None] = mapped_column(Float, server_default="30")
+    # A title that is not still keeps a rate above fps_cap when its motion
+    # score reaches this. None applies fps_cap without measuring.
+    motion_threshold: Mapped[float | None] = mapped_column(Float, server_default="1.0")
+    still_words: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        server_default=text(
+            '\'{歌枠,うたわく,ASMR,雑談,karaoke,"singing stream","free talk",freetalk}\'::text[]'
+        ),
+    )
+    # A 3D live often names 歌枠 too.
+    still_exclude_words: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{3D}'::text[]")
+    )
 
 
 class EncodeJob(Base):
@@ -476,6 +512,9 @@ class EncodeJob(Base):
         _enum(EncodeState), default=EncodeState.QUEUED, index=True
     )
     profile: Mapped[str] = mapped_column(Text)
+    # The job file's options. None for a job queued before options existed,
+    # whose check reads its named profile.
+    options: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     # The stored file at queueing, relative to the archive root. The swap
     # refuses a stored file that changed since.
     source_path: Mapped[str] = mapped_column(Text)
@@ -523,3 +562,7 @@ class StorageSample(Base):
     sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     total_bytes: Mapped[int] = mapped_column(BigInteger)
     free_bytes: Mapped[int] = mapped_column(BigInteger)
+
+
+# Loader options for a Video whose code reads stream_info, never info.
+STREAMS_ONLY = (defer(Video.info, raiseload=True), undefer(Video.stream_info))

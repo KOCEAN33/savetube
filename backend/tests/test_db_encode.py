@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx2
 import pytest
+import sqlalchemy as sa
 from conftest import ADMIN_URL, _api, _sql, _sql_rows
 
 from savetube.db import make_engine, make_sessionmaker
@@ -22,8 +23,11 @@ needs_ffmpeg = pytest.mark.skipif(
     reason="ffmpeg or ffprobe not on PATH",
 )
 
-PROFILE = "vtuber-av1-uhq-cq46"
-SRCFPS = "vtuber-av1-uhq-cq46-srcfps"
+# The name _enable's options derive (docs/plan/encode.md, Profiles).
+PROFILE = "av1-uhq-cq46-30fps"
+# Named profiles a job queued before the options carries.
+LEGACY = "vtuber-av1-uhq-cq46"
+LEGACY_SRCFPS = "vtuber-av1-uhq-cq46-srcfps"
 # The uhq profile's old name, accepted only for jobs queued under it.
 RETIRED = "vtuber-av1-cq46"
 H264 = {
@@ -90,8 +94,15 @@ def _tiny_sources(monkeypatch):
     monkeypatch.setattr("savetube.encode.MIN_SOURCE_BYTES", 0)
 
 
-def _enable(settings, profile=PROFILE):
-    _sql(settings, f"UPDATE encode_settings SET enabled = true, profile = '{profile}'")
+def _enable(settings, **fields):
+    """Re-encoding on, with uhq at a 30 fps cap and no motion measurement
+    unless `fields` say otherwise."""
+    fields = {"tune": "uhq", "fps_cap": 30, "motion_threshold": None, **fields}
+    sets = ", ".join(f"{k} = :{k}" for k in fields)
+    engine = sa.create_engine(settings.sqlalchemy_url)
+    with engine.begin() as c:
+        c.execute(sa.text(f"UPDATE encode_settings SET enabled = true, {sets}"), fields)
+    engine.dispose()
 
 
 def _enc(settings):
@@ -119,8 +130,8 @@ async def _step(settings, *, now=None, skipped=None, tools=None):
 def _jobs(settings):
     return _sql_rows(
         settings,
-        "SELECT id, video_id, state, profile, source_path, source_size, encoder, ffmpeg_version,"
-        " result_size, reason, log_tail, finished_at FROM encode_job ORDER BY id",
+        "SELECT id, video_id, state, profile, options, source_path, source_size, encoder,"
+        " ffmpeg_version, result_size, reason, log_tail, finished_at FROM encode_job ORDER BY id",
     )
 
 
@@ -142,20 +153,22 @@ async def test_a_complete_h264_video_gets_one_queue_file(settings):
     path, job = _queue_file(settings)
     [row] = _jobs(settings)
     assert path.name == f"{row.id}.json"
-    assert {k: job[k] for k in ("job_id", "video_id", "source", "profile")} == {
+    assert {k: v for k, v in job.items() if k != "created_at"} == {
         "job_id": row.id,
         "video_id": "v1",
         "source": f"{_dir('v1')}/v1.mp4",
-        "profile": PROFILE,
+        "profile": "av1-uhq-cq46-30fps",
+        "options": {"tune": "uhq", "cq": 46, "fps_cap": 30},
     }
     assert datetime.fromisoformat(job["created_at"])
     assert (row.video_id, row.state, row.profile, row.source_path, row.source_size) == (
         "v1",
         "queued",
-        PROFILE,
+        "av1-uhq-cq46-30fps",
         f"{_dir('v1')}/v1.mp4",
         5000,
     )
+    assert row.options == {"tune": "uhq", "cq": 46, "fps_cap": 30}
 
 
 @pytest.mark.anyio
@@ -168,41 +181,64 @@ async def test_nothing_is_queued_while_disabled(settings):
     assert not list(_enc(settings).glob("queue/*"))
 
 
-@pytest.mark.anyio
-async def test_nothing_is_queued_under_a_retired_profile(settings):
-    _stored(settings)
-    _sql(settings, f"UPDATE encode_settings SET enabled = true, profile = '{RETIRED}'")
-
-    await _step(settings, now=datetime.now(UTC))
-
-    assert _jobs(settings) == []
-    assert not list(_enc(settings).glob("queue/*"))
+# A still title's options under the migrated defaults with hq, and every
+# other title's, which measure the motion (docs/plan/encode.md, Profiles).
+STILL = {"tune": "hq", "cq": 46, "fps_cap": 30}
+MEASURED = {**STILL, "motion_threshold": 1.0}
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("profile", "title", "queued"),
+    ("fields", "title", "options", "profile"),
     [
-        pytest.param(SRCFPS, "【歌枠】夜のうた", PROFILE, id="still"),
-        pytest.param(SRCFPS, "asmr 耳かき", PROFILE, id="still-any-case"),
-        pytest.param(
-            "vtuber-av1-hq-cq46-srcfps", "【雑談】free talk", "vtuber-av1-hq-cq46", id="still-hq"
-        ),
-        pytest.param(SRCFPS, "【3D LIVE】歌枠スペシャル", SRCFPS, id="3d-live"),
-        pytest.param(SRCFPS, "【Minecraft】建築", SRCFPS, id="game"),
-        pytest.param(PROFILE, "【Minecraft】建築", PROFILE, id="30-fps-setting"),
+        pytest.param({}, "【歌枠】夜のうた", STILL, "av1-hq-cq46-30fps", id="still"),
+        pytest.param({}, "asmr 耳かき", STILL, "av1-hq-cq46-30fps", id="still-any-case"),
+        pytest.param({}, "【3D LIVE】歌枠スペシャル", MEASURED, "av1-hq-cq46-30fps-motion1",
+                     id="3d-live"),
+        pytest.param({}, "【Minecraft】建築", MEASURED, "av1-hq-cq46-30fps-motion1", id="plain"),
+        pytest.param({"tune": "uhq", "cq": 40, "fps_cap": 29.97}, "【Minecraft】建築",
+                     {"tune": "uhq", "cq": 40, "fps_cap": 29.97, "motion_threshold": 1.0},
+                     "av1-uhq-cq40-29.97fps-motion1", id="plain-capped"),
+        pytest.param({"motion_threshold": 1.5}, "【Minecraft】建築",
+                     {**STILL, "motion_threshold": 1.5}, "av1-hq-cq46-30fps-motion1.5",
+                     id="plain-own-threshold"),
+        # No threshold applies the cap, and no cap keeps the source's rate:
+        # neither measures.
+        pytest.param({"motion_threshold": None}, "【Minecraft】建築", STILL, "av1-hq-cq46-30fps",
+                     id="plain-unmeasured"),
+        pytest.param({"fps_cap": None}, "【Minecraft】建築", {**STILL, "fps_cap": None},
+                     "av1-hq-cq46-srcfps", id="plain-uncapped"),
+        pytest.param({"still_fps_cap": None}, "【雑談】free talk", {**STILL, "fps_cap": None},
+                     "av1-hq-cq46-srcfps", id="still-uncapped"),
+        pytest.param({"still_fps_cap": 24}, "【雑談】free talk", {**STILL, "fps_cap": 24},
+                     "av1-hq-cq46-24fps", id="still-own-cap"),
+        pytest.param({"still_words": ["Minecraft"]}, "【Minecraft】建築", STILL,
+                     "av1-hq-cq46-30fps", id="own-still-word"),
+        pytest.param({"still_words": ["Minecraft"]}, "【歌枠】夜のうた", MEASURED,
+                     "av1-hq-cq46-30fps-motion1", id="default-word-removed"),
+        pytest.param({"still_exclude_words": ["夜"]}, "【歌枠】夜のうた", MEASURED,
+                     "av1-hq-cq46-30fps-motion1", id="own-exclude-word"),
+        pytest.param({"still_exclude_words": []}, "【3D LIVE】歌枠スペシャル", STILL,
+                     "av1-hq-cq46-30fps", id="no-exclude-words"),
+        # No still words: no title counts as still.
+        pytest.param({"still_words": []}, "【歌枠】夜のうた", MEASURED,
+                     "av1-hq-cq46-30fps-motion1", id="no-still-words"),
     ],
-)
-async def test_a_still_title_queues_under_the_30_fps_profile(settings, profile, title, queued):
+)  # fmt: skip
+async def test_a_job_takes_the_options_its_title_resolves(
+    settings, fields, title, options, profile
+):
     _stored(settings)
     _sql(settings, f"UPDATE video SET title = '{title}' WHERE id = 'v1'")
-    _enable(settings, profile)
+    # The migrated defaults with hq, then the case's changes.
+    _enable(settings, **{"tune": "hq", "fps_cap": 30, "motion_threshold": 1.0, **fields})
 
     await _step(settings, now=datetime.now(UTC))
 
     _, job = _queue_file(settings)
     [row] = _jobs(settings)
-    assert (job["profile"], row.profile) == (queued, queued)
+    assert (job["options"], job["profile"]) == (options, profile)
+    assert (row.options, row.profile) == (options, profile)
 
 
 @pytest.mark.anyio
@@ -465,10 +501,10 @@ def _done(settings, job, result, t, **override):
     return data
 
 
-async def _with_result(settings, tmp_path, t, profile=PROFILE, **encode):
+async def _with_result(settings, tmp_path, t, options=None, **encode):
     source = _source_media(tmp_path / "source.mp4")
     directory = _stored(settings, media=source.read_bytes())
-    _enable(settings, profile)
+    _enable(settings, **(options or {}))
     await _step(settings, now=t)
     path, job = _queue_file(settings)
     path.unlink()
@@ -534,7 +570,11 @@ async def test_a_result_queued_under_a_retired_profile_still_replaces_the_stored
 ):
     t = datetime.now(UTC)
     source, directory, job, result = await _with_result(settings, tmp_path, t)
-    _sql(settings, f"UPDATE encode_job SET profile = '{RETIRED}' WHERE id = {job['job_id']}")
+    _sql(
+        settings,
+        f"UPDATE encode_job SET profile = '{RETIRED}', options = NULL WHERE id = {job['job_id']}",
+    )
+    job.pop("options")
     _done(settings, job, result, t, profile=RETIRED)
 
     await _step(settings, now=t + timedelta(minutes=1))
@@ -603,16 +643,94 @@ async def test_a_result_failing_a_check_moves_to_failed(settings, tmp_path, enco
 @needs_ffmpeg
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("fps", "state"), [pytest.param(60, "succeeded", id="60"), pytest.param(30, "failed", id="30")]
+    ("fps_cap", "fps", "state"),
+    [
+        pytest.param(30, 30, "succeeded", id="cap-30-at-30"),
+        pytest.param(30, 60, "failed", id="cap-30-at-60"),
+        pytest.param(None, 60, "succeeded", id="source-rate-at-60"),
+        pytest.param(None, 30, "failed", id="source-rate-at-30"),
+        # A cap above the source's rate keeps the source's.
+        pytest.param(120, 60, "succeeded", id="cap-120-at-60"),
+    ],
 )
-async def test_a_srcfps_result_keeps_the_60_fps_source_rate(settings, tmp_path, fps, state):
+async def test_a_result_runs_at_the_options_frame_rate(settings, tmp_path, fps_cap, fps, state):
     t = datetime.now(UTC)
-    _, _, job, result = await _with_result(settings, tmp_path, t, profile=SRCFPS, fps=fps)
-    _done(settings, job, result, t, profile=SRCFPS)
+    _, _, job, result = await _with_result(
+        settings, tmp_path, t, options={"fps_cap": fps_cap}, fps=fps
+    )
+    _done(settings, job, result, t, profile=job["profile"])
 
     await _step(settings, now=t + timedelta(minutes=1))
 
-    assert _state(settings, job["job_id"]).state == state
+    row = _state(settings, job["job_id"])
+    assert row.state == state, row.reason
+
+
+# A measured job's frame rate follows its motion (docs/plan/encode.md,
+# Checking and swapping a result). The source runs at 60 fps.
+@needs_ffmpeg
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("motion", "fps", "state"),
+    [
+        pytest.param(2.5, 60, "succeeded", id="above-keeps-60"),
+        pytest.param(1.0, 60, "succeeded", id="at-threshold-keeps-60"),
+        pytest.param(0.999, 30, "succeeded", id="below-caps-30"),
+        pytest.param(0.999, 60, "failed", id="below-at-60"),
+        pytest.param(1.0, 30, "failed", id="at-threshold-at-30"),
+        pytest.param(None, 30, "failed", id="motion-missing"),
+        pytest.param("2.5", 60, "failed", id="motion-not-a-number"),
+    ],
+)
+async def test_a_measured_result_runs_at_the_rate_its_motion_picks(
+    settings, tmp_path, motion, fps, state
+):
+    t = datetime.now(UTC)
+    _, _, job, result = await _with_result(
+        settings, tmp_path, t, options={"fps_cap": 30, "motion_threshold": 1.0}, fps=fps
+    )
+    assert job["options"]["motion_threshold"] == 1.0
+    measured = {} if motion is None else {"motion": motion, "fps": float(fps)}
+    _done(settings, job, result, t, profile=job["profile"], **measured)
+
+    await _step(settings, now=t + timedelta(minutes=1))
+
+    row = _state(settings, job["job_id"])
+    assert row.state == state, row.reason
+
+
+# A job queued before the options names a profile, and its check reads the
+# profile's frame rate.
+@needs_ffmpeg
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("profile", "fps", "state"),
+    [
+        pytest.param(LEGACY_SRCFPS, 60, "succeeded", id="srcfps-at-60"),
+        pytest.param(LEGACY_SRCFPS, 30, "failed", id="srcfps-at-30"),
+        pytest.param(LEGACY, 30, "succeeded", id="30-fps-at-30"),
+        pytest.param(LEGACY, 60, "failed", id="30-fps-at-60"),
+    ],
+)
+async def test_a_job_without_options_checks_its_named_profile(
+    settings, tmp_path, profile, fps, state
+):
+    t = datetime.now(UTC)
+    # Options that pass every rate, so only the named profile decides.
+    _, _, job, result = await _with_result(
+        settings, tmp_path, t, options={"fps_cap": None}, fps=fps
+    )
+    _sql(
+        settings,
+        f"UPDATE encode_job SET profile = '{profile}', options = NULL WHERE id = {job['job_id']}",
+    )
+    job.pop("options")
+    _done(settings, job, result, t, profile=profile)
+
+    await _step(settings, now=t + timedelta(minutes=1))
+
+    row = _state(settings, job["job_id"])
+    assert row.state == state, row.reason
 
 
 class _PacketErrors:
@@ -859,23 +977,38 @@ def test_api_cancel_asks_the_scheduler(settings, monkeypatch):
     assert [j["state"] for j in jobs] == ["cancelled"]
 
 
+SETTINGS = {
+    "enabled": True,
+    "tune": "hq",
+    "cq": 40,
+    "fps_cap": 29.97,
+    "still_fps_cap": None,
+    "motion_threshold": 1.5,
+    "still_words": ["歌枠"],
+    "still_exclude_words": [],
+}
+
+
 def test_api_settings_start_off_and_save(settings):
     with _api(settings) as api:
         first = api.get("/api/encode").json()
-        put = api.put("/api/encode", json={"enabled": True, "profile": PROFILE})
-        unknown = api.put("/api/encode", json={"enabled": True, "profile": "av1-cq99"})
-        retired = api.put("/api/encode", json={"enabled": True, "profile": RETIRED})
+        put = api.put("/api/encode", json=SETTINGS)
         after = api.get("/api/encode").json()
 
+    # A fresh database's row: vtuber-av1-uhq-cq46-srcfps before the options,
+    # then the 30 fps cap migration 0037 gave the null cap.
     assert first == {
         "enabled": False,
-        "profile": SRCFPS,
-        "profiles": [
-            "vtuber-av1-hq-cq46",
-            "vtuber-av1-uhq-cq46",
-            "vtuber-av1-hq-cq46-srcfps",
-            SRCFPS,
+        "tune": "uhq",
+        "cq": 46,
+        "fps_cap": 30,
+        "still_fps_cap": 30,
+        "motion_threshold": 1.0,
+        "still_words": [
+            "歌枠", "うたわく", "ASMR", "雑談", "karaoke", "singing stream", "free talk",
+            "freetalk",
         ],
+        "still_exclude_words": ["3D"],
         "summary": {
             "saved_bytes": 0, "source_bytes": 0, "held_bytes": 0,
             "succeeded": 0, "failed": 0, "open": 0,
@@ -883,8 +1016,125 @@ def test_api_settings_start_off_and_save(settings):
         "waiting": {"total": 0, "items": []},
         "finished": {"total": 0, "items": []},
     }  # fmt: skip
-    assert put.is_success and unknown.status_code == 422 and retired.status_code == 422
-    assert (after["enabled"], after["profile"]) == (True, PROFILE)
+    assert put.is_success
+    assert {k: after[k] for k in SETTINGS} == SETTINGS
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param({"cq": 0}, id="cq-0"),
+        pytest.param({"cq": 64}, id="cq-64"),
+        pytest.param({"fps_cap": 0}, id="fps-cap-0"),
+        pytest.param({"still_fps_cap": -30}, id="still-fps-cap-negative"),
+        pytest.param({"motion_threshold": 0}, id="motion-threshold-0"),
+        pytest.param({"motion_threshold": -1}, id="motion-threshold-negative"),
+        pytest.param({"tune": "ll"}, id="unknown-tune"),
+    ],
+)
+def test_api_settings_refuse_out_of_range_values(settings, change):
+    with _api(settings) as api:
+        r = api.put("/api/encode", json={**SETTINGS, **change})
+        after = api.get("/api/encode").json()
+
+    assert r.status_code == 422
+    assert after["enabled"] is False
+
+
+def test_api_settings_store_word_lists_trimmed_and_deduplicated(settings):
+    body = {
+        **SETTINGS,
+        "still_words": [" 歌枠 ", "asmr", "ASMR", ""],
+        "still_exclude_words": ["3d"],
+    }
+    with _api(settings) as api:
+        saved = api.put("/api/encode", json=body).json()
+
+    assert (saved["still_words"], saved["still_exclude_words"]) == (["歌枠", "asmr"], ["3d"])
+
+
+# Migration 0036 ----------------------------------------------------------------
+
+
+@pytest.mark.own_database
+@pytest.mark.parametrize(
+    ("profile", "options", "back"),
+    [
+        pytest.param("vtuber-av1-hq-cq46-srcfps", ("hq", 46, None), "vtuber-av1-hq-cq46-srcfps",
+                     id="hq-srcfps"),
+        pytest.param("vtuber-av1-uhq-cq46-srcfps", ("uhq", 46, None),
+                     "vtuber-av1-uhq-cq46-srcfps", id="uhq-srcfps"),
+        pytest.param("vtuber-av1-hq-cq46", ("hq", 46, 30), "vtuber-av1-hq-cq46", id="hq-30"),
+        pytest.param("vtuber-av1-uhq-cq46", ("uhq", 46, 30), "vtuber-av1-uhq-cq46", id="uhq-30"),
+    ],
+)  # fmt: skip
+def test_migration_maps_the_profile_to_options_and_back(settings, profile, options, back):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0035")
+    _sql(settings, f"UPDATE encode_settings SET enabled = true, profile = '{profile}'")
+
+    command.upgrade(cfg, "0036")
+    [row] = _sql_rows(
+        settings,
+        "SELECT enabled, tune, cq, fps_cap, still_fps_cap, still_exclude_words"
+        " FROM encode_settings",
+    )
+    assert (row.enabled, (row.tune, row.cq, row.fps_cap)) == (True, options)
+    assert (row.still_fps_cap, row.still_exclude_words) == (30, ["3D"])
+
+    command.downgrade(cfg, "0035")
+    [row] = _sql_rows(settings, "SELECT enabled, profile FROM encode_settings")
+    assert (row.enabled, row.profile) == (True, back)
+
+
+@pytest.mark.own_database
+@pytest.mark.parametrize(
+    ("options", "back"),
+    [
+        pytest.param(("uhq", 40, None), "vtuber-av1-uhq-cq46-srcfps", id="uhq-other-cq"),
+        pytest.param(("hq", 46, 24), "vtuber-av1-hq-cq46", id="hq-other-cap"),
+    ],
+)
+def test_migration_downgrade_maps_options_to_the_nearest_profile(settings, options, back):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    tune, cq, fps_cap = options
+    _sql(
+        settings,
+        f"UPDATE encode_settings SET tune = '{tune}', cq = {cq},"
+        f" fps_cap = {'NULL' if fps_cap is None else fps_cap}",
+    )
+
+    command.downgrade(alembic_config(settings.sqlalchemy_url), "0035")
+
+    [row] = _sql_rows(settings, "SELECT profile FROM encode_settings")
+    assert row.profile == back
+
+
+# Migration 0037 ----------------------------------------------------------------
+
+
+@pytest.mark.own_database
+@pytest.mark.parametrize(("fps_cap", "after"), [(None, 30), (24, 24)])
+def test_migration_measures_motion_and_caps_a_null_fps_cap(settings, fps_cap, after):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0036")
+    _sql(settings, f"UPDATE encode_settings SET fps_cap = {'NULL' if fps_cap is None else fps_cap}")
+
+    command.upgrade(cfg, "0037")
+
+    [row] = _sql_rows(settings, "SELECT fps_cap, motion_threshold FROM encode_settings")
+    assert (row.fps_cap, row.motion_threshold) == (after, 1.0)
 
 
 def test_api_lists_jobs_and_requeues_only_failures(settings):

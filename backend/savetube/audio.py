@@ -12,7 +12,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from savetube.db.models import Job, JobKind, JobState, Video, VideoState
+from savetube.db.models import STREAMS_ONLY, Job, JobKind, JobState, Video, VideoState
 from savetube.integrity import IntegrityFailed, Tools, verify_recording
 from savetube.logs import emit, human_bytes
 from savetube.storage import dir_size
@@ -123,7 +123,7 @@ def _recorded():
 
 def _media(archive_root: Path, video: Video) -> Path:
     # Files in a video directory are named `<video id>.<ext>` (layout.OUTTMPL).
-    ext = (video.info or {}).get("ext")
+    ext = (video.stream_info or {}).get("ext")
     media = archive_root / video.dir_path / f"{video.id}.{ext}"
     if not ext or not media.is_file():
         raise AudioFailed("video file not found")
@@ -154,6 +154,7 @@ async def backfill(
         videos = (
             await session.scalars(
                 select(Video)
+                .options(*STREAMS_ONLY)
                 .where(Video.state == VideoState.COMPLETE, Video.dir_path.is_not(None), ~recorded)
                 .order_by(Video.id)
             )
@@ -205,6 +206,7 @@ async def verify_recordings(
         videos = (
             await session.scalars(
                 select(Video)
+                .options(*STREAMS_ONLY)
                 .where(
                     Video.state == VideoState.COMPLETE,
                     Video.dir_path.is_not(None),
@@ -222,7 +224,9 @@ async def verify_recordings(
             if dry_run:
                 done = str(media.relative_to(archive_root))
             else:
-                checks = await asyncio.to_thread(verify_recording, media, video.info or {}, tools)
+                checks = await asyncio.to_thread(
+                    verify_recording, media, video.stream_info or {}, tools
+                )
                 if _present(media) is None:
                     try:
                         await asyncio.to_thread(extract, media, tools)
