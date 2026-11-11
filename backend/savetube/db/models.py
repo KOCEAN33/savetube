@@ -460,6 +460,9 @@ class EncodeState(enum.StrEnum):
     # Its file is in no folder for LOST_AFTER (savetube.encode), so the video
     # may be queued again.
     LOST = "lost"
+    # A replace swapped out the video stream it encoded, so the video may be
+    # queued again.
+    SUPERSEDED = "superseded"
 
 
 class EncodeSettings(Base):

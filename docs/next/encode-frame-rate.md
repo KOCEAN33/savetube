@@ -6,14 +6,14 @@ Game and 3D live streams keep 60 fps and still streams go to 30 fps, decided by 
 
 ## Start
 
-Plan step 5, second half: the savetube release (develop into main) waits for the owner's go. Plan steps 1-4 are on develop and media-encoder `main`, and media-encoder v0.3.15 is released. The PC installs v0.3.15 once its running jobs finish. Confirm the status page at `http://100.112.180.96:8733/` shows v0.3.15 before the savetube release.
+Plan step 6, after one check: the first encode job queued with `motion_threshold` succeeds. Both releases run in production: media-encoder v0.3.15 on the PC, and savetube PR #75 with migration `0037` (`fps_cap` 30, `motion_threshold` 1.0). On 2026-11-11 the queue still held 3 jobs from before the release, so the first measured job queues after those.
 
 - The owner chose to download again only the frame-lost videos that need 60 fps, picked by motion score, not all 210 (plan, Re-downloading frame-lost videos).
 
 ## Next steps
 
-1. The savetube release, on the owner's go.
-2. Plan step 6 after both releases run in production. Done when every candidate at or above 1.0 has a succeeded replace.
+1. Check the first measured job: its `encode_job.options` has `motion_threshold`, its done file has `motion` and `fps`, and it succeeded.
+2. Plan step 6. Done when every candidate at or above 1.0 has a succeeded replace.
 
 ## Pointers
 

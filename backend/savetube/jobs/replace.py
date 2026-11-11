@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from savetube import audio, cookies, formats, integrity, logs
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
-from savetube.db.models import FormatWatch, Job, JobState, Video
+from savetube.db.models import EncodeJob, EncodeState, FormatWatch, Job, JobState, Video
 from savetube.joblog import BLOCKED_LOG, PROFILE_BLOCKED_LOG, SHUTDOWN_LOG
 from savetube.jobs.archive import _media_path
 from savetube.jobs.guards import (
@@ -350,6 +350,17 @@ async def _replace(
             watch.stored_duration = None
         if watch.stored_duration is not None:
             video.duration = round(watch.stored_duration)
+        if "video" in new:
+            # The stored video stream is no longer an encode's result, so the
+            # video may be encoded again (savetube.encode.candidates).
+            await session.execute(
+                update(EncodeJob)
+                .where(
+                    EncodeJob.video_id == begun.video_id,
+                    EncodeJob.state == EncodeState.SUCCEEDED,
+                )
+                .values(state=EncodeState.SUPERSEDED)
+            )
         job = await session.get(Job, job_id)
         job.state = JobState.SUCCEEDED
         job.finished_at = video.verified_at

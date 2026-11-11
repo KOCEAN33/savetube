@@ -446,6 +446,7 @@ export type EncodeState =
   | "cancelled"
   | "requeued"
   | "lost"
+  | "superseded"
 
 export interface EncodeJob {
   id: number

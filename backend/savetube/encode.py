@@ -60,7 +60,7 @@ FPS_SLACK = 0.05
 
 _OPEN = (EncodeState.QUEUED, EncodeState.CLAIMED)
 # A video with one of these is never queued again: an open job, a failure
-# until a user requeues it, or a result already swapped in.
+# until a user requeues it, or a result still stored.
 _BLOCKING = (*_OPEN, EncodeState.FAILED, EncodeState.SUCCEEDED)
 
 
