@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from savetube import formats
 from savetube.db.models import (
     Channel,
     Job,
@@ -121,7 +122,7 @@ async def store(
     video.size_bytes = dir_size(final)
     video.completed_at = datetime.now(UTC)
     video.state = VideoState.COMPLETE if ready_root is None else VideoState.STAGED
-    video.info = info
+    video.info = formats.stored_info(info)
 
     job.state = JobState.SUCCEEDED
     job.finished_at = video.completed_at

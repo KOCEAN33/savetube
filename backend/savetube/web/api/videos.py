@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm import InstrumentedAttribute, defer
 
 from savetube import formats
 from savetube.db.models import Channel, Source, Video, VideoSource, VideoState
@@ -163,6 +163,8 @@ async def videos(
     by_date = Video.upload_date.desc() if order == "newest" else Video.upload_date.asc()
     items = await session.scalars(
         select(Video)
+        # A row's info runs to megabytes, and VideoOut shows none of it.
+        .options(defer(Video.info, raiseload=True))
         .where(*where)
         .order_by(by_date.nulls_last(), Video.id)
         .limit(limit)

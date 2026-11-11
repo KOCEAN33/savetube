@@ -53,6 +53,18 @@ def trim(f: dict[str, Any]) -> dict[str, Any]:
     return {k: f[k] for k in FIELDS if f.get(k) is not None}
 
 
+def stored_info(info: dict[str, Any]) -> dict[str, Any]:
+    """The info dict a video row keeps. A live recording's formats list every
+    fragment URL, 59 MB on one 1.7-hour live, and `requested_downloads` repeats
+    the picked formats with local paths. The `.info.json` beside the file keeps
+    them."""
+    out = {k: v for k, v in info.items() if k != "requested_downloads"}
+    for key in ("formats", "requested_formats"):
+        if isinstance(info.get(key), list):
+            out[key] = [{k: v for k, v in f.items() if k != "fragments"} for f in info[key]]
+    return out
+
+
 def counted(formats: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The audio-only and video-only `https` formats, without `-drc` audio,
     trimmed to FIELDS. HLS copies of the same streams are left out."""
