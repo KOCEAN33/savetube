@@ -15,13 +15,16 @@ The encoder is its own private repo, `KOCEAN33/media-encoder`, at `/Users/kocean
 
 ## Profiles
 
-Each job file carries the encode options, `{tune, cq, fps_cap}`. The encoder composes its ffmpeg arguments from them, so savetube's settings change an encode without a change on the encoder side. Every encode gives AV1 10-bit (`av1_nvenc`, hierarchical B-frames) at the source's resolution, with the audio streams copied, in Matroska. The options set the rest:
+Each job file carries the encode options, `{tune, cq, fps_cap, motion_threshold}`. The encoder composes its ffmpeg arguments from them, so savetube's settings change an encode without a change on the encoder side. Every encode gives AV1 10-bit (`av1_nvenc`, hierarchical B-frames) at the source's resolution, with the audio streams copied, in Matroska. The options set the rest:
 
 | Option | Meaning |
 | --- | --- |
 | `tune` | `hq` or `uhq`, passed as `-tune` |
 | `cq` | an integer from 1 to 63, passed as `-cq` |
 | `fps_cap` | a number: the output runs at the source's frame rate or this cap, whichever is lower. Null keeps the source's frame rate |
+| `motion_threshold` | optional, a number above 0. With it, the encoder measures the motion score of a source above `fps_cap`: a score at or above the threshold keeps the source's frame rate, and a lower one applies `fps_cap`. Absent or null measures nothing and applies `fps_cap` |
+
+The motion score is the median of three window means, rounded to 3 decimals. The three 60 s windows start at 25%, 50% and 75% of the source's duration, and a window past the end is cut short by the file's end. A window's mean is the mean of every `lavfi.signalstats.YAVG` value from `ffmpeg -nostdin -v fatal -ss <start> -t 60 -i <src> -map 0:V:0 -vf "scale=320:180,format=gray,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-" -f null -`, with software decode: the mean absolute luma difference between consecutive frames. `scripts/motion-mad.sh FILE...` computes the same score.
 
 The Encode page edits the settings these options come from:
 
@@ -31,7 +34,7 @@ The Encode page edits the settings these options come from:
 - `still_exclude_words`, default `3D`. A title with one of them never counts as still: a 3D live often names `歌枠` too.
 - The match is case-insensitive substring, as for a source's title words (`savetube.words.matches`).
 
-The job file's `profile` is a name the options derive: `av1-{tune}-cq{cq}-{fps}`, where `{fps}` is `srcfps` for a null cap, else the cap without a trailing `.0` and `fps`, such as `av1-hq-cq46-30fps` or `av1-uhq-cq40-srcfps`. The re-encoded stream's `format_id`, the job list and the done file's profile check use it.
+The job file's `profile` is a name the options derive: `av1-{tune}-cq{cq}-{fps}`, where `{fps}` is `srcfps` for a null cap, else the cap without a trailing `.0` and `fps`, such as `av1-hq-cq46-30fps` or `av1-uhq-cq40-srcfps`. With `motion_threshold`, the name gains `-motion{threshold}` after the fps part, the threshold formatted like the cap: `av1-hq-cq46-30fps-motion1`. The re-encoded stream's `format_id`, the job list and the done file's profile check use it.
 
 A job file queued before the options has no `options`, only a named profile. The encoder falls back to the named profile's arguments, and savetube checks the result against that profile's output. Nothing queues under these names any more:
 
@@ -57,10 +60,10 @@ Each job is a file that moves between folders under `.encode/`. A move is a rena
 
 | Folder | Written by | Holds |
 | --- | --- | --- |
-| `queue/<job id>.json` | savetube | `{job_id, video_id, source, profile, options, created_at}`. `source` is the path of the stored file relative to the `youtube` share root, which is the archive root, with `/` separators. `options` is `{tune, cq, fps_cap}` resolved for this video's title, and `profile` the name it derives (Profiles). A job file without `options` carries a named profile |
+| `queue/<job id>.json` | savetube | `{job_id, video_id, source, profile, options, created_at}`. `source` is the path of the stored file relative to the `youtube` share root, which is the archive root, with `/` separators. `options` is `{tune, cq, fps_cap, motion_threshold}` resolved for this video's title, and `profile` the name it derives (Profiles). A job file without `options` carries a named profile |
 | `claimed/<job id>.json` | encoder, by renaming the queue file | the job the encoder works on. A paused or restarted encoder resumes its claimed jobs first |
 | `work/<job id>.mkv` | encoder | the finished output while it is copied in. The encoder encodes on its local disk and copies only the complete file here. savetube never reads `work/` |
-| `done/<job id>.mkv` and `done/<job id>.json` | encoder | the result, moved from `work/` when complete, then the job file with `{profile, encoder, ffmpeg_version, sha256, size, duration, finished_at}` added. The `.json` is written last, so its presence means the `.mkv` is complete |
+| `done/<job id>.mkv` and `done/<job id>.json` | encoder | the result, moved from `work/` when complete, then the job file with `{profile, encoder, ffmpeg_version, sha256, size, duration, finished_at}` added. A job that measured motion also adds `motion`, the score, and `fps`, the output frame rate as ffprobe reports it, to 3 decimals. The `.json` is written last, so its presence means the `.mkv` is complete |
 | `failed/<job id>.json` | encoder | the job file with `{reason, log_tail, failed_at}` added. The video is not queued again until a user requeues it |
 
 - savetube keeps up to 3 jobs in `queue/`, so the queue never holds the whole backlog.
@@ -72,6 +75,7 @@ Each job is a file that moves between folders under `.encode/`. A move is a rena
 ## Checking and swapping a result
 
 - The scheduler looks in `done/` every minute. For each `.json` it checks the profile, the size and the SHA-256 against the job file, then probes the `.mkv` and the stored file. AV1, 10-bit, the frame rate the job's options set (or its named profile's, for a job without options), the source's resolution, the source's audio stream count, the source's duration within 1 s, and a clean packet pass must hold.
+- With `motion_threshold`, a source above `fps_cap` needs `motion` in the done file. The wanted frame rate is the source's when `motion >= motion_threshold`, else `min(source, fps_cap)`, within `FPS_SLACK`. A missing or contradictory `motion` fails the check. An encoder that predates `motion_threshold` ignores it and applies the cap, so its result fails whenever the motion would have kept the source's rate.
 - The result must be smaller than the source, and the stored file must still be the one the job named, with the same size.
 - A failed check moves both files to `failed/` with the reason, the `.mkv` first.
 - While a replace job or a recording is queued or running for the video, the result waits in `done/`.
