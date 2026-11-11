@@ -12,10 +12,4 @@ Confirm in production the released format fallback, recorder, and HTTP 403 chang
 
 ## Encode frame rate
 
-Goal: game and 3D live streams keep their 60 fps, still streams go to 30 fps, chosen by measured motion. Research and measurements: llm-wiki `projects/savetube-encode-fps.md`. The steps run in this order.
-
-1. media-encoder decodes on NVDEC with frames left on the GPU: `-hwaccel cuda -hwaccel_output_format cuda`, `scale_cuda=format=p010le` in place of `format=p010le`, and a CUDA deinterlacer for the file source. A source NVDEC cannot decode falls back to software decode. Done when `scripts/pc-test.sh ./internal/ffmpeg` passes and a 1080p60 VP9 job runs above the 4.8x it ran at with CPU decode.
-2. encode.md gains an optional `options.motion_threshold`. With it set, the encoder measures the median consecutive-frame luma MAD of at least three 60 s windows at the source rate, keeps the source rate at or above the threshold, and applies `fps_cap` below it. The done file reports the measured value and the rate used, and `_check` takes that rate. Edit encode.md before either repo's code.
-3. media-encoder implements step 2. savetube adds the threshold, default 1.0, and a source-rate title word list for games and 3D live to the Encode page. The `3D` exclude word also matches `3dio`, a binaural mic name, so the default needs a narrower word.
-4. Release media-encoder first, then ask the owner for a savetube release: a job with `motion_threshold` fails on an encoder that does not know it.
-5. Re-download the frame-lost videos that need 60 fps. The 210 videos are succeeded jobs under `vtuber-av1-hq-cq46` or `vtuber-av1-cq46` whose `info.formats` offers above 30 fps at the stored height and whose title has no still word. Measure their stored 30 fps files, then queue a replace for those at or above the threshold or with a game or 3D title. A 30 fps file scores up to twice its 60 fps value on moving content, so the 60 fps threshold errs toward a re-download.
+Game and 3D live streams keep 60 fps, still streams go to 30 fps by measured motion, and the encoder decodes on NVDEC. Steps, constants and done checks: `docs/plan/encode-frame-rate.md`, Steps. None has started.

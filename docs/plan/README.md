@@ -14,6 +14,7 @@ Draft for archiving chosen YouTube channels and playlists, recording lives from 
 | `live.md` | live detection, recording, the VOD |
 | `access.md` | login through Zitadel, YouTube cookies |
 | `encode.md` | re-encoding stored videos on the external Windows encoder, its Samba shares and job-file contract |
+| `encode-frame-rate.md` | plan: the motion-measured 30 fps or source-rate choice, NVDEC decode, re-downloading frame-lost videos |
 | `operations.md` | Discord notifications, metrics, build, release, Kubernetes deployment |
 
 ## Requirements
