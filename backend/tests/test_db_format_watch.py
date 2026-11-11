@@ -1405,6 +1405,65 @@ async def test_a_replace_that_fails_its_checks_leaves_the_stored_file(settings, 
     assert not (settings.archive_root / ".incoming" / "1").exists()
 
 
+def _vp9_download(source):
+    """A runner step that downloads `source`, a video-only file, as 248."""
+
+    async def step(params, report):
+        media = Path(params["paths"]["home"]) / "v1.webm"
+        shutil.copyfile(source, media)
+        size = media.stat().st_size
+        await report({"event": "stream", "format_id": "248", "size": size, "expected": size})
+        return {
+            "id": "v1",
+            "duration": 1,
+            "format_id": "248",
+            "format": "248 - 1920x1080 (1080p60)",
+            "vcodec": "vp9",
+            "acodec": "none",
+            "fps": 60,
+            "requested_downloads": [{"filepath": str(media)}],
+        }
+
+    return step
+
+
+@needs_ffmpeg
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("format_id", "encode_state"),
+    [
+        # The stored video stream is no longer the encode's result, so the
+        # video may be encoded again (docs/plan/encode.md, Which videos).
+        pytest.param("248", "superseded", id="video"),
+        pytest.param("251", "succeeded", id="audio"),
+    ],
+)
+async def test_a_replace_of_the_video_stream_supersedes_its_encode(
+    settings, tmp_path, format_id, encode_state
+):
+    from test_audio import make_media
+
+    recording = make_media(tmp_path / "recording.mkv", audio="aac")
+    if format_id == "248":
+        step = _vp9_download(make_media(tmp_path / "video.mkv", audio=None))
+    else:
+        step = _opus_download(make_media(tmp_path / "opus.webm", audio="libopus", video=False))
+    _stored_live(settings, media=recording.read_bytes())
+    _sql(
+        settings,
+        "INSERT INTO encode_job (video_id, state, profile, source_path, source_size)"
+        f" VALUES ('v1', 'succeeded', 'vtuber-av1-hq-cq46', '{DIR}/v1.mp4', 1000)",
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts)"
+        f" VALUES (1, 'replace', 'queued', 'v1', '{format_id}', 0)",
+        "UPDATE format_watch SET vod_duration = 1",
+    )
+
+    job, _, _ = await _replace(settings, 1, _Steps(step))
+
+    assert job.state is JobState.SUCCEEDED, job.log_tail
+    assert _sql_rows(settings, "SELECT state FROM encode_job") == [(encode_state,)]
+
+
 def test_api_formats_marks_a_dismissed_failed_replace(settings):
     _watched_with_formats(settings)
     _replace_row(settings, state="failed")

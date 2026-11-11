@@ -45,7 +45,7 @@ The defaults become `fps_cap` 30 and `motion_threshold` 1.0. `still_fps_cap` sta
 
 - The candidates are succeeded `encode_job` rows under `vtuber-av1-hq-cq46` or `vtuber-av1-cq46` whose video's `info.formats` lists a video format above 30 fps at `video_height`, and whose title has no still word. There were 210 on 2026-11-11.
 - Score each candidate's stored file with `scripts/motion-mad.sh`, from a pod that mounts the archive. A 30 fps file scores up to twice its 60 fps value on moving content and about the same on still content, so the 1.0 threshold errs toward a re-download.
-- Queue a replace for each candidate at or above 1.0. Its new download queues an encode under the settings above.
+- Queue a replace for each candidate at or above 1.0. The replace supersedes the video's encode job, so the new download queues an encode under the settings above after its 7-day original keep (encode.md, Which videos).
 
 ## Motion measurements
 

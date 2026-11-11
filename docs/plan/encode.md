@@ -8,7 +8,7 @@ The encoder is its own private repo, `KOCEAN33/media-encoder`, at `/Users/kocean
 
 - A `complete` video whose stored video stream is H.264 or VP9, outside the max quality tier once tiers exist (candidates.md, Quality tiers), and whose last format probe offers no AV1 at the stored height or above. A video YouTube still serves as AV1 is downloaded again instead.
 - Settings turn re-encoding on or off and hold the encode options. A video's title can give its job the still frame rate cap (Profiles).
-- A video with a queued or running replace job, an open live recording, an open format watch, or an original already kept aside is skipped. So is a video with an encode job queued, claimed, failed or succeeded.
+- A video with a queued or running replace job, an open live recording, an open format watch, or an original already kept aside is skipped. So is a video with an encode job queued, claimed, failed or succeeded. A replace that swaps in a new video stream marks the video's succeeded job superseded, so the video may queue again once its original is gone.
 - The last format probe is the format watch's stored list, else the format list of the download's info dict. A video with neither counts as offered AV1.
 - A stored file under 10 MiB is skipped: it saves little, and a low-bitrate one can come out larger than its source.
 - The largest stored videos queue first.

@@ -307,7 +307,7 @@ def _encode_row(state):
         ],
         *[
             pytest.param(None, [_encode_row(state)], True, True, False, id=f"encode-{state}")
-            for state in ("cancelled", "lost")
+            for state in ("cancelled", "lost", "superseded")
         ],
         pytest.param(_info("v1", formats=(AV1_SAME, H264, AAC)), [], True, False, True,
                      id="av1-in-info"),
@@ -1135,6 +1135,35 @@ def test_migration_measures_motion_and_caps_a_null_fps_cap(settings, fps_cap, af
 
     [row] = _sql_rows(settings, "SELECT fps_cap, motion_threshold FROM encode_settings")
     assert (row.fps_cap, row.motion_threshold) == (after, 1.0)
+
+
+# Migration 0038 ----------------------------------------------------------------
+
+
+@pytest.mark.own_database
+def test_migration_supersedes_a_result_no_longer_stored(settings):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0037")
+    # v1 stores an H.264 stream again after its encode, v2 still stores the result.
+    _stored(settings, "v1")
+    _stored(settings, "v2", info=_info("v2", video=AV1_SAME))
+    _sql(
+        settings,
+        *[
+            "INSERT INTO encode_job (video_id, state, profile, source_path, source_size)"
+            f" VALUES ('{v}', 'succeeded', '{PROFILE}', '{_dir(v)}/{v}.mp4', 1000)"
+            for v in ("v1", "v2")
+        ],
+    )
+
+    command.upgrade(cfg, "0038")
+
+    rows = _sql_rows(settings, "SELECT video_id, state FROM encode_job ORDER BY video_id")
+    assert rows == [("v1", "superseded"), ("v2", "succeeded")]
 
 
 def test_api_lists_jobs_and_requeues_only_failures(settings):
