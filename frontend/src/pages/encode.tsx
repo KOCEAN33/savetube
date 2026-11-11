@@ -58,6 +58,8 @@ interface OptionsForm {
   // Empty keeps the source's frame rate.
   fps_cap: string
   still_fps_cap: string
+  // Empty applies the FPS cap without measuring.
+  motion_threshold: string
   still_words: string[]
   still_exclude_words: string[]
 }
@@ -69,12 +71,13 @@ function toForm(e: Encode): OptionsForm {
     cq: String(e.cq),
     fps_cap: cap(e.fps_cap),
     still_fps_cap: cap(e.still_fps_cap),
+    motion_threshold: cap(e.motion_threshold),
     still_words: e.still_words,
     still_exclude_words: e.still_exclude_words,
   }
 }
 
-// A cap field's number, null for empty, undefined when invalid.
+// A positive number field's value, null for empty, undefined when invalid.
 function parseCap(value: string): number | null | undefined {
   if (value.trim() === "") return null
   const n = Number(value)
@@ -90,11 +93,15 @@ function toOptions(f: OptionsForm): Omit<EncodeSettingsIn, "enabled"> | string {
   if (fps_cap === undefined) return "FPS cap must be a positive number, or empty."
   const still_fps_cap = parseCap(f.still_fps_cap)
   if (still_fps_cap === undefined) return "Still FPS cap must be a positive number, or empty."
+  const motion_threshold = parseCap(f.motion_threshold)
+  if (motion_threshold === undefined)
+    return "Motion threshold must be a positive number, or empty."
   return {
     tune: f.tune,
     cq,
     fps_cap,
     still_fps_cap,
+    motion_threshold,
     still_words: f.still_words,
     still_exclude_words: f.still_exclude_words,
   }
@@ -107,6 +114,7 @@ function settingsOf(e: Encode): EncodeSettingsIn {
     cq: e.cq,
     fps_cap: e.fps_cap,
     still_fps_cap: e.still_fps_cap,
+    motion_threshold: e.motion_threshold,
     still_words: e.still_words,
     still_exclude_words: e.still_exclude_words,
   }
@@ -211,6 +219,19 @@ function EncodeSettingsForm({
               className="w-28"
               value={form.still_fps_cap}
               onChange={(e) => setForm({ ...form, still_fps_cap: e.target.value })}
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="encode-motion-threshold">Motion threshold</Label>
+            <Input
+              id="encode-motion-threshold"
+              type="number"
+              min={0}
+              step="any"
+              placeholder="off"
+              className="w-28"
+              value={form.motion_threshold}
+              onChange={(e) => setForm({ ...form, motion_threshold: e.target.value })}
             />
           </div>
         </div>

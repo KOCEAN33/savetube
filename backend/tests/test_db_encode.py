@@ -95,8 +95,9 @@ def _tiny_sources(monkeypatch):
 
 
 def _enable(settings, **fields):
-    """Re-encoding on, with uhq at a 30 fps cap unless `fields` say otherwise."""
-    fields = {"tune": "uhq", "fps_cap": 30, **fields}
+    """Re-encoding on, with uhq at a 30 fps cap and no motion measurement
+    unless `fields` say otherwise."""
+    fields = {"tune": "uhq", "fps_cap": 30, "motion_threshold": None, **fields}
     sets = ", ".join(f"{k} = :{k}" for k in fields)
     engine = sa.create_engine(settings.sqlalchemy_url)
     with engine.begin() as c:
@@ -180,43 +181,48 @@ async def test_nothing_is_queued_while_disabled(settings):
     assert not list(_enc(settings).glob("queue/*"))
 
 
+# A still title's options under the migrated defaults with hq, and every
+# other title's, which measure the motion (docs/plan/encode.md, Profiles).
+STILL = {"tune": "hq", "cq": 46, "fps_cap": 30}
+MEASURED = {**STILL, "motion_threshold": 1.0}
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("fields", "title", "options", "profile"),
     [
-        pytest.param({}, "【歌枠】夜のうた", {"tune": "hq", "cq": 46, "fps_cap": 30},
-                     "av1-hq-cq46-30fps", id="still"),
-        pytest.param({}, "asmr 耳かき", {"tune": "hq", "cq": 46, "fps_cap": 30},
-                     "av1-hq-cq46-30fps", id="still-any-case"),
-        pytest.param({}, "【3D LIVE】歌枠スペシャル", {"tune": "hq", "cq": 46, "fps_cap": None},
-                     "av1-hq-cq46-srcfps", id="3d-live"),
-        pytest.param({}, "【Minecraft】建築", {"tune": "hq", "cq": 46, "fps_cap": None},
-                     "av1-hq-cq46-srcfps", id="plain"),
+        pytest.param({}, "【歌枠】夜のうた", STILL, "av1-hq-cq46-30fps", id="still"),
+        pytest.param({}, "asmr 耳かき", STILL, "av1-hq-cq46-30fps", id="still-any-case"),
+        pytest.param({}, "【3D LIVE】歌枠スペシャル", MEASURED, "av1-hq-cq46-30fps-motion1",
+                     id="3d-live"),
+        pytest.param({}, "【Minecraft】建築", MEASURED, "av1-hq-cq46-30fps-motion1", id="plain"),
         pytest.param({"tune": "uhq", "cq": 40, "fps_cap": 29.97}, "【Minecraft】建築",
-                     {"tune": "uhq", "cq": 40, "fps_cap": 29.97}, "av1-uhq-cq40-29.97fps",
-                     id="plain-capped"),
-        pytest.param({"fps_cap": 30, "still_fps_cap": None}, "【雑談】free talk",
-                     {"tune": "hq", "cq": 46, "fps_cap": None}, "av1-hq-cq46-srcfps",
-                     id="still-uncapped"),
-        pytest.param({"still_fps_cap": 24}, "【雑談】free talk",
-                     {"tune": "hq", "cq": 46, "fps_cap": 24}, "av1-hq-cq46-24fps",
-                     id="still-own-cap"),
-        pytest.param({"still_words": ["Minecraft"]}, "【Minecraft】建築",
-                     {"tune": "hq", "cq": 46, "fps_cap": 30}, "av1-hq-cq46-30fps",
-                     id="own-still-word"),
-        pytest.param({"still_words": ["Minecraft"]}, "【歌枠】夜のうた",
-                     {"tune": "hq", "cq": 46, "fps_cap": None}, "av1-hq-cq46-srcfps",
-                     id="default-word-removed"),
-        pytest.param({"still_exclude_words": ["夜"]}, "【歌枠】夜のうた",
-                     {"tune": "hq", "cq": 46, "fps_cap": None}, "av1-hq-cq46-srcfps",
-                     id="own-exclude-word"),
-        pytest.param({"still_exclude_words": []}, "【3D LIVE】歌枠スペシャル",
-                     {"tune": "hq", "cq": 46, "fps_cap": 30}, "av1-hq-cq46-30fps",
-                     id="no-exclude-words"),
+                     {"tune": "uhq", "cq": 40, "fps_cap": 29.97, "motion_threshold": 1.0},
+                     "av1-uhq-cq40-29.97fps-motion1", id="plain-capped"),
+        pytest.param({"motion_threshold": 1.5}, "【Minecraft】建築",
+                     {**STILL, "motion_threshold": 1.5}, "av1-hq-cq46-30fps-motion1.5",
+                     id="plain-own-threshold"),
+        # No threshold applies the cap, and no cap keeps the source's rate:
+        # neither measures.
+        pytest.param({"motion_threshold": None}, "【Minecraft】建築", STILL, "av1-hq-cq46-30fps",
+                     id="plain-unmeasured"),
+        pytest.param({"fps_cap": None}, "【Minecraft】建築", {**STILL, "fps_cap": None},
+                     "av1-hq-cq46-srcfps", id="plain-uncapped"),
+        pytest.param({"still_fps_cap": None}, "【雑談】free talk", {**STILL, "fps_cap": None},
+                     "av1-hq-cq46-srcfps", id="still-uncapped"),
+        pytest.param({"still_fps_cap": 24}, "【雑談】free talk", {**STILL, "fps_cap": 24},
+                     "av1-hq-cq46-24fps", id="still-own-cap"),
+        pytest.param({"still_words": ["Minecraft"]}, "【Minecraft】建築", STILL,
+                     "av1-hq-cq46-30fps", id="own-still-word"),
+        pytest.param({"still_words": ["Minecraft"]}, "【歌枠】夜のうた", MEASURED,
+                     "av1-hq-cq46-30fps-motion1", id="default-word-removed"),
+        pytest.param({"still_exclude_words": ["夜"]}, "【歌枠】夜のうた", MEASURED,
+                     "av1-hq-cq46-30fps-motion1", id="own-exclude-word"),
+        pytest.param({"still_exclude_words": []}, "【3D LIVE】歌枠スペシャル", STILL,
+                     "av1-hq-cq46-30fps", id="no-exclude-words"),
         # No still words: no title counts as still.
-        pytest.param({"still_words": []}, "【歌枠】夜のうた",
-                     {"tune": "hq", "cq": 46, "fps_cap": None}, "av1-hq-cq46-srcfps",
-                     id="no-still-words"),
+        pytest.param({"still_words": []}, "【歌枠】夜のうた", MEASURED,
+                     "av1-hq-cq46-30fps-motion1", id="no-still-words"),
     ],
 )  # fmt: skip
 async def test_a_job_takes_the_options_its_title_resolves(
@@ -225,7 +231,7 @@ async def test_a_job_takes_the_options_its_title_resolves(
     _stored(settings)
     _sql(settings, f"UPDATE video SET title = '{title}' WHERE id = 'v1'")
     # The migrated defaults with hq, then the case's changes.
-    _enable(settings, **{"tune": "hq", "fps_cap": None, **fields})
+    _enable(settings, **{"tune": "hq", "fps_cap": 30, "motion_threshold": 1.0, **fields})
 
     await _step(settings, now=datetime.now(UTC))
 
@@ -660,6 +666,39 @@ async def test_a_result_runs_at_the_options_frame_rate(settings, tmp_path, fps_c
     assert row.state == state, row.reason
 
 
+# A measured job's frame rate follows its motion (docs/plan/encode.md,
+# Checking and swapping a result). The source runs at 60 fps.
+@needs_ffmpeg
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("motion", "fps", "state"),
+    [
+        pytest.param(2.5, 60, "succeeded", id="above-keeps-60"),
+        pytest.param(1.0, 60, "succeeded", id="at-threshold-keeps-60"),
+        pytest.param(0.999, 30, "succeeded", id="below-caps-30"),
+        pytest.param(0.999, 60, "failed", id="below-at-60"),
+        pytest.param(1.0, 30, "failed", id="at-threshold-at-30"),
+        pytest.param(None, 30, "failed", id="motion-missing"),
+        pytest.param("2.5", 60, "failed", id="motion-not-a-number"),
+    ],
+)
+async def test_a_measured_result_runs_at_the_rate_its_motion_picks(
+    settings, tmp_path, motion, fps, state
+):
+    t = datetime.now(UTC)
+    _, _, job, result = await _with_result(
+        settings, tmp_path, t, options={"fps_cap": 30, "motion_threshold": 1.0}, fps=fps
+    )
+    assert job["options"]["motion_threshold"] == 1.0
+    measured = {} if motion is None else {"motion": motion, "fps": float(fps)}
+    _done(settings, job, result, t, profile=job["profile"], **measured)
+
+    await _step(settings, now=t + timedelta(minutes=1))
+
+    row = _state(settings, job["job_id"])
+    assert row.state == state, row.reason
+
+
 # A job queued before the options names a profile, and its check reads the
 # profile's frame rate.
 @needs_ffmpeg
@@ -944,6 +983,7 @@ SETTINGS = {
     "cq": 40,
     "fps_cap": 29.97,
     "still_fps_cap": None,
+    "motion_threshold": 1.5,
     "still_words": ["歌枠"],
     "still_exclude_words": [],
 }
@@ -955,13 +995,15 @@ def test_api_settings_start_off_and_save(settings):
         put = api.put("/api/encode", json=SETTINGS)
         after = api.get("/api/encode").json()
 
-    # A fresh database's row: vtuber-av1-uhq-cq46-srcfps before the options.
+    # A fresh database's row: vtuber-av1-uhq-cq46-srcfps before the options,
+    # then the 30 fps cap migration 0037 gave the null cap.
     assert first == {
         "enabled": False,
         "tune": "uhq",
         "cq": 46,
-        "fps_cap": None,
+        "fps_cap": 30,
         "still_fps_cap": 30,
+        "motion_threshold": 1.0,
         "still_words": [
             "歌枠", "うたわく", "ASMR", "雑談", "karaoke", "singing stream", "free talk",
             "freetalk",
@@ -985,6 +1027,8 @@ def test_api_settings_start_off_and_save(settings):
         pytest.param({"cq": 64}, id="cq-64"),
         pytest.param({"fps_cap": 0}, id="fps-cap-0"),
         pytest.param({"still_fps_cap": -30}, id="still-fps-cap-negative"),
+        pytest.param({"motion_threshold": 0}, id="motion-threshold-0"),
+        pytest.param({"motion_threshold": -1}, id="motion-threshold-negative"),
         pytest.param({"tune": "ll"}, id="unknown-tune"),
     ],
 )
@@ -1071,6 +1115,26 @@ def test_migration_downgrade_maps_options_to_the_nearest_profile(settings, optio
 
     [row] = _sql_rows(settings, "SELECT profile FROM encode_settings")
     assert row.profile == back
+
+
+# Migration 0037 ----------------------------------------------------------------
+
+
+@pytest.mark.own_database
+@pytest.mark.parametrize(("fps_cap", "after"), [(None, 30), (24, 24)])
+def test_migration_measures_motion_and_caps_a_null_fps_cap(settings, fps_cap, after):
+    from alembic import command
+
+    from savetube.db.migrate import alembic_config
+
+    cfg = alembic_config(settings.sqlalchemy_url)
+    command.downgrade(cfg, "0036")
+    _sql(settings, f"UPDATE encode_settings SET fps_cap = {'NULL' if fps_cap is None else fps_cap}")
+
+    command.upgrade(cfg, "0037")
+
+    [row] = _sql_rows(settings, "SELECT fps_cap, motion_threshold FROM encode_settings")
+    assert (row.fps_cap, row.motion_threshold) == (after, 1.0)
 
 
 def test_api_lists_jobs_and_requeues_only_failures(settings):

@@ -476,6 +476,9 @@ export interface EncodeSettingsIn {
   fps_cap: number | null
   // The cap for a title still_words matches.
   still_fps_cap: number | null
+  // Another title keeps a rate above fps_cap when its motion score reaches
+  // this. Null applies fps_cap without measuring.
+  motion_threshold: number | null
   still_words: string[]
   // A title with one of these never counts as still.
   still_exclude_words: string[]

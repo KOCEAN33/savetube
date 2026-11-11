@@ -477,6 +477,9 @@ class EncodeSettings(Base):
     fps_cap: Mapped[float | None] = mapped_column(Float)
     # The cap for a title still_words matches.
     still_fps_cap: Mapped[float | None] = mapped_column(Float, server_default="30")
+    # A title that is not still keeps a rate above fps_cap when its motion
+    # score reaches this. None applies fps_cap without measuring.
+    motion_threshold: Mapped[float | None] = mapped_column(Float, server_default="1.0")
     still_words: Mapped[list[str]] = mapped_column(
         ARRAY(Text),
         server_default=text(

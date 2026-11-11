@@ -91,23 +91,33 @@ NAMED_PROFILES = {
 
 def job_options(config: EncodeSettings, title: str) -> dict[str, Any]:
     """The options a video's job file carries: a still title takes the still
-    cap (docs/plan/encode.md, Profiles)."""
+    cap, and any other title measures its motion when it has a cap and a
+    threshold (docs/plan/encode.md, Profiles)."""
     # matches() lets every title through an empty include list.
     still = bool(config.still_words) and matches(
         title, config.still_words, config.still_exclude_words
     )
-    return {
+    options: dict[str, Any] = {
         "tune": config.tune,
         "cq": config.cq,
         "fps_cap": config.still_fps_cap if still else config.fps_cap,
     }
+    if not still and config.fps_cap is not None and config.motion_threshold is not None:
+        options["motion_threshold"] = config.motion_threshold
+    return options
+
+
+def _number(value: float) -> str:
+    return str(float(value)).removesuffix(".0")
 
 
 def profile_name(options: dict[str, Any]) -> str:
-    """The name the options derive, such as `av1-hq-cq46-30fps`."""
+    """The name the options derive, such as `av1-hq-cq46-30fps-motion1`."""
     cap = options["fps_cap"]
-    fps = "srcfps" if cap is None else f"{str(float(cap)).removesuffix('.0')}fps"
-    return f"av1-{options['tune']}-cq{options['cq']}-{fps}"
+    fps = "srcfps" if cap is None else f"{_number(cap)}fps"
+    name = f"av1-{options['tune']}-cq{options['cq']}-{fps}"
+    threshold = options.get("motion_threshold")
+    return name if threshold is None else f"{name}-motion{_number(threshold)}"
 
 
 class Rejected(Exception):
@@ -429,6 +439,13 @@ async def _check(
     if fps is None or source_fps is None:
         raise Rejected("frame rate unknown")
     want = source_fps if profile.max_fps is None else min(source_fps, profile.max_fps)
+    threshold = (job.options or {}).get("motion_threshold")
+    if threshold is not None and profile.max_fps is not None and source_fps > profile.max_fps:
+        motion = data.get("motion")
+        if not isinstance(motion, int | float) or isinstance(motion, bool):
+            raise Rejected(f"motion {motion!r}, want the measured score")
+        if motion >= threshold:
+            want = source_fps
     if abs(fps - want) > FPS_SLACK:
         raise Rejected(f"{fps:.2f} fps, profile wants {want:.2f}")
     duration = float((new.get("format") or {}).get("duration") or 0)

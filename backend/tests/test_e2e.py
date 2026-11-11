@@ -692,8 +692,9 @@ def test_encode_settings_round_trip(server):
         "enabled": False,
         "tune": "uhq",
         "cq": 46,
-        "fps_cap": None,
+        "fps_cap": 30,
         "still_fps_cap": 30,
+        "motion_threshold": 1.0,
         "still_words": [
             "歌枠",
             "うたわく",
@@ -722,6 +723,7 @@ def test_encode_settings_round_trip(server):
         "cq": 40,
         "fps_cap": 30,
         "still_fps_cap": None,
+        "motion_threshold": None,
         "still_words": ["歌枠"],
         "still_exclude_words": [],
     }

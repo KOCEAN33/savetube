@@ -23,7 +23,7 @@ OPEN = (EncodeState.QUEUED, EncodeState.CLAIMED)
 CANCEL_TIMEOUT = 10
 
 
-FpsCap = Annotated[float, Field(gt=0, allow_inf_nan=False)]
+Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 
 
 class EncodeSettingsIn(BaseModel):
@@ -33,8 +33,10 @@ class EncodeSettingsIn(BaseModel):
     tune: Literal["hq", "uhq"]
     cq: int = Field(ge=1, le=63)
     # None keeps the source's frame rate.
-    fps_cap: FpsCap | None
-    still_fps_cap: FpsCap | None
+    fps_cap: Positive | None
+    still_fps_cap: Positive | None
+    # None applies fps_cap without measuring the motion.
+    motion_threshold: Positive | None
     still_words: WordList
     still_exclude_words: WordList
 

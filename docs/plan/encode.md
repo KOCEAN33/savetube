@@ -28,8 +28,9 @@ The motion score is the median of three window means, rounded to 3 decimals. The
 
 The Encode page edits the settings these options come from:
 
-- `tune`, `cq` and `fps_cap`, for every video. The defaults are `hq`, 46 and null.
-- `still_fps_cap`, the cap a still stream's job takes instead of `fps_cap`, default 30. Null keeps the source's frame rate. A game or a 3D live streamed at 60 fps keeps 60 fps, but a mostly still stream gains little from it.
+- `tune`, `cq` and `fps_cap`, for every video. The defaults are `hq`, 46 and 30.
+- `motion_threshold`, default 1.0. A title that is not still carries it in its options when `fps_cap` is set, so its motion decides between the source's rate and `fps_cap`. Null applies `fps_cap` without measuring. On 41 measured 1080p60 streams, talk and singing streams mostly scored below 1.0, and game and 3D live streams mostly above (`encode-frame-rate.md`, Motion measurements).
+- `still_fps_cap`, the cap a still stream's job takes instead of `fps_cap`, default 30. Null keeps the source's frame rate. A still title measures no motion: a mostly still stream gains little from 60 fps.
 - `still_words`, default `歌枠`, `うたわく`, `ASMR`, `雑談`, `karaoke`, `singing stream`, `free talk`, `freetalk`. A title with one of them is a still stream. With no still words, no title is.
 - `still_exclude_words`, default `3D`. A title with one of them never counts as still: a 3D live often names `歌枠` too.
 - The match is case-insensitive substring, as for a source's title words (`savetube.words.matches`).
