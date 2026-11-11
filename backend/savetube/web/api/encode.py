@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -11,10 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from savetube.attention import dismissed, encode_failed
 from savetube.db.models import EncodeJob, EncodeSettings, EncodeState, FormatWatch, Video
-from savetube.encode import PROFILES
 from savetube.logs import emit
-from savetube.web.api.deps import Session, call_scheduler, log
-from savetube.web.api.schemas import _Out
+from savetube.web.api.deps import Session, _logged, call_scheduler, log
+from savetube.web.api.schemas import WordList, _Out
+from savetube.words import normalize_words
 
 router = APIRouter()
 
@@ -23,9 +23,20 @@ OPEN = (EncodeState.QUEUED, EncodeState.CLAIMED)
 CANCEL_TIMEOUT = 10
 
 
+FpsCap = Annotated[float, Field(gt=0, allow_inf_nan=False)]
+
+
 class EncodeSettingsIn(BaseModel):
+    """The encode options a job file carries (docs/plan/encode.md, Profiles)."""
+
     enabled: bool
-    profile: str
+    tune: Literal["hq", "uhq"]
+    cq: int = Field(ge=1, le=63)
+    # None keeps the source's frame rate.
+    fps_cap: FpsCap | None
+    still_fps_cap: FpsCap | None
+    still_words: WordList
+    still_exclude_words: WordList
 
 
 class EncodePages(BaseModel):
@@ -76,7 +87,6 @@ class EncodeSummary(_Out):
 
 
 class EncodeOut(EncodeSettingsIn):
-    profiles: list[str]
     summary: EncodeSummary
     # Queued and claimed jobs and the failed ones a user acts on, oldest first.
     waiting: EncodeJobPage
@@ -165,9 +175,7 @@ async def _out(session: AsyncSession, pages: EncodePages) -> EncodeOut:
     row = await session.get(EncodeSettings, 1)
     summary, waiting, finished = await _summary(session)
     return EncodeOut(
-        enabled=row.enabled,
-        profile=row.profile,
-        profiles=list(PROFILES),
+        **{f: getattr(row, f) for f in EncodeSettingsIn.model_fields},
         summary=summary,
         waiting=await _page(session, waiting, True, pages.open_offset, pages.limit),
         finished=await _page(session, finished, False, pages.finished_offset, pages.limit),
@@ -185,18 +193,13 @@ async def replace_encode_settings(
 ) -> EncodeOut:
     """Turning it off queues no more jobs. Jobs already queued stay for the
     encoder until a user cancels them."""
-    if body.profile not in PROFILES:
-        raise HTTPException(status_code=422, detail=f"no profile named {body.profile}")
+    body.still_words = normalize_words(body.still_words)
+    body.still_exclude_words = normalize_words(body.still_exclude_words)
     row = await session.get(EncodeSettings, 1)
-    row.enabled, row.profile = body.enabled, body.profile
+    for field, value in body:
+        setattr(row, field, value)
     await session.commit()
-    emit(
-        log,
-        logging.INFO,
-        "settings.encode",
-        enabled="on" if body.enabled else "off",
-        profile=body.profile,
-    )
+    emit(log, logging.INFO, "settings.encode", **_logged(body.model_dump()))
     return await _out(session, pages)
 
 

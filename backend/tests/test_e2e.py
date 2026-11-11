@@ -690,13 +690,21 @@ def test_encode_settings_round_trip(server):
     assert r.status_code == 200
     assert r.json() == {
         "enabled": False,
-        "profile": "vtuber-av1-uhq-cq46-srcfps",
-        "profiles": [
-            "vtuber-av1-hq-cq46",
-            "vtuber-av1-uhq-cq46",
-            "vtuber-av1-hq-cq46-srcfps",
-            "vtuber-av1-uhq-cq46-srcfps",
+        "tune": "uhq",
+        "cq": 46,
+        "fps_cap": None,
+        "still_fps_cap": 30,
+        "still_words": [
+            "歌枠",
+            "うたわく",
+            "ASMR",
+            "雑談",
+            "karaoke",
+            "singing stream",
+            "free talk",
+            "freetalk",
         ],
+        "still_exclude_words": ["3D"],
         "summary": {
             "saved_bytes": 0,
             "source_bytes": 0,
@@ -708,10 +716,18 @@ def test_encode_settings_round_trip(server):
         "waiting": {"total": 0, "items": []},
         "finished": {"total": 0, "items": []},
     }
-    body = {"enabled": True, "profile": "vtuber-av1-hq-cq46"}
+    body = {
+        "enabled": True,
+        "tune": "hq",
+        "cq": 40,
+        "fps_cap": 30,
+        "still_fps_cap": None,
+        "still_words": ["歌枠"],
+        "still_exclude_words": [],
+    }
     r = server.put("/api/encode", json=body, headers=WRITE).json()
-    assert r["enabled"] is True and r["profile"] == "vtuber-av1-hq-cq46"
-    unknown = {"enabled": True, "profile": "x"}
+    assert {k: r[k] for k in body} == body
+    unknown = {**body, "tune": "x"}
     assert server.put("/api/encode", json=unknown, headers=WRITE).status_code == 422
     body["enabled"] = False
     assert server.put("/api/encode", json=body, headers=WRITE).json()["enabled"] is False

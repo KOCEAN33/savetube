@@ -72,37 +72,42 @@ class Profile:
     ten_bit: bool
     # None keeps the source's rate.
     max_fps: float | None
-    # The profile a still stream's job takes instead (docs/plan/encode.md, Profiles).
-    still: str | None = None
 
 
-_AV1_30 = Profile(vcodec="av01", codec_name="av1", ten_bit=True, max_fps=30)
-PROFILES = {
-    "vtuber-av1-hq-cq46": _AV1_30,
-    "vtuber-av1-uhq-cq46": _AV1_30,
-    "vtuber-av1-hq-cq46-srcfps": Profile(
-        vcodec="av01", codec_name="av1", ten_bit=True, max_fps=None, still="vtuber-av1-hq-cq46"
-    ),
-    "vtuber-av1-uhq-cq46-srcfps": Profile(
-        vcodec="av01", codec_name="av1", ten_bit=True, max_fps=None, still="vtuber-av1-uhq-cq46"
-    ),
+def _av1(max_fps: float | None) -> Profile:
+    return Profile(vcodec="av01", codec_name="av1", ten_bit=True, max_fps=max_fps)
+
+
+# Names a job queued before the encode options carries without options. Its
+# check reads the output here, and nothing queues under these any more.
+NAMED_PROFILES = {
+    "vtuber-av1-hq-cq46": _av1(30),
+    "vtuber-av1-uhq-cq46": _av1(30),
+    "vtuber-av1-hq-cq46-srcfps": _av1(None),
+    "vtuber-av1-uhq-cq46-srcfps": _av1(None),
+    "vtuber-av1-cq46": _av1(30),
 }
-# Old names nothing queues under any more. A job file already queued under one
-# still passes its checks.
-RETIRED_PROFILES = {"vtuber-av1-cq46": _AV1_30}
-DEFAULT_PROFILE = "vtuber-av1-hq-cq46-srcfps"
-STILL_WORDS = [
-    "歌枠",
-    "うたわく",
-    "ASMR",
-    "雑談",
-    "karaoke",
-    "singing stream",
-    "free talk",
-    "freetalk",
-]
-# A 3D live often names 歌枠 too.
-NOT_STILL_WORDS = ["3D"]
+
+
+def job_options(config: EncodeSettings, title: str) -> dict[str, Any]:
+    """The options a video's job file carries: a still title takes the still
+    cap (docs/plan/encode.md, Profiles)."""
+    # matches() lets every title through an empty include list.
+    still = bool(config.still_words) and matches(
+        title, config.still_words, config.still_exclude_words
+    )
+    return {
+        "tune": config.tune,
+        "cq": config.cq,
+        "fps_cap": config.still_fps_cap if still else config.fps_cap,
+    }
+
+
+def profile_name(options: dict[str, Any]) -> str:
+    """The name the options derive, such as `av1-hq-cq46-30fps`."""
+    cap = options["fps_cap"]
+    fps = "srcfps" if cap is None else f"{str(float(cap)).removesuffix('.0')}fps"
+    return f"av1-{options['tune']}-cq{options['cq']}-{fps}"
 
 
 class Rejected(Exception):
@@ -111,10 +116,6 @@ class Rejected(Exception):
 
 def encode_root(archive_root: Path) -> Path:
     return archive_root / ENCODE_DIR
-
-
-def _settings_row(row: EncodeSettings | None) -> EncodeSettings:
-    return row or EncodeSettings(id=1, enabled=False, profile=DEFAULT_PROFILE)
 
 
 async def step(
@@ -381,7 +382,10 @@ async def _check(
         raise Rejected(f"job file unreadable: {data['unreadable']}")
     if data.get("profile") != job.profile:
         raise Rejected(f"profile {data.get('profile')!r}, queued {job.profile!r}")
-    profile = PROFILES.get(job.profile) or RETIRED_PROFILES.get(job.profile)
+    if job.options is not None:
+        profile = _av1(job.options["fps_cap"])
+    else:
+        profile = NAMED_PROFILES.get(job.profile)
     if profile is None:
         raise Rejected(f"unknown profile {job.profile!r}")
     try:
@@ -592,8 +596,8 @@ async def fill(
 ) -> None:
     root = encode_root(settings.archive_root)
     async with sessionmaker() as session:
-        config = _settings_row(await session.get(EncodeSettings, 1))
-        if not config.enabled or config.profile not in PROFILES:
+        config = await session.get(EncodeSettings, 1)
+        if config is None or not config.enabled:
             return
         queued = await session.scalar(
             select(func.count()).select_from(EncodeJob).where(EncodeJob.state == EncodeState.QUEUED)
@@ -619,12 +623,11 @@ async def fill(
                 # The info dict is large. Keep the session from holding each one.
                 session.expunge(video)
                 continue
-            still = PROFILES[config.profile].still
+            options = job_options(config, video.title)
             job = EncodeJob(
                 video_id=video_id,
-                profile=still
-                if still and matches(video.title, STILL_WORDS, NOT_STILL_WORDS)
-                else config.profile,
+                profile=profile_name(options),
+                options=options,
                 source_path=stored.relative_to(settings.archive_root).as_posix(),
                 source_size=stored.stat().st_size,
                 created_at=now,
@@ -642,6 +645,7 @@ async def fill(
                     "video_id": video_id,
                     "source": job.source_path,
                     "profile": job.profile,
+                    "options": options,
                     "created_at": now.isoformat(),
                 },
             )

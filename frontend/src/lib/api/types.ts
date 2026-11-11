@@ -464,9 +464,21 @@ export interface EncodeJob {
   dismissed: boolean
 }
 
+export type EncodeTune = "hq" | "uhq"
+
+// The encode options a job file carries (docs/plan/encode.md, Profiles).
 export interface EncodeSettingsIn {
   enabled: boolean
-  profile: string
+  tune: EncodeTune
+  // 1 to 63.
+  cq: number
+  // Null keeps the source's frame rate.
+  fps_cap: number | null
+  // The cap for a title still_words matches.
+  still_fps_cap: number | null
+  still_words: string[]
+  // A title with one of these never counts as still.
+  still_exclude_words: string[]
 }
 
 // One page of each job list. Every encode route answers with the pages asked for.
@@ -490,7 +502,6 @@ export interface EncodeSummary {
 }
 
 export interface Encode extends EncodeSettingsIn {
-  profiles: string[]
   summary: EncodeSummary
   // Queued, claimed and failed jobs, oldest first.
   waiting: { total: number; items: EncodeJob[] }

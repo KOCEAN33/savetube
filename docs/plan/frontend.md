@@ -65,7 +65,7 @@
 ## Encode page
 
 - `/encode` holds re-encoding (encode.md), in the layout of the Downloads page. Everything on it comes from one `GET /api/encode`, refetched every 15 s.
-- The top section holds the on/off switch and the profile select, each saved on change through `PUT /api/encode`.
+- The top section holds the on/off switch, saved on change, and the encode options form (encode.md, Profiles), saved with its Save button: a tune select, CQ, the FPS cap and the still FPS cap (empty keeps the source's rate), and the still words and still exclude words as word lists. Both save through `PUT /api/encode`, which takes every setting.
 - "Summary" shows the space saved, the sum of `source_size - result_size` over succeeded jobs with a result size, as bytes and as a percent of those jobs' source sizes. Below it, the part of that saving whose original still waits in `.originals/` shows as held until originals expire. Then the succeeded count, the count of those failed jobs, and the queued and claimed count.
 - "Waiting" lists queued and claimed jobs and the failed ones of `complete` videos not dismissed, oldest first, with their count in the title. "Finished" lists the other jobs, newest first, a dismissed failure among them. Each shows one page of 10 jobs. `?qpage=` and `?fpage=` hold their pages.
 - A row shows the video linked to its page, the state, the source size and the result size, and the queued and finished times. A queued row has Cancel, and a failed row has Requeue and, until dismissed, Dismiss. Dismiss is for a failure no requeue fixes, such as a result larger than its source: the job stays `failed`, so its video is not queued again (encode.md). A failed row opens its `reason` and `log_tail` like a failed download row.

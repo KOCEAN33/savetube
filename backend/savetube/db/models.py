@@ -453,7 +453,23 @@ class EncodeSettings(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1, autoincrement=False)
     enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
-    profile: Mapped[str] = mapped_column(Text, server_default="vtuber-av1-hq-cq46-srcfps")
+    # The encode options a job file carries (docs/plan/encode.md, Profiles).
+    tune: Mapped[str] = mapped_column(Text, server_default="hq")
+    cq: Mapped[int] = mapped_column(server_default="46")
+    # None keeps the source's frame rate.
+    fps_cap: Mapped[float | None] = mapped_column(Float)
+    # The cap for a title still_words matches.
+    still_fps_cap: Mapped[float | None] = mapped_column(Float, server_default="30")
+    still_words: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        server_default=text(
+            '\'{歌枠,うたわく,ASMR,雑談,karaoke,"singing stream","free talk",freetalk}\'::text[]'
+        ),
+    )
+    # A 3D live often names 歌枠 too.
+    still_exclude_words: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{3D}'::text[]")
+    )
 
 
 class EncodeJob(Base):
@@ -476,6 +492,9 @@ class EncodeJob(Base):
         _enum(EncodeState), default=EncodeState.QUEUED, index=True
     )
     profile: Mapped[str] = mapped_column(Text)
+    # The job file's options. None for a job queued before options existed,
+    # whose check reads its named profile.
+    options: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     # The stored file at queueing, relative to the archive root. The swap
     # refuses a stored file that changed since.
     source_path: Mapped[str] = mapped_column(Text)
