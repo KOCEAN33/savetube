@@ -16,11 +16,13 @@ from sqlalchemy import (
     Text,
     false,
     func,
+    literal,
     text,
     true,
+    type_coerce,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, column_property, defer, mapped_column, undefer
 
 from savetube.layout import VideoType
 
@@ -272,6 +274,16 @@ _VIDEO_KBPS = (
 )
 
 
+_LISTS = [
+    "formats",
+    "automatic_captions",
+    "subtitles",
+    "thumbnails",
+    "heatmap",
+    "requested_downloads",
+]
+
+
 class Video(Base):
     __tablename__ = "video"
 
@@ -290,6 +302,11 @@ class Video(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     state: Mapped[VideoState] = mapped_column(_enum(VideoState), default=VideoState.PENDING)
     info: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # `info` without the lists that make up most of it: the top-level fields
+    # and `requested_formats` that formats.stored_streams reads.
+    stream_info: Mapped[dict[str, Any] | None] = column_property(
+        type_coerce(info.op("-")(literal(_LISTS, ARRAY(Text))), JSONB), deferred=True
+    )
     # The format ids an interrupted archive download chose, so its retry
     # resumes the parts in `.incoming/<video id>/`. Null without parts.
     resume_format: Mapped[str | None] = mapped_column(Text)
@@ -542,3 +559,7 @@ class StorageSample(Base):
     sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
     total_bytes: Mapped[int] = mapped_column(BigInteger)
     free_bytes: Mapped[int] = mapped_column(BigInteger)
+
+
+# Loader options for a Video whose code reads stream_info, never info.
+STREAMS_ONLY = (defer(Video.info, raiseload=True), undefer(Video.stream_info))
