@@ -73,6 +73,8 @@ async def _interrupt(session: AsyncSession, job: Job, reason: str) -> None:
                 kind=job.kind,
                 state=JobState.INTERRUPTED,
                 video_id=job.video_id,
+                format_id=job.format_id,
+                manual=job.manual,
                 attempts=1,
                 log_tail=reason,
                 progress=job.progress,

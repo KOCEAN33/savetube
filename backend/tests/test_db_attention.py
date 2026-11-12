@@ -63,6 +63,16 @@ def test_only_a_video_whose_latest_replace_failed_is_listed(settings):
         assert _listed(api) == [("replace_failed", "1")]
 
 
+def test_a_replace_that_failed_after_an_interrupted_run_is_listed(settings):
+    _videos(settings, "complete")
+    # Job 1 ran once until a network error, which left row 2, then failed.
+    _job(settings, 2, "replace", "interrupted", "v1", "2026-11-01T00:00:00Z")
+    _job(settings, 1, "replace", "failed", "v1", "2026-11-01T01:00:00Z")
+
+    with _api(settings) as api:
+        assert _listed(api) == [("replace_failed", "1")]
+
+
 def test_only_a_video_whose_latest_encode_failed_is_listed(settings):
     _videos(settings, "complete", "complete")
     _sql(

@@ -1,4 +1,4 @@
-"""Running one job, archive or recording, from the `job` row to the tree."""
+"""Running one job, archive, replace or recording, from the `job` row to the tree."""
 
 import asyncio
 import logging
@@ -25,6 +25,7 @@ from savetube.joblog import (
     PROFILE_BLOCKED_LOG,
     SHUTDOWN_LOG,
 )
+from savetube.jobs import replace
 from savetube.jobs.archive import _archive, _media_path
 from savetube.jobs.guards import (
     NETWORK_STALL_LOG,
@@ -113,21 +114,12 @@ async def run(
     sessionmaker: async_sessionmaker | None = None,
     tools: integrity.Tools | None = None,
 ) -> None:
-    """Run one job. An archive job outside the download window, with no free
-    slot, at the daily cap, or while paused, goes back to waiting for the
-    dispatcher. A pause
-    while it runs interrupts it. A recording ignores the limits. A replace
-    job runs savetube.jobs.replace instead."""
+    """Run one job. An archive or replace job outside the download window,
+    with no free slot, at the daily cap, or while paused, goes back to
+    waiting for the dispatcher. A pause while it runs interrupts it. A
+    recording ignores the limits. A replace runs as an archive job does, up
+    to the move into the tree, which savetube.jobs.replace takes over."""
     sessionmaker = sessionmaker or default_sessionmaker()
-    if not live:
-        async with sessionmaker() as session:
-            kind = await session.scalar(select(Job.kind).where(Job.id == job_id))
-        if kind is JobKind.REPLACE:
-            # Late: savetube.jobs.replace imports this module.
-            from savetube.jobs.replace import run as replace
-
-            await replace(job_id, settings, runner=runner, sessionmaker=sessionmaker, tools=tools)
-            return
     begun = await _begin(sessionmaker, job_id, settings, live=live)
     if begun is None:
         return
@@ -137,8 +129,9 @@ async def run(
         # Any failure past RUNNING must reach the row, or the job stays running and
         # no poll queues the video again.
         try:
+            tools = tools or integrity.Tools()
             info, checks = await _download(r, begun, settings, runner, tools)
-            await _finish(r, settings, info, checks, shorts=begun.shorts)
+            await _finish(r, settings, info, checks, tools, shorts=begun.shorts)
         except Disowned as e:
             r.log_disowned(str(e))
         except NotStarted:
@@ -162,6 +155,7 @@ class _Begun:
     """What the run's first session read, once it marked the job running."""
 
     video_id: str
+    kind: JobKind
     ratelimit: int | None
     fmt: str
     shorts: bool
@@ -179,14 +173,27 @@ class _Begun:
 async def _begin(
     sessionmaker: async_sessionmaker, job_id: int, settings: Settings, *, live: bool
 ) -> _Begun | None:
-    """Mark the job running in one session. An archive job the limits keep
-    from starting goes back to waiting, and this returns None."""
+    """Mark the job running in one session. An archive or replace job the
+    limits keep from starting goes back to waiting, and this returns None."""
     ratelimit = None
     async with sessionmaker() as session:
         job = await session.get(Job, job_id)
         if job is None or job.video_id is None:
             raise LookupError(f"job {job_id} has no video")
+        if job.kind is JobKind.REPLACE and not job.format_id:
+            raise LookupError(f"replace job {job_id} has no format")
         video_id = job.video_id
+        # A cancel can leave the queue job `todo`, so the worker gets a row it must not run.
+        if not live and job.state is not JobState.QUEUED:
+            emit(
+                log,
+                logging.WARNING,
+                "job.skipped",
+                job=job_id,
+                video=video_id,
+                state=job.state.value,
+            )
+            return None
         if not live:
             now = datetime.now(UTC)
             limits = await admit(session, now)
@@ -194,11 +201,17 @@ async def _begin(
                 await _hand_back(session, job_id, video_id, now)
                 return None
             ratelimit = limits.rate_limit_bytes
-        channel = await settings_channel(session, video_id)
-        fmt = channel.format if channel is not None else DEFAULT_FORMAT
-        shorts = await from_shorts_tab(session, video_id)
         video = await session.get(Video, video_id)
-        pinned = video.resume_format if video is not None else None
+        if job.kind is JobKind.REPLACE:
+            # Its own directory holds only this format's parts, so the format
+            # is pinned whenever the directory exists.
+            fmt = pinned = job.format_id
+            shorts = False
+        else:
+            channel = await settings_channel(session, video_id)
+            fmt = channel.format if channel is not None else DEFAULT_FORMAT
+            shorts = await from_shorts_tab(session, video_id)
+            pinned = video.resume_format if video is not None else None
         members = video is not None and video.type is VideoType.MEMBERS
         profile = (
             await cookies.for_video(session, video, cookies.profiles(settings))
@@ -221,6 +234,7 @@ async def _begin(
         await session.commit()
     return _Begun(
         video_id=video_id,
+        kind=job.kind,
         ratelimit=ratelimit,
         fmt=fmt,
         shorts=shorts,
@@ -285,8 +299,9 @@ async def _attempt(
     session: AsyncSession, job: Job, video_id: str, *, live: bool
 ) -> tuple[int, int | None]:
     """This run's attempt number, and the attempts an archive job has, None
-    past them (savetube.poll.RETRY_AFTER)."""
-    if live:
+    past them (savetube.poll.RETRY_AFTER). No poll retries a recording or a
+    replace, so they have no limit."""
+    if live or job.kind is not JobKind.ARCHIVE:
         return job.attempts, None
     failed = await session.scalar(
         select(func.count())
@@ -311,6 +326,7 @@ class _Run:
 
     job_id: int
     video_id: str
+    kind: JobKind
     live: bool
     sessionmaker: async_sessionmaker
     run_started: datetime
@@ -324,6 +340,8 @@ class _Run:
     streams: list[dict[str, Any]] = field(default_factory=list)
     # The cookie profile of the download that ran last.
     profile: str | None = None
+    # Where a replace writes its remuxed result, None for other kinds.
+    outdir: Path | None = None
 
     @classmethod
     def after(
@@ -336,7 +354,17 @@ class _Run:
         sessionmaker: async_sessionmaker,
     ) -> _Run:
         video_id = begun.video_id
-        workdir = settings.incoming_root / str(job_id) if live else incoming_dir(settings, video_id)
+        outdir = None
+        if live:
+            workdir = settings.incoming_root / str(job_id)
+        elif begun.kind is JobKind.REPLACE:
+            # Numbered by job, so the incoming cleanup keeps them while the job
+            # is active. Without staging both roots are one, so the result
+            # gets a directory of its own inside.
+            workdir = settings.download_root / str(job_id)
+            outdir = settings.incoming_root / str(job_id) / "remux"
+        else:
+            workdir = incoming_dir(settings, video_id)
         attempt, limit = begun.attempt, begun.limit
         attempt_label = f"{attempt}/{limit}" if limit else str(attempt)
         started = time.monotonic()
@@ -344,6 +372,7 @@ class _Run:
         return cls(
             job_id=job_id,
             video_id=video_id,
+            kind=begun.kind,
             live=live,
             sessionmaker=sessionmaker,
             run_started=begun.run_started,
@@ -354,6 +383,7 @@ class _Run:
             attempt_label=attempt_label,
             started=started,
             started_bytes=started_bytes,
+            outdir=outdir,
         )
 
     def log_start(self, begun: _Begun) -> None:
@@ -364,6 +394,7 @@ class _Run:
             "job.start",
             job=self.job_id,
             video=self.video_id,
+            kind=self.kind.value,
             **self.described,
             attempt=self.attempt_label,
             format_pref=begun.fmt,
@@ -414,7 +445,11 @@ class _Run:
             return
         async with self.sessionmaker() as session:
             if message.get("event") == "format":
-                # The pin belongs to the run that owns the directory.
+                # The pin belongs to the run that owns the directory. A
+                # replace's format is its job's, and the video's pin is an
+                # archive download's.
+                if self.kind is JobKind.REPLACE:
+                    return
                 if self.live or await _owner_lost(session, self.job_id, self.run_started) is None:
                     await _pin(session, self.video_id, message["format_id"])
             else:
@@ -447,6 +482,7 @@ def _params(
     live: bool,
     ratelimit: int | None,
     video_id: str,
+    media_only: bool = False,
     wait_until: datetime | None = None,
 ) -> dict[str, Any]:
     p = build_params(
@@ -457,6 +493,9 @@ def _params(
         ratelimit=ratelimit,
         wait_until=wait_until.timestamp() if wait_until is not None else None,
     )
+    if media_only:
+        # A replace's stored directory keeps its own sidecar files.
+        p.update(writeinfojson=False, writethumbnail=False, writesubtitles=False)
     if not live:
         # A `.part` file left by an interrupted run resumes.
         p["continuedl"] = True
@@ -473,10 +512,11 @@ async def _download(
     begun: _Begun,
     settings: Settings,
     runner: Runner,
-    tools: integrity.Tools | None,
+    tools: integrity.Tools,
 ) -> tuple[dict[str, Any], list[str] | None]:
-    """Download into the working directory. An archive download is also
-    verified and gets its audio copy, and returns the checks that passed.
+    """Download into the working directory. An archive or replace download is
+    also verified and returns the checks that passed. An archive download and
+    a recording get their audio copy.
 
     A members-only refusal of the general profile marks the video
     members-only, and the download runs once more with the channel's member
@@ -499,8 +539,10 @@ async def _download(
         info, checks = await download(profile)
         # The general profile's refusal proves the video members-only.
         info = {**info, "availability": "subscriber_only"}
-    tools = tools or integrity.Tools()
     media = _media_path(info) or r.workdir / "missing"
+    if r.kind is JobKind.REPLACE:
+        # The swap writes the audio copy of the remuxed file.
+        return info, checks
     if r.live:
         await r.step("verifying")
         checks = await _verify_recording(media, info, tools)
@@ -567,7 +609,7 @@ async def _download_as(
     begun: _Begun,
     settings: Settings,
     runner: Runner,
-    tools: integrity.Tools | None,
+    tools: integrity.Tools,
     profile: str | None,
 ) -> tuple[dict[str, Any], list[str] | None]:
     """One download with `profile`'s cookies, verified for an archive job."""
@@ -582,6 +624,7 @@ async def _download_as(
             live=r.live,
             ratelimit=begun.ratelimit,
             video_id=r.video_id,
+            media_only=r.kind is JobKind.REPLACE,
         )
         if r.live:
             live_params = params(begun.fmt, wait_until=begun.wait_until)
@@ -601,7 +644,7 @@ async def _download_as(
                 report=r.report,
                 step=r.step,
                 streams=r.streams,
-                tools=tools or integrity.Tools(),
+                tools=tools,
             ),
         )
 
@@ -611,38 +654,70 @@ async def _finish(
     settings: Settings,
     info: dict[str, Any],
     checks: list[str] | None,
+    tools: integrity.Tools,
     *,
     shorts: bool,
 ) -> None:
-    """Move the download into the tree, or into `ready/` on staging, and
-    mark the job succeeded. A run that lost its row writes nothing."""
+    """Move the download into the tree, or into `ready/` on staging, or swap
+    a replace's result in, and mark the job succeeded. A run that lost its
+    row writes nothing."""
+    prepared = None
+    if r.kind is JobKind.REPLACE and r.outdir is not None:
+        prepared = await replace.prepare(
+            r.sessionmaker,
+            settings,
+            r.video_id,
+            r.outdir,
+            _media_path(info) or r.workdir / "missing",
+            info,
+            r.streams,
+            tools,
+            r.step,
+        )
+        # Before the row lock below: this writes the same row from its own session.
+        await r.step("audio")
     async with r.sessionmaker() as session:
         if await r.disowned(session):
             return
         job = await session.get(Job, r.job_id)
-        if r.live:
-            # The recorder gets no stream sizes from YouTube. The video page
-            # shows the measured ones.
-            info = formats.with_sizes(info, r.streams)
-        video = await store(
-            session,
-            job=job,
-            info=info,
-            incoming=r.workdir,
-            archive_root=settings.archive_root,
-            # A recording goes straight into the tree.
-            ready_root=None if r.live else settings.ready_root,
-            from_shorts_tab=shorts,
-        )
-        await watch.start(session, video, video.completed_at)
-        if checks is not None:
-            video.resume_format = None
-            video.verified_at = video.completed_at
-            video.verified_checks = checks
+        original = None
+        if prepared is not None:
+            video, swapped = await replace.swap_in(session, settings, job, prepared, tools)
+            original = swapped.original_path
+        else:
+            if r.live:
+                # The recorder gets no stream sizes from YouTube. The video page
+                # shows the measured ones.
+                info = formats.with_sizes(info, r.streams)
+            video = await store(
+                session,
+                job=job,
+                info=info,
+                incoming=r.workdir,
+                archive_root=settings.archive_root,
+                # A recording goes straight into the tree.
+                ready_root=None if r.live else settings.ready_root,
+                from_shorts_tab=shorts,
+            )
+            await watch.start(session, video, video.completed_at)
+            if checks is not None:
+                video.resume_format = None
+                video.verified_at = video.completed_at
+                video.verified_checks = checks
         now = datetime.now(UTC)
         unblocked = 0 if r.live else await _unblock(session, now)
         profile_unblocked = 0 if r.live else await _unblock_profile(session, r.profile, now)
         await session.commit()
+    if prepared is not None:
+        _remove_dirs(r)
+        emit(
+            log,
+            logging.INFO,
+            "replace.swapped",
+            video=r.video_id,
+            size=human_bytes(video.size_bytes),
+            original=original or "none",
+        )
     if unblocked:
         emit(log, logging.INFO, "dispatch.unblocked", count=unblocked)
     if profile_unblocked:
@@ -659,6 +734,7 @@ async def _finish(
         "job.done",
         job=r.job_id,
         video=r.video_id,
+        kind=r.kind.value,
         **r.described,
         size=human_bytes(video.size_bytes) if video.size_bytes is not None else None,
         took=human_duration(time.monotonic() - r.started),
@@ -748,10 +824,15 @@ async def _record_failure(r: _Run, e: Exception, settings: Settings) -> bool:
         not r.live
         and isinstance(e, DownloadFailed)
         and network_error(str(e))
-        and (progressed or await _network_stalls(r.sessionmaker, r.video_id) < MAX_NETWORK_STALLS)
+        and (
+            progressed
+            or await _network_stalls(r.sessionmaker, r.video_id, r.kind) < MAX_NETWORK_STALLS
+        )
     ):
         return await _record_network(r, e, present, progressed=progressed)
-    return await _record_failed(r, e, gone=archive_failure and (gone(message) or plays is True))
+    # A replace failure leaves the stored video as it is.
+    gone_video = r.kind is JobKind.ARCHIVE and archive_failure and (gone(message) or plays is True)
+    return await _record_failed(r, e, gone=gone_video)
 
 
 async def _another_plays(r: _Run, settings: Settings) -> bool | None:
@@ -812,7 +893,7 @@ async def _record_failed(r: _Run, e: Exception, *, gone: bool = False) -> bool:
             return False
         # A retry after a real failure starts over, so the parts would
         # otherwise stay on the dataset for good.
-        shutil.rmtree(r.workdir, ignore_errors=True)
+        _remove_dirs(r)
         job = await session.get(Job, r.job_id)
         job.state = JobState.FAILED
         job.finished_at = datetime.now(UTC)
@@ -833,9 +914,15 @@ async def _record_failed(r: _Run, e: Exception, *, gone: bool = False) -> bool:
         took=human_duration(time.monotonic() - r.started),
         reason=logs.cut(f"{type(e).__name__}: {e}"),
         # An expected failure is one line. Anything else needs its traceback.
-        exc_info=not isinstance(e, DownloadFailed),
+        exc_info=not isinstance(e, (DownloadFailed, replace.ReplaceFailed)),
     )
     if gone:
         emit(log, logging.INFO, "video.gone", job=r.job_id, video=r.video_id, **r.described)
     setattr(e, _RECORDED, True)
     return True
+
+
+def _remove_dirs(r: _Run) -> None:
+    shutil.rmtree(r.workdir, ignore_errors=True)
+    if r.outdir is not None:
+        shutil.rmtree(r.outdir, ignore_errors=True)

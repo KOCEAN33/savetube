@@ -17,6 +17,7 @@ from savetube.db.models import (
     Video,
     VideoState,
 )
+from savetube.limits import DOWNLOAD_KINDS
 
 Kind = Literal[
     "archive_failed",
@@ -52,13 +53,13 @@ def dismissed_job() -> ColumnElement[bool]:
 
 
 def resolved_failure() -> ColumnElement[bool]:
-    """A failed or interrupted archive run a later run of its video fixed: a
-    success, or for an interrupted run any later failure. The query must join
-    Video on Job.video_id."""
+    """A failed or interrupted archive or replace run a later run of its kind
+    and video fixed: a success, or for an interrupted run any later failure.
+    The query must join Video on Job.video_id."""
     later = aliased(Job)
     resolved = exists().where(
         later.video_id == Job.video_id,
-        later.kind == JobKind.ARCHIVE,
+        later.kind == Job.kind,
         or_(
             later.state == JobState.SUCCEEDED,
             and_(Job.state == JobState.INTERRUPTED, later.state == JobState.FAILED),
@@ -66,7 +67,7 @@ def resolved_failure() -> ColumnElement[bool]:
         later.finished_at > Job.finished_at,
     )
     return and_(
-        Job.kind == JobKind.ARCHIVE,
+        Job.kind.in_(DOWNLOAD_KINDS),
         Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),
         # No run fixes a video YouTube no longer serves.
         or_(resolved, Video.state == VideoState.GONE),
@@ -84,14 +85,18 @@ def record_failed() -> ColumnElement[bool]:
 
 
 def open_failure() -> ColumnElement[bool]:
-    """An archive or record failure the card lists: nothing fixed it and the
-    user did not dismiss it. The query must join Video on Job.video_id."""
-    archive = and_(
-        Job.kind == JobKind.ARCHIVE,
+    """An archive, replace or record failure the card lists: nothing fixed it
+    and the user did not dismiss it. The query must join Video on
+    Job.video_id."""
+    download = and_(
+        Job.kind.in_(DOWNLOAD_KINDS),
         Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),
         ~resolved_failure(),
+        # A replace improves a stored file, so it has nothing to fix once the
+        # video is no longer stored.
+        or_(Job.kind != JobKind.REPLACE, Video.state == VideoState.COMPLETE),
     )
-    return and_(or_(archive, record_failed()), ~dismissed_job())
+    return and_(or_(download, record_failed()), ~dismissed_job())
 
 
 def encode_failed() -> ColumnElement[bool]:

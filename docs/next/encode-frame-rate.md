@@ -10,7 +10,7 @@ Plan step 6 is queued. On 2026-11-11 every candidate was scored: 106 of 210 scor
 
 ## Next steps
 
-1. Check that the 106 manual replaces, jobs 4915-5020, succeeded.
+1. Retry the 44 failed replaces among jobs 4915-5020 once a release ships the replace run that pauses on a YouTube block. 62 succeeded. 43 failed on a bare "Video unavailable" while YouTube refused the `burner` profile, and job 4955 on a network error. Use Retry on each failed row of the Downloads page, filtered to failed, or `POST /api/jobs/{id}/retry`.
 2. Check the first encode queued with `motion_threshold`: its `encode_job.options` has `motion_threshold`, its done file has `motion` and `fps`, and it succeeded. A re-downloaded video queues from about 2026-11-18, after its original keep. A new download of a title that is not still queues sooner.
 
 ## Pointers
