@@ -36,12 +36,12 @@ import type {
 } from "@/lib/api/types"
 
 type JobQuery = {
-  kind?: JobKind
+  kind?: JobKind[]
   state?: JobState[]
   channel_id?: string
   video_id?: string
-  // Drop a failed or interrupted archive run once a later run of its video
-  // succeeded, and a dismissed failure.
+  // Drop a failed or interrupted archive or replace run once a later run of its
+  // kind and video succeeded, and a dismissed failure.
   unresolved?: boolean
   limit?: number
   // newest by default. dispatch: running first, then the order the worker takes the queue.
@@ -123,7 +123,7 @@ export const api = {
   // The same list with the count of every matching job, for numbered pages.
   jobPage: (query: JobQuery & { offset?: number }) => getPage<Job>("/api/jobs", query),
   // Every state is present, zero when no job holds it.
-  jobCounts: (query: { kind?: JobKind; channel_id?: string }) =>
+  jobCounts: (query: { kind?: JobKind[]; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),
   pods: () => get<Pods>("/api/pods"),
   // The videos waiting on staging for the move into the tree.

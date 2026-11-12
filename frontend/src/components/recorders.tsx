@@ -17,7 +17,7 @@ import { refetchMs } from "@/lib/refetch"
 function useRecordingNow() {
   return useQuery({
     queryKey: queryKeys.recordingNow(),
-    queryFn: () => api.jobs({ kind: "record", state: ["running"] }),
+    queryFn: () => api.jobs({ kind: ["record"], state: ["running"] }),
     refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),
   })
 }
@@ -108,7 +108,7 @@ function byStart(a: Job, b: Job) {
 export function ScheduledSection() {
   const queued = useQuery({
     queryKey: queryKeys.scheduledRecords(),
-    queryFn: () => api.jobs({ kind: "record", state: ["queued"] }),
+    queryFn: () => api.jobs({ kind: ["record"], state: ["queued"] }),
     refetchInterval: IDLE_REFETCH_MS,
   })
   return (

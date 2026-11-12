@@ -201,7 +201,12 @@ async def _out(session: AsyncSession, watch: FormatWatch, video: Video) -> Forma
     job, job_dismissed = (
         await session.execute(
             select(Job, dismissed_job())
-            .where(Job.video_id == video.id, Job.kind == JobKind.REPLACE)
+            # An interrupted row records a run of a job still waiting.
+            .where(
+                Job.video_id == video.id,
+                Job.kind == JobKind.REPLACE,
+                Job.state != JobState.INTERRUPTED,
+            )
             .order_by(Job.id.desc())
             .limit(1)
         )

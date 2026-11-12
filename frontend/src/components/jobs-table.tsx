@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Link } from "react-router"
 
 import { Clock } from "@/components/clock"
+import { ReplaceLabel } from "@/components/job-row"
 import { ErrorBox } from "@/components/query-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -182,6 +183,7 @@ export function JobsTable({
                           {j.title ?? j.video_id}
                         </Link>
                         <VideoYouTubeLink id={j.video_id} title={j.title} iconOnly />
+                        {j.kind === "replace" && <ReplaceLabel job={j} />}
                       </div>
                     ) : (
                       "-"

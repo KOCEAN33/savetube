@@ -134,6 +134,10 @@ def check_downloads(page: Page) -> str:
     assert query_of(first.value.url).get("unresolved") == ["true"], first.value.url
     expect(page.get_by_role("table").last).to_be_visible()
     settle(page)
+    # A replace shares the queue, so it lists among the downloads.
+    expect(page.get_by_text("replace 299")).to_be_visible()
+    if SHOTS:
+        page.screenshot(path=f"{SHOTS}/downloads.png", full_page=True)
     # A failure of a video YouTube removed counts as resolved.
     expect(page.get_by_text("Removed upload")).to_have_count(0)
 

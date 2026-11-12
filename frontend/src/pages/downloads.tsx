@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/select"
 import { usePageParam } from "@/hooks/use-page-param"
 import { api, type Job, type JobState } from "@/lib/api"
-import { JOB_PAGE } from "@/lib/constants"
+import { DOWNLOAD_KINDS, JOB_PAGE } from "@/lib/constants"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
@@ -31,7 +31,7 @@ function channelNames(jobs: Job[]) {
   return names
 }
 
-// Archive downloads across every channel, in the channel page's layout: the
+// Archive and replace jobs across every channel, in the channel page's layout: the
 // running downloads, the queue in dispatch order, then the finished runs.
 export function DownloadsPage() {
   const [params, setParams] = useSearchParams()
@@ -44,7 +44,7 @@ export function DownloadsPage() {
 
   const running = useQuery({
     queryKey: queryKeys.runningJobs(),
-    queryFn: () => api.jobs({ kind: "archive", state: ["running"] }),
+    queryFn: () => api.jobs({ kind: DOWNLOAD_KINDS, state: ["running"] }),
     refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),
   })
   const busy = (running.data?.length ?? 0) > 0
@@ -52,7 +52,7 @@ export function DownloadsPage() {
     queryKey: queryKeys.queuedJobs("all", queuedPage),
     queryFn: () =>
       api.jobPage({
-        kind: "archive",
+        kind: DOWNLOAD_KINDS,
         state: ["queued"],
         order: "dispatch",
         limit: JOB_PAGE,
@@ -65,7 +65,7 @@ export function DownloadsPage() {
     queryKey: queryKeys.allRecentJobs({ state, unresolved, page: recentPage }),
     queryFn: () =>
       api.jobPage({
-        kind: "archive",
+        kind: DOWNLOAD_KINDS,
         state: state ? [state] : FINISHED,
         unresolved: unresolved || undefined,
         limit: JOB_PAGE,

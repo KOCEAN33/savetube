@@ -27,7 +27,7 @@ export function LivePage() {
   const channels = useQuery({ queryKey: queryKeys.channels(), queryFn: api.channels })
   const jobs = useQuery({
     queryKey: queryKeys.recordJobs(state),
-    queryFn: () => api.jobs({ kind: "record", state: state ? [state] : undefined, limit: LIMIT }),
+    queryFn: () => api.jobs({ kind: ["record"], state: state ? [state] : undefined, limit: LIMIT }),
     refetchInterval: IDLE_REFETCH_MS,
   })
   const pods = usePods()

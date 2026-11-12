@@ -26,6 +26,7 @@ Failures paid for once that the code does not show.
 
 ## Code
 
+- Without staging, `Settings.download_root` and `incoming_root` are one directory. A replace downloads in `<job id>/` and remuxes in `<job id>/remux/` under them, so code that clears the remux directory never clears its parent.
 - `web/api/` and `jobs/` are packages whose `__init__.py` re-exports the old public names. A test patches a name on the submodule whose call site reads it, such as `jobs.runners.download`, `jobs.guards.PAUSE_POLL_SECONDS` or `web.api.scan.CHANNEL_PLAYLISTS_TIMEOUT`. Patching the package name has no effect.
 - `ytdl.read_account` uses yt-dlp's private `YoutubeTab` methods `_download_webpage`, `extract_ytcfg`, `_extract_response` and `generate_api_headers`. A yt-dlp upgrade can break it, and then every profile shows "account unknown" with `cookies.account_failed` in the log.
 - A per-channel aggregate joins `deps._channel_videos()`. `_of_channel(Channel.id)` in a join condition reruns its subquery per channel and video row and took 6.7 s on production. With a literal channel id it stays fast.

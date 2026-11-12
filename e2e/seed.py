@@ -349,6 +349,14 @@ def seed(session: Session, archive_root: Path) -> dict:
     session.add_all(
         [
             Job(kind=JobKind.ARCHIVE, state=JobState.QUEUED, video_id="e2ePend0001"),
+            # Waits behind the running download, and lists among the downloads.
+            Job(
+                kind=JobKind.REPLACE,
+                state=JobState.QUEUED,
+                video_id="e2eVideo002",
+                format_id="299",
+                manual=True,
+            ),
             Job(
                 kind=JobKind.ARCHIVE,
                 state=JobState.RUNNING,

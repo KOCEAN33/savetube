@@ -27,7 +27,6 @@ from savetube.db.models import (
     FormatWatch,
     Job,
     JobKind,
-    JobState,
     Source,
     Video,
     VideoState,
@@ -102,36 +101,6 @@ async def _jobs(session: AsyncSession) -> list[AttentionOut]:
             )
         )
     return out
-
-
-async def _replaces(session: AsyncSession) -> list[AttentionOut]:
-    latest = (
-        select(func.max(Job.id))
-        .where(Job.kind == JobKind.REPLACE)
-        .group_by(Job.video_id)
-        .scalar_subquery()
-    )
-    rows = await session.execute(
-        select(Job, Video.title, Video.channel_id, Channel.name)
-        .join(Video, Video.id == Job.video_id)
-        .join(Channel, Channel.id == Video.channel_id)
-        .where(Job.id.in_(latest), Job.state == JobState.FAILED)
-        .where(Video.state == VideoState.COMPLETE)
-    )
-    return [
-        _item(
-            "replace_failed",
-            job.id,
-            video_id=job.video_id,
-            channel_id=channel_id,
-            title=title,
-            channel_name=channel_name,
-            detail=job_reason(job.log_tail),
-            log_tail=job.log_tail,
-            at=job.finished_at,
-        )
-        for job, title, channel_id, channel_name in rows
-    ]
 
 
 async def _encodes(session: AsyncSession) -> list[AttentionOut]:
@@ -254,7 +223,6 @@ async def attention(session: Session) -> list[AttentionOut]:
     dismissed = set(await session.execute(select(AttentionDismissal.kind, AttentionDismissal.key)))
     items = [
         *await _jobs(session),
-        *await _replaces(session),
         *await _encodes(session),
         *await _held(session),
         *await _sources(session),

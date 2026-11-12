@@ -1,4 +1,4 @@
-"""Checks around a running archive download: pause, ownership, YouTube blocks,
+"""Checks around a running archive or replace download: pause, ownership, YouTube blocks,
 and network stalls."""
 
 import asyncio
@@ -23,7 +23,7 @@ from savetube.db.models import (
 from savetube.joblog import BLOCKED_LOG, NETWORK_LOG, PROFILE_BLOCKED_LOG
 from savetube.jobs.rows import LOG_TAIL_CHARS, _interrupt, _owner_lost
 from savetube.jobs.runners import DownloadFailed
-from savetube.limits import backoff, blocked, load, lock
+from savetube.limits import DOWNLOAD_KINDS, backoff, blocked, load, lock
 from savetube.logs import emit, human_duration
 from savetube.tz import TIMEZONE
 from savetube.ytdl import bare_unavailable
@@ -166,12 +166,12 @@ async def _profile_blocked(
     return True
 
 
-async def _network_stalls(sessionmaker: async_sessionmaker, video_id: str) -> int:
-    """The video's network interruptions that added no bytes, since its last
-    failed or succeeded archive job or network interruption that added bytes.
-    Ordered by `finished_at`, because a failed job keeps the id it had before
-    its interrupted rows."""
-    archive = (Job.video_id == video_id) & (Job.kind == JobKind.ARCHIVE)
+async def _network_stalls(sessionmaker: async_sessionmaker, video_id: str, kind: JobKind) -> int:
+    """The video's network interruptions of `kind` that added no bytes, since
+    its last failed or succeeded job or network interruption of `kind` that
+    added bytes. Ordered by `finished_at`, because a failed job keeps the id
+    it had before its interrupted rows."""
+    archive = (Job.video_id == video_id) & (Job.kind == kind)
     last_end = (
         select(func.max(Job.finished_at))
         .where(
@@ -200,8 +200,8 @@ async def _network_stalls(sessionmaker: async_sessionmaker, video_id: str) -> in
 async def _unavailable_streak(
     sessionmaker: async_sessionmaker, video_id: str, count: int, within: timedelta
 ) -> bool:
-    """Whether the last `count` failed or succeeded archive jobs of other
-    videos, newest by `finished_at`, all failed on a bare "Video unavailable"
+    """Whether the last `count` failed or succeeded archive or replace jobs
+    of other videos, newest by `finished_at`, all failed on a bare "Video unavailable"
     within `within` of now. A failure of a video found gone does not count,
     so retries of gone videos read as no block."""
     since = datetime.now(UTC) - within
@@ -211,7 +211,7 @@ async def _unavailable_streak(
                 select(Job.state, Job.log_tail, Job.finished_at)
                 .join(Video, Video.id == Job.video_id)
                 .where(
-                    Job.kind == JobKind.ARCHIVE,
+                    Job.kind.in_(DOWNLOAD_KINDS),
                     Job.video_id != video_id,
                     Job.state.in_([JobState.FAILED, JobState.SUCCEEDED]),
                     Video.state != VideoState.GONE,

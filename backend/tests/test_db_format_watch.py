@@ -15,7 +15,7 @@ from conftest import ADMIN_URL, _api, _events, _fields, _queue_row, _sql, _sql_r
 from test_formats import HU7_RECORDING, WBJ_RECORDING, _vod
 
 from savetube.db import make_engine, make_sessionmaker
-from savetube.db.models import FormatWatch, Job, JobKind, JobState, Video
+from savetube.db.models import FormatWatch, Job, JobKind, JobState, Video, VideoState
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
 
@@ -1273,12 +1273,19 @@ def _opus_download(source):
 
 async def _replace(settings, job_id, runner):
     from savetube.integrity import Tools
-    from savetube.jobs import run
+    from savetube.jobs import recorded, run
 
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    # The worker's task runs every queued job through jobs.run.
-    await run(job_id, settings, live=False, runner=runner, sessionmaker=sessionmaker, tools=Tools())
+    # The worker's task runs every queued job through jobs.run, which raises
+    # a failure it already wrote to the row.
+    try:
+        await run(
+            job_id, settings, live=False, runner=runner, sessionmaker=sessionmaker, tools=Tools()
+        )
+    except Exception as e:
+        if not recorded(e):
+            raise
     async with sessionmaker() as session:
         job = await session.get(Job, job_id)
         video = await session.get(Video, "v1")
@@ -1350,7 +1357,7 @@ async def test_a_replace_whose_row_is_no_longer_queued_does_not_run(settings, ca
     assert runner.calls == []
     assert job.state is JobState.CANCELLED and job.attempts == 0 and job.started_at is None
     assert (directory / "v1.mkv").read_bytes() == b"recording"
-    [skipped] = _events(caplog, "replace.skipped")
+    [skipped] = _events(caplog, "job.skipped")
     assert _fields(skipped)["state"] == "cancelled"
 
 
@@ -1396,13 +1403,135 @@ async def test_a_replace_that_fails_its_checks_leaves_the_stored_file(settings, 
         # The VOD runs 60 s, the downloaded stream 1 s.
         return {**info, "duration": 60}
 
-    job, video, watch = await _replace(settings, 1, _Steps(short))
+    # A failed check downloads from zero once, as an archive download does.
+    job, video, watch = await _replace(settings, 1, _Steps(short, short))
 
     assert job.state is JobState.FAILED and "integrity check failed" in job.log_tail
     assert (directory / "v1.mkv").read_bytes() == recording.read_bytes()
     assert watch.original_path is None and video.format_id == "137+140"
     assert not (settings.archive_root / ".originals").exists()
     assert not (settings.archive_root / ".incoming" / "1").exists()
+
+
+UNAVAILABLE = "DownloadError: ERROR: [youtube] v1: Video unavailable"
+
+
+@pytest.mark.anyio
+async def test_a_third_bare_unavailable_replace_in_a_row_pauses_downloads(settings):
+    from conftest import _block_state
+
+    from savetube.jobs import DownloadFailed
+
+    directory = _stored_live(settings)
+    _sql(
+        settings,
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('o1', 'UC1', 'videos', 't', 'complete'), ('o2', 'UC1', 'videos', 't', 'complete')",
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts, log_tail, finished_at)"
+        f" VALUES (10, 'replace', 'failed', 'o1', '299', 1, '{UNAVAILABLE.replace('v1', 'o1')}',"
+        " now() - interval '20 minutes'),"
+        f" (11, 'replace', 'failed', 'o2', '299', 1, '{UNAVAILABLE.replace('v1', 'o2')}',"
+        " now() - interval '5 minutes')",
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts)"
+        " VALUES (1, 'replace', 'queued', 'v1', '251', 0)",
+        "SELECT setval('job_id_seq', 100)",
+    )
+
+    async def unavailable(params, report):
+        raise DownloadFailed(UNAVAILABLE)
+
+    job, video, _ = await _replace(settings, 1, _Steps(unavailable))
+
+    assert (job.state, job.attempts) == (JobState.QUEUED, 0)
+    [(state, tail)] = _sql_rows(settings, "SELECT state, log_tail FROM job WHERE id > 100")
+    assert (state, tail) == ("interrupted", f"blocked by YouTube: {UNAVAILABLE}")
+    assert _block_state(settings)[0] == 1
+    assert video.state is VideoState.COMPLETE
+    assert (directory / "v1.mkv").read_bytes() == b"recording"
+
+
+@pytest.mark.anyio
+async def test_a_network_error_interrupts_a_replace_and_the_next_run_continues_its_parts(
+    settings,
+):
+    from test_db_network import READ_TIMEOUT
+
+    from savetube.jobs import DownloadFailed
+
+    _stored_live(settings)
+    _sql(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, format_id, attempts)"
+        " VALUES (1, 'replace', 'queued', 'v1', '251', 0)",
+        "SELECT setval('job_id_seq', 100)",
+    )
+
+    async def cut_off(params, report):
+        part = Path(params["paths"]["home"]) / ".tmp" / "v1.f251.webm.part"
+        part.parent.mkdir(parents=True, exist_ok=True)
+        part.write_bytes(b"x" * 2048)
+        await report({"event": "format", "format_id": "251"})
+        raise DownloadFailed(READ_TIMEOUT)
+
+    runner = _Steps(cut_off)
+    job, _, _ = await _replace(settings, 1, runner)
+
+    assert (job.state, job.attempts) == (JobState.QUEUED, 0)
+    [(state, tail)] = _sql_rows(settings, "SELECT state, log_tail FROM job WHERE id > 100")
+    assert (state, tail) == ("interrupted", f"network error: {READ_TIMEOUT}")
+    home = Path(runner.calls[0]["paths"]["home"])
+    assert (home / ".tmp" / "v1.f251.webm.part").stat().st_size == 2048
+
+    async def stopped(params, report):
+        raise DownloadFailed("stopped by the test")
+
+    runner = _Steps(stopped)
+    await _replace(settings, 1, runner)
+
+    [params] = runner.calls
+    assert (Path(params["paths"]["home"]), params["format"]) == (home, "251")
+    assert params["continuedl"] is True
+
+
+def _failed_replace(settings, video_state="complete"):
+    _stored_live(settings)
+    _sql(
+        settings,
+        f"UPDATE video SET state = '{video_state}'",
+        "INSERT INTO job (id, kind, state, video_id, format_id, manual, attempts, log_tail,"
+        " finished_at) VALUES (40, 'replace', 'failed', 'v1', '299', true, 1, 'ERROR: x',"
+        " now() - interval '1 hour'),"
+        " (41, 'archive', 'succeeded', 'v1', NULL, false, 1, NULL, now() - interval '9 days')",
+        "SELECT setval('job_id_seq', 41)",
+    )
+
+
+def test_api_lists_download_kinds_together_and_retries_a_failed_replace(settings):
+    _failed_replace(settings)
+
+    with _api(settings) as api:
+        listed = api.get("/api/jobs", params={"kind": ["archive", "replace"]}).json()
+        r = api.post("/api/jobs/40/retry")
+
+    assert [(j["id"], j["kind"], j["format_id"], j["retryable"]) for j in listed] == [
+        (41, "archive", None, False),
+        (40, "replace", "299", True),
+    ]
+    assert r.status_code == 200
+    new = r.json()["job_id"]
+    assert _sql_rows(
+        settings, f"SELECT kind, state, format_id, manual FROM job WHERE id = {new}"
+    ) == [("replace", "queued", "299", True)]
+    assert _sql_rows(settings, "SELECT state FROM video WHERE id = 'v1'") == [("complete",)]
+
+
+def test_api_a_replace_of_a_video_no_longer_stored_is_not_retryable(settings):
+    _failed_replace(settings, video_state="deleted")
+
+    with _api(settings) as api:
+        r = api.post("/api/jobs/40/retry")
+
+    assert r.status_code == 409
 
 
 def _vp9_download(source):

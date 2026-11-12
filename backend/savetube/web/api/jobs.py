@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import ColumnElement, and_, exists, func, select
+from sqlalchemy import ColumnElement, and_, exists, func, or_, select
 from sqlalchemy.orm import aliased
 
 from savetube.attention import JOB_FAILED, Kind, dismissed_job, open_failure, resolved_failure
@@ -56,6 +56,8 @@ class JobOut(_Out):
     kind: JobKind
     state: JobState
     video_id: str | None
+    # The format ids a replace job downloads, `+`-joined. Null for other kinds.
+    format_id: str | None
     # The video's title and its uploader channel, null for a job without a video.
     title: str | None
     channel_id: str | None
@@ -74,7 +76,7 @@ class JobOut(_Out):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-    # A failed archive job whose video POST /api/jobs/{id}/retry queues again.
+    # A failed archive or replace job POST /api/jobs/{id}/retry queues again.
     retryable: bool
     # The video's state, `gone` once YouTube no longer serves it.
     video_state: VideoState | None
@@ -87,34 +89,42 @@ class JobOut(_Out):
 
 def _retryable() -> ColumnElement[bool]:
     """A failed archive job, the newest job of its video, whose video is not
-    stored or deleted. Past its attempts, polls wait days between retries."""
+    stored or deleted. Past its attempts, polls wait days between retries.
+    Or a failed replace job, the newest replace of its stored video: no poll
+    queues a picked replace again."""
     later = aliased(Job)
-    return and_(
+    # An interrupted row records a run of an earlier job, so it is no newer job.
+    newer = and_(
+        later.video_id == Job.video_id,
+        later.id > Job.id,
+        later.state != JobState.INTERRUPTED,
+    )
+    archive = and_(
         Job.kind == JobKind.ARCHIVE,
-        Job.state == JobState.FAILED,
         Video.state.not_in(
             [VideoState.COMPLETE, VideoState.STAGED, VideoState.DELETED, VideoState.GONE]
         ),
-        # An interrupted row records a run of an earlier job, so it is no newer job.
-        ~exists().where(
-            later.video_id == Job.video_id,
-            later.id > Job.id,
-            later.state != JobState.INTERRUPTED,
-        ),
+        ~exists().where(newer),
     )
+    replace = and_(
+        Job.kind == JobKind.REPLACE,
+        Video.state == VideoState.COMPLETE,
+        ~exists().where(newer, later.kind == JobKind.REPLACE),
+    )
+    return and_(Job.state == JobState.FAILED, or_(archive, replace))
 
 
 @router.get("/jobs")
 async def jobs(
     session: Session,
     response: Response,
-    kind: JobKind | None = None,
-    # Repeat the parameter for several states.
+    # Repeat either parameter for several kinds or states.
+    kind: Annotated[list[JobKind] | None, Query()] = None,
     state: Annotated[list[JobState] | None, Query()] = None,
     channel_id: str | None = None,
     video_id: str | None = None,
-    # Drop a failed or interrupted archive run once a later run of its video
-    # succeeded, and an interrupted one once a later run of its video ended.
+    # Drop a failed or interrupted archive or replace run once a later run of
+    # its kind and video succeeded, and an interrupted one once such a run ended.
     # Drop a dismissed failure too.
     unresolved: bool = False,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
@@ -130,7 +140,7 @@ async def jobs(
         by = (Job.id.desc(),)
     where = []
     if kind:
-        where.append(Job.kind == kind)
+        where.append(Job.kind.in_(kind))
     if state:
         where.append(Job.state.in_(state))
     if channel_id:
@@ -196,7 +206,8 @@ async def jobs(
 
 @router.post("/jobs/{job_id}/retry")
 async def retry_job(session: Session, job_id: int) -> dict[str, int]:
-    """Queue a new archive job for a retryable job's video. Returns its id."""
+    """Queue a new archive job for a retryable archive job's video, or the
+    same replace for a retryable replace job. Returns the new job's id."""
     job = await session.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="no such job")
@@ -208,9 +219,14 @@ async def retry_job(session: Session, job_id: int) -> dict[str, int]:
     )
     if not ok:
         raise HTTPException(status_code=409, detail="the job is not a retryable failure")
-    video = await session.get(Video, job.video_id)
-    video.state = VideoState.PENDING
-    new = Job(kind=JobKind.ARCHIVE, video_id=job.video_id)
+    if job.kind is JobKind.REPLACE:
+        new = Job(
+            kind=JobKind.REPLACE, video_id=job.video_id, format_id=job.format_id, manual=job.manual
+        )
+    else:
+        video = await session.get(Video, job.video_id)
+        video.state = VideoState.PENDING
+        new = Job(kind=JobKind.ARCHIVE, video_id=job.video_id)
     session.add(new)
     await session.commit()
     emit(log, logging.INFO, "job.retried", job=job_id, video=job.video_id, new_job=new.id)
@@ -219,12 +235,14 @@ async def retry_job(session: Session, job_id: int) -> dict[str, int]:
 
 @router.get("/jobs/counts")
 async def job_counts(
-    session: Session, kind: JobKind | None = None, channel_id: str | None = None
+    session: Session,
+    kind: Annotated[list[JobKind] | None, Query()] = None,
+    channel_id: str | None = None,
 ) -> dict[JobState, int]:
     """The number of jobs in each state, every state present."""
     q = select(Job.state, func.count()).group_by(Job.state)
     if kind:
-        q = q.where(Job.kind == kind)
+        q = q.where(Job.kind.in_(kind))
     if channel_id:
         q = q.outerjoin(Video, Video.id == Job.video_id).where(_of_channel(channel_id))
     counts = dict.fromkeys(JobState, 0)
