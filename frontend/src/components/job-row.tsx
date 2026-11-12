@@ -40,6 +40,13 @@ function ProgressLine({ job }: { job: Job }) {
   )
 }
 
+// A replace downloads only these formats for a video already stored.
+export function ReplaceLabel({ job }: { job: Job }) {
+  return (
+    <span className="shrink-0 text-xs text-muted-foreground">replace {job.format_id}</span>
+  )
+}
+
 export function ChannelLink({ job }: { job: Job }) {
   if (!job.channel_id) return <span className="text-xs text-muted-foreground">-</span>
   return (
@@ -73,6 +80,7 @@ export function RunningJob({ job, withChannel = false }: { job: Job; withChannel
           <span className="font-medium">Job {job.id}</span>
         )}
         {job.video_id && <VideoYouTubeLink id={job.video_id} title={job.title} />}
+        {job.kind === "replace" && <ReplaceLabel job={job} />}
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">
           started <Clock iso={job.started_at} />
         </span>

@@ -6,7 +6,7 @@ import { Pagination } from "@/components/pagination"
 import { QueryState } from "@/components/query-state"
 import { usePageParam } from "@/hooks/use-page-param"
 import { api } from "@/lib/api"
-import { JOB_PAGE } from "@/lib/constants"
+import { DOWNLOAD_KINDS, JOB_PAGE } from "@/lib/constants"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
@@ -17,7 +17,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
   const [recentPage, setRecentPage] = usePageParam("fpage")
   const running = useQuery({
     queryKey: queryKeys.runningJobs(channelId),
-    queryFn: () => api.jobs({ kind: "archive", channel_id: channelId, state: ["running"] }),
+    queryFn: () => api.jobs({ kind: DOWNLOAD_KINDS, channel_id: channelId, state: ["running"] }),
     refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),
   })
   const busy = (running.data?.length ?? 0) > 0
@@ -25,7 +25,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
     queryKey: queryKeys.queuedJobs(channelId, queuedPage),
     queryFn: () =>
       api.jobPage({
-        kind: "archive",
+        kind: DOWNLOAD_KINDS,
         channel_id: channelId,
         state: ["queued"],
         order: "dispatch",
@@ -39,7 +39,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
     queryKey: queryKeys.channelRecentJobs(channelId, recentPage),
     queryFn: () =>
       api.jobPage({
-        kind: "archive",
+        kind: DOWNLOAD_KINDS,
         channel_id: channelId,
         // An interrupted run is a row of its own. Its job waits in the queue again.
         state: ["succeeded", "failed", "cancelled", "interrupted"],

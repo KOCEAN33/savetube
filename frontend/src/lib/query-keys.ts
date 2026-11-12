@@ -52,7 +52,7 @@ export const queryKeys = {
   // The prefix of every job list and count.
   jobs: () => ["jobs"] as const,
   // `scope` is a channel id, or "all" for every channel.
-  archiveJobCounts: (scope: string) => ["jobs", "archive", scope, "counts"] as const,
+  downloadJobCounts: (scope: string) => ["jobs", "downloads", scope, "counts"] as const,
   runningJobs: (scope = "all") => ["jobs", "archive", scope, "running"] as const,
   queuedJobs: (scope: string, page: number) => ["jobs", "archive", scope, "queued", page] as const,
   channelRecentJobs: (channelId: string, page: number) =>

@@ -13,7 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { api, mutations } from "@/lib/api"
-import { IDLE_REFETCH_MS } from "@/lib/constants"
+import { DOWNLOAD_KINDS, IDLE_REFETCH_MS } from "@/lib/constants"
 import { formatBytes } from "@/lib/format"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
@@ -52,18 +52,18 @@ function StagingLine() {
   )
 }
 
-// Archive downloads across every channel: what runs now, how many wait, and
+// Archive and replace jobs across every channel: what runs now, how many wait, and
 // the latest failed and interrupted runs no later run fixed. /downloads lists the rest.
 export function DownloadsCard() {
   const active = useQuery({
     queryKey: queryKeys.runningJobs(),
-    queryFn: () => api.jobs({ kind: "archive", state: ["running"] }),
+    queryFn: () => api.jobs({ kind: DOWNLOAD_KINDS, state: ["running"] }),
     refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),
   })
   const busy = (active.data?.length ?? 0) > 0
   const counts = useQuery({
-    queryKey: queryKeys.archiveJobCounts("all"),
-    queryFn: () => api.jobCounts({ kind: "archive" }),
+    queryKey: queryKeys.downloadJobCounts("all"),
+    queryFn: () => api.jobCounts({ kind: DOWNLOAD_KINDS }),
     refetchInterval: refetchMs(busy),
   })
   const running = active.data ?? []

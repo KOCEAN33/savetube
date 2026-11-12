@@ -100,6 +100,8 @@ export interface Job {
   kind: JobKind
   state: JobState
   video_id: string | null
+  // The format ids a replace job downloads, "+"-joined. Null for other kinds.
+  format_id: string | null
   // The video's title and its uploader channel. Null for a job without a video.
   title: string | null
   channel_id: string | null
@@ -118,7 +120,7 @@ export interface Job {
   // A running download's current stream, updated every few seconds, or the
   // step after its last byte.
   progress: JobProgress | JobStep | null
-  // A failed archive job whose video POST /api/jobs/{id}/retry queues again.
+  // A failed archive or replace job POST /api/jobs/{id}/retry queues again.
   retryable: boolean
   // The video's state, "gone" once YouTube no longer serves it.
   video_state: string | null
