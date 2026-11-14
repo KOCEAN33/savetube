@@ -11,7 +11,7 @@ Plan step 6 is queued. On 2026-11-11 every candidate was scored: 106 of 210 scor
 ## Next steps
 
 1. Check that the 44 retried replaces, jobs 5028-5071, succeeded. They retry the replaces among jobs 4915-5020 that failed while YouTube refused the `burner` profile, under v0.40.0, which pauses downloads on such a refusal. Job 5028 succeeded and superseded its encode job.
-2. Check the first encode queued with `motion_threshold`: its `encode_job.options` has `motion_threshold`, its done file has `motion` and `fps`, and it succeeded. A re-downloaded video queues from about 2026-11-18, after its original keep. A new download of a title that is not still queues sooner.
+2. Check the first encode queued with `motion_threshold`: its `encode_job.options` has `motion_threshold`, its done file has `motion` and `fps`, and it succeeded. On 2026-11-14 the owner ended the original keep of the 103 re-downloaded H.264 and VP9 videos early, and they queue with `motion_threshold`, starting with jobs 1213-1215.
 
 ## Pointers
 
