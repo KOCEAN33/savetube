@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# pw <run dir> <playwright-cli args...>: one playwright-cli command in the run's
+# own browser session, from <run dir>/evidence, so --filename paths and the
+# .playwright-cli snapshots land there.
+set -euo pipefail
+[ $# -ge 2 ] || { echo "usage: pw <run dir> <playwright-cli args...>" >&2; exit 2; }
+run="$(cd "$1" && pwd)"
+shift
+mkdir -p "$run/evidence"
+cd "$run/evidence"
+exec playwright-cli -s="stv-$(basename "$run")" "$@"
