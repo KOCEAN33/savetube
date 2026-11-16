@@ -4,7 +4,9 @@ ENV := set -a; [ -f .env ] && . ./.env; set +a;
 # working directory. lint runs in backend/, because ruff caches in the working directory.
 PY := uv run --project backend
 
-.PHONY: check check-db lint web e2e-smoke
+AST_GREP ?= ast-grep
+
+.PHONY: check check-db lint lint-comments web e2e-smoke
 
 # The DB-gated tests skip when SAVETUBE_TEST_DATABASE_URL is unset, so the gate
 # refuses to run without it.
@@ -19,6 +21,9 @@ check-db:
 lint:
 	cd backend && uv run ruff check
 	cd backend && uv run ruff format --check
+
+lint-comments:
+	node scripts/comment-lint.mjs --ast-grep "$(AST_GREP)"
 
 web:
 	$(PY) savetube web

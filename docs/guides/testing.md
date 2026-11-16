@@ -22,6 +22,8 @@ DB tests live in `backend/tests/test_db_*.py`, with shared fixtures and helpers 
 
 - Playwright: `uvx --with playwright python -I <script>` with `channel="chrome"`.
 - Frontend: pnpm (`pnpm run typecheck`, `build`, `lint`).
+- `make lint-comments` fails on a comment that breaks llm-wiki `practices/code-comments.md`. The pre-commit hook and the `lint` workflow run it. A fresh clone needs `brew install ast-grep` and `git config core.hooksPath .githooks`.
+- `.comment-lint-baseline.json` lists the violations that predate the lint. It only shrinks: fix the comment, then run `node scripts/comment-lint.mjs --prune-baseline`.
 - `e2e/app.py` serves the app with login skipped against a database `e2e/seed.py create` seeded. `scripts/test-db.sh e2e/instance.sh up <dir>` builds the frontend, seeds, and keeps that app running. `doctor <dir>` checks it and `down <dir>` removes it. `e2e/run.sh` wraps the smoke in one.
 - The skill `verify-savetube` drives that instance as a user with `playwright-cli` and holds one recipe per mapped feature.
 
