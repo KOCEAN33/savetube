@@ -22,7 +22,8 @@ DB tests live in `backend/tests/test_db_*.py`, with shared fixtures and helpers 
 
 - Playwright: `uvx --with playwright python -I <script>` with `channel="chrome"`.
 - Frontend: pnpm (`pnpm run typecheck`, `build`, `lint`).
-- `e2e/app.py` serves the app with login skipped against a database `e2e/seed.py create` seeded. `e2e/run.sh` sets the env it needs, including the frontend build and archive root.
+- `e2e/app.py` serves the app with login skipped against a database `e2e/seed.py create` seeded. `scripts/test-db.sh e2e/instance.sh up <dir>` builds the frontend, seeds, and keeps that app running. `doctor <dir>` checks it and `down <dir>` removes it. `e2e/run.sh` wraps the smoke in one.
+- The skill `verify-savetube` drives that instance as a user with `playwright-cli` and holds one recipe per mapped feature.
 
 ## yt-dlp repros
 
