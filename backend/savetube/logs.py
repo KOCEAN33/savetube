@@ -1,4 +1,4 @@
-"""Logfmt lines on stderr (docs/plan/operations.md, Logging).
+"""Logfmt lines on stderr.
 
 A savetube line is an event with fields: `emit(log, logging.INFO, "job.start",
 job=230)`. A library line keeps its logger name and message.

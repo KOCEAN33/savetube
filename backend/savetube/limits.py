@@ -1,6 +1,6 @@
 """Download limits for archive jobs: a concurrency cap, a rate limit, a
 daily window in Asia/Seoul, a daily cap, a pause after a YouTube block, and
-the user's pause (docs/plan/archive.md, Download limits)."""
+the user's pause."""
 
 from datetime import datetime, time, timedelta
 

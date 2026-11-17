@@ -133,7 +133,7 @@ async def _profile_blocked(
     disowned: Callable[[AsyncSession], Awaitable[bool]],
 ) -> bool:
     """Interrupt a job googlevideo refused for `profile`, as `_blocked` does,
-    and pause that profile only. Returns False when the run lost its row."""
+    and pause that profile only. Returns False when `disowned` holds."""
     async with sessionmaker() as session:
         await lock(session)
         if await disowned(session):

@@ -126,7 +126,6 @@ export const api = {
   jobCounts: (query: { kind?: JobKind[]; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),
   pods: () => get<Pods>("/api/pods"),
-  // The videos waiting on staging for the move into the tree.
   staging: () => get<Staging>("/api/staging"),
   videos: (query: {
     // The uploader.

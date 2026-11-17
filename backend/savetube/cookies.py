@@ -1,8 +1,6 @@
-"""Cookie profiles and channel memberships (docs/plan/access.md, Cookies and
-account). A profile is the file `<name>.txt` in SAVETUBE_COOKIES_DIR. The
-general profile serves every request that is not members-only. A
-members-only download takes a profile whose membership in the channel a
-check confirmed."""
+"""Cookie profiles and channel memberships. A profile is the file `<name>.txt` in
+SAVETUBE_COOKIES_DIR. The general profile serves every request that is not members-only. A
+members-only download takes a profile whose membership in the channel a check confirmed."""
 
 import asyncio
 import hashlib
@@ -341,3 +339,19 @@ async def _check(
         await session.commit()
     emit(log, logging.INFO, "membership.checked", **fields, member="yes" if is_member else "no")
     return True
+
+
+async def mark_members(
+    sessionmaker: async_sessionmaker, settings: Settings, video_id: str
+) -> str | None:
+    """Mark the video members-only. Returns its channel's member profile, None when the
+    video or the profile is missing."""
+    async with sessionmaker() as session:
+        video = await session.get(Video, video_id)
+        if video is None:
+            return None
+        video.type = VideoType.MEMBERS
+        video.availability = "subscriber_only"
+        profile = await member_profile(session, video.channel_id, profiles(settings))
+        await session.commit()
+    return profile

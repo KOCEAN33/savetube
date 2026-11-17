@@ -1,5 +1,5 @@
 """encode_settings: encode options replace the profile name, encode_job keeps the
-options it sent (docs/plan/encode.md)
+options it sent
 
 Revision ID: 0036
 Revises: 0035

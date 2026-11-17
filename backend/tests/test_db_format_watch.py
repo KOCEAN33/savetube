@@ -1,4 +1,4 @@
-"""The format watch of stored lives (docs/plan/live.md, Format watch)."""
+"""The format watch of stored lives."""
 
 import asyncio
 import json
@@ -11,7 +11,17 @@ from pathlib import Path
 import httpx2
 import pytest
 import sqlalchemy as sa
-from conftest import ADMIN_URL, _api, _events, _fields, _queue_row, _sql, _sql_rows, _Steps
+from conftest import (
+    ADMIN_URL,
+    SchedulerFake,
+    _api,
+    _events,
+    _fields,
+    _queue_row,
+    _sql,
+    _sql_rows,
+    _Steps,
+)
 from test_formats import HU7_RECORDING, WBJ_RECORDING, _vod
 
 from savetube.db import make_engine, make_sessionmaker
@@ -1134,38 +1144,9 @@ def test_api_lists_the_formats_best_first(settings):
     assert ids["audio"] == ["251", "250", "249", "140", "139"]
 
 
-class _Scheduler:
-    """The scheduler's API behind the web's outbound httpx2 calls."""
-
-    def __init__(self, settings, probe):
-        from conftest import nullpool_engine
-
-        from savetube.scheduler_api import Requests, create_app
-
-        engine = nullpool_engine(settings)
-        self.app = create_app(
-            settings,
-            make_sessionmaker(engine),
-            probes=asyncio.Lock(),
-            probe=probe,
-            tools=_Tools(8312.0),
-            requests=Requests(),
-            encodes=asyncio.Lock(),
-            moves=asyncio.Lock(),
-            listings=asyncio.Semaphore(2),
-            lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
-            prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
-        )
-        self.urls = []
-
-    async def handle(self, request):
-        self.urls.append(str(request.url))
-        return await httpx2.ASGITransport(app=self.app).handle_async_request(request)
-
-
 def test_api_probe_then_pick_on_a_video_without_a_watch(settings, monkeypatch):
     _stored_live(settings, video_type="videos", watched=False)
-    scheduler = _Scheduler(settings, _probe_vod())
+    scheduler = SchedulerFake(settings, probe=_probe_vod(), tools=_Tools(8312.0))
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
 
     with _api(settings) as api:
@@ -1188,7 +1169,7 @@ def test_api_probe_refuses_a_video_not_complete_without_calling_the_scheduler(
 ):
     _stored_live(settings, watched=False)
     _sql(settings, "UPDATE video SET state = 'downloading'")
-    scheduler = _Scheduler(settings, _never_probe)
+    scheduler = SchedulerFake(settings, probe=_never_probe, tools=_Tools(8312.0))
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
 
     with _api(settings) as api:

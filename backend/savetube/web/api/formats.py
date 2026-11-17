@@ -1,5 +1,5 @@
 """The formats of a stored video on the video page: the format watch of a
-live, and the user's probe and pick (docs/plan/live.md, Format watch)."""
+live, and the user's probe and pick."""
 
 import logging
 from datetime import UTC, datetime

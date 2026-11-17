@@ -1,6 +1,5 @@
-"""Deleting a stored video at the user's ask (docs/plan/storage.md, Deleting
-a video). Its files go, and its row stays as `deleted`, so no poll, live
-check, format watch or re-encoding takes it up again."""
+"""Deleting a stored video at the user's ask. Its files go, and its row stays as `deleted`, so
+no poll, live check, format watch or re-encoding takes it up again."""
 
 import asyncio
 import contextlib

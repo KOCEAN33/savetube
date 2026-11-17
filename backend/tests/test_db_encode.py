@@ -1,4 +1,4 @@
-"""External re-encoding (docs/plan/encode.md): queueing, tracking the job
+"""External re-encoding: queueing, tracking the job
 files, checking and swapping a result, and the routes."""
 
 import asyncio

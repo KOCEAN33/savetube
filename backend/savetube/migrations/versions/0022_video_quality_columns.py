@@ -16,8 +16,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-# savetube.formats.stored_streams in SQL: the first requested format with that
-# stream, or the info dict itself without requested formats.
+# `savetube.db.models._stream` as it was when this migration ran.
 def _stream(codec: str) -> str:
     return (
         "(CASE WHEN info->'requested_formats'->0 IS NULL THEN info"

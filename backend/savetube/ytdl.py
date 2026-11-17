@@ -380,7 +380,7 @@ def read_account(cookiefile: Path) -> tuple[str, str | None]:
     signs in. Raises NotSignedIn for a logged-out file.
 
     yt-dlp has no public call for this, so it uses YoutubeTab's private
-    methods (docs/traps.md)."""
+    methods."""
     params = {"quiet": True, "logger": YtdlpLogger(), "cookiefile": str(cookiefile)}
     with yt_dlp.YoutubeDL(params) as ydl:
         ie = ydl.get_info_extractor("YoutubeTab")

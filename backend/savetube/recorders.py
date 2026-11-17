@@ -1,5 +1,5 @@
 """Recorder Jobs for queued record jobs, started a few minutes before the
-stream (docs/plan/live.md, Recording and the VOD)."""
+stream."""
 
 import logging
 from collections.abc import Awaitable, Callable

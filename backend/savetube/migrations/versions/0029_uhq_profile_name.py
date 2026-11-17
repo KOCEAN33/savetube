@@ -1,4 +1,4 @@
-"""encode_settings: vtuber-av1-cq46 renamed vtuber-av1-uhq-cq46 (docs/plan/encode.md)
+"""encode_settings: vtuber-av1-cq46 renamed vtuber-av1-uhq-cq46
 
 Revision ID: 0029
 Revises: 0028

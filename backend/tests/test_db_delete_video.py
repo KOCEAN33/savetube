@@ -1,7 +1,6 @@
-"""Deleting a stored video from the web UI (docs/plan/storage.md, Deleting a
-video): its files go, its row stays as `deleted`, and nothing queues it again."""
+"""Deleting a stored video from the web UI: its files go, its row stays as `deleted`, and
+nothing queues it again."""
 
-import asyncio
 import logging
 
 import httpx2
@@ -11,6 +10,7 @@ from conftest import (
     ADMIN_URL,
     LIVE_NOW,
     NASA,
+    SchedulerFake,
     _api,
     _cancel,
     _events,
@@ -26,8 +26,6 @@ from conftest import (
 
 from savetube.db import make_engine, make_sessionmaker
 from savetube.db.models import Job, JobKind
-from savetube.integrity import Tools
-from savetube.scheduler_api import Requests, create_app
 
 pytestmark = pytest.mark.skipif(not ADMIN_URL, reason="SAVETUBE_TEST_DATABASE_URL unset")
 
@@ -67,35 +65,8 @@ def _video_row(settings):
     return tuple(row)
 
 
-class _Scheduler:
-    """The scheduler's API behind the web's outbound httpx2 calls."""
-
-    def __init__(self, settings):
-        from conftest import nullpool_engine
-
-        engine = nullpool_engine(settings)
-        self.app = create_app(
-            settings,
-            make_sessionmaker(engine),
-            probes=asyncio.Lock(),
-            probe=lambda v, c: pytest.fail("no probe expected"),
-            tools=Tools(),
-            requests=Requests(),
-            encodes=asyncio.Lock(),
-            moves=asyncio.Lock(),
-            listings=asyncio.Semaphore(2),
-            lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
-            prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
-        )
-        self.urls = []
-
-    async def handle(self, request):
-        self.urls.append((request.method, str(request.url)))
-        return await httpx2.ASGITransport(app=self.app).handle_async_request(request)
-
-
 def _delete(settings, monkeypatch, video_id="v1"):
-    scheduler = _Scheduler(settings)
+    scheduler = SchedulerFake(settings)
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
     with _api(settings) as api:
         r = api.delete(f"/api/videos/{video_id}")
@@ -110,7 +81,7 @@ def test_delete_removes_the_files_and_keeps_a_deleted_row(settings, monkeypatch,
         r, listed, scheduler = _delete(settings, monkeypatch)
 
     assert r.status_code == 204
-    assert scheduler.urls == [("DELETE", f"{settings.scheduler_url}/videos/v1")]
+    assert scheduler.calls == [("DELETE", f"{settings.scheduler_url}/videos/v1")]
     assert not video.exists() and not original.exists()
     # The channel directory stays: other videos live there.
     assert (settings.archive_root / "A [UC1]" / "lives").is_dir()

@@ -1,4 +1,4 @@
-"""The format pick of the format watch (docs/plan/live.md, Format watch).
+"""The format pick of the format watch.
 
 Audio and video are judged apart. Only `https` formats count, and audio
 formats with `-drc` in the id do not."""
@@ -122,7 +122,7 @@ def recorded(f: dict[str, Any]) -> bool:
 
 
 def encoded(f: dict[str, Any]) -> bool:
-    """Whether a stored stream is savetube's re-encode (docs/plan/encode.md),
+    """Whether a stored stream is savetube's re-encode,
     whose `protocol` the swap sets to `encode`."""
     return f.get("protocol") == "encode"
 

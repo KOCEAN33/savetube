@@ -1,7 +1,7 @@
 """Frontend smoke checks against a running savetube with a seeded database.
 
-Run: uvx --with playwright python -I e2e/smoke.py <base url> <manifest path>
-The manifest comes from e2e/seed.py. Exits 1 when any check fails.
+Run: uvx --with playwright python -I smoke.py <base url> <manifest path>
+The manifest comes from `seed.py`. Exits 1 when any check fails.
 
 Every check opens its page in a fresh browser context and fails on a console
 error, an uncaught page error, an /api response of 400 or more, or an /api

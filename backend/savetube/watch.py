@@ -1,4 +1,4 @@
-"""The format watch of stored lives (docs/plan/live.md, Format watch).
+"""The format watch of stored lives.
 
 YouTube adds better formats to a live's VOD hours or days after the stream.
 For WATCH_DAYS after a stored live aired, the scheduler probes its
@@ -230,7 +230,7 @@ async def check(
         except Exception as e:
             if video.type is VideoType.MEMBERS or not members_only(str(e)):
                 raise
-            profile = await _mark_members(sessionmaker, settings, video_id)
+            profile = await cookies.mark_members(sessionmaker, settings, video_id)
             if profile is None:
                 raise
             emit(log, logging.INFO, "watch.member_retry", video=video_id, cookies=profile)
@@ -288,21 +288,6 @@ async def _probe_as(
     with tempfile.TemporaryDirectory(prefix="savetube-") as private:
         cookiefile = cookies.cookiefile(settings, profile, Path(private))
         return await asyncio.to_thread(probe, video_id, cookiefile)
-
-
-async def _mark_members(
-    sessionmaker: async_sessionmaker, settings: Settings, video_id: str
-) -> str | None:
-    """Mark the video members-only. Returns its channel's member profile."""
-    async with sessionmaker() as session:
-        video = await session.get(Video, video_id)
-        video.type = VideoType.MEMBERS
-        video.availability = "subscriber_only"
-        profile = await cookies.member_profile(
-            session, video.channel_id, cookies.profiles(settings)
-        )
-        await session.commit()
-    return profile
 
 
 async def _queue(session: AsyncSession, watch: FormatWatch, video: Video) -> Job | None:

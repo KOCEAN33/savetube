@@ -7,6 +7,23 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 const LANGUAGES = ['python', 'typescript', 'tsx', 'javascript', 'go', 'bash', 'yaml'];
+// A Python docstring is a string node, not a comment node: the first statement of a module, class, or function.
+const DOCSTRING = `id: docstring
+language: python
+rule:
+  kind: string
+  inside:
+    kind: expression_statement
+    nthChild: 1
+    inside:
+      any:
+        - kind: module
+        - kind: block
+          inside:
+            any:
+              - kind: function_definition
+              - kind: class_definition
+`;
 const MIN_SENTENCE = 35;
 
 const URL = /\bhttps?:\/\/\S+/g;
@@ -107,17 +124,19 @@ export function lintComments(comments) {
 function extract(astGrep, paths) {
   const [bin, ...pre] = astGrep.split(' ');
   const comments = [];
-  for (const lang of LANGUAGES) {
-    const run = spawnSync(bin, [...pre, 'run', '--kind', 'comment', '--lang', lang, '--no-ignore', 'hidden', '--globs', '!.git', '--json=stream', ...paths], {
+  const scan = (label, args, unquote) => {
+    const run = spawnSync(bin, [...pre, ...args, '--no-ignore', 'hidden', '--globs', '!.git', '--json=stream', ...paths], {
       encoding: 'utf8',
       maxBuffer: 1 << 28,
     });
-    if (run.error || run.status > 1) throw new Error(`${astGrep} failed for ${lang}: ${run.error?.message ?? run.stderr}`);
+    if (run.error || run.status > 1) throw new Error(`${astGrep} failed for ${label}: ${run.error?.message ?? run.stderr}`);
     for (const row of run.stdout.split('\n').filter(Boolean)) {
       const { file, text, range } = JSON.parse(row);
-      comments.push({ file, line: range.start.line + 1, text });
+      comments.push({ file, line: range.start.line + 1, text: unquote ? text.replace(/^[rRuU]?("""|'''|"|')/, '').replace(/("""|'''|"|')$/, '') : text });
     }
-  }
+  };
+  for (const lang of LANGUAGES) scan(lang, ['run', '--kind', 'comment', '--lang', lang], false);
+  scan('Python docstrings', ['scan', '--inline-rules', DOCSTRING], true);
   return comments;
 }
 

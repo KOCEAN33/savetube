@@ -1,5 +1,5 @@
 """encode_settings.motion_threshold: measured motion decides the frame rate of a
-title that is not still (docs/plan/encode.md, Profiles)
+title that is not still
 
 Revision ID: 0037
 Revises: 0036

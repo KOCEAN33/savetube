@@ -1,4 +1,4 @@
-"""External re-encoding: its settings and jobs (docs/plan/encode.md)."""
+"""External re-encoding: its settings and jobs."""
 
 import logging
 from datetime import datetime
@@ -27,7 +27,7 @@ Positive = Annotated[float, Field(gt=0, allow_inf_nan=False)]
 
 
 class EncodeSettingsIn(BaseModel):
-    """The encode options a job file carries (docs/plan/encode.md, Profiles)."""
+    """The encode options a job file carries."""
 
     enabled: bool
     tune: Literal["hq", "uhq"]
@@ -101,8 +101,8 @@ def _dismissed() -> ColumnElement[bool]:
 
 
 def _waiting() -> ColumnElement[bool]:
-    """Jobs that wait on the encoder or on a user. The others are finished.
-    The query must join Video on EncodeJob.video_id."""
+    """Jobs that wait on the encoder or on a user. The others are finished. The query joins
+    Video as `encode_failed` requires."""
     return EncodeJob.state.in_(OPEN) | encode_failed()
 
 
@@ -209,8 +209,7 @@ async def replace_encode_settings(
 async def cancel_encode_job(
     session: Session, request: Request, job_id: int, pages: Pages
 ) -> EncodeOut:
-    """Ask the scheduler to delete the queued job's file. The web pod mounts
-    the archive read-only."""
+    """Ask the scheduler to delete the queued job's file, through `call_scheduler`."""
 
     def failed(status: int, reason: str) -> None:
         emit(

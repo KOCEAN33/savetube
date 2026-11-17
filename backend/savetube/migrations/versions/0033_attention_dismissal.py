@@ -1,4 +1,4 @@
-"""attention_dismissal: Needs attention items the user dismissed (docs/plan/frontend.md, Home)
+"""attention_dismissal: Needs attention items the user dismissed
 
 Revision ID: 0033
 Revises: 0032

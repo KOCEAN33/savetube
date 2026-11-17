@@ -1,5 +1,5 @@
 """Integrity checks of a finished archive download or recording, before it
-moves into the tree (docs/plan/archive.md, Resuming and verifying downloads)."""
+moves into the tree."""
 
 import json
 import logging

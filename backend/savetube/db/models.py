@@ -394,7 +394,7 @@ class Job(Base):
 
 class FormatWatch(Base):
     """The format watch of a stored live, or the formats a user's probe found
-    for any complete video (docs/plan/live.md, Format watch)."""
+    for any complete video."""
 
     __tablename__ = "format_watch"
 
@@ -427,8 +427,7 @@ class FormatWatch(Base):
 
 
 class LiveSeen(Base):
-    """A video id live detection probed, so no check probes it again
-    (docs/plan/live.md, Live detection)."""
+    """A video id live detection probed, so no check probes it again."""
 
     __tablename__ = "live_seen"
 
@@ -466,7 +465,7 @@ class EncodeState(enum.StrEnum):
 
 
 class EncodeSettings(Base):
-    """The one row of external re-encoding (docs/plan/encode.md)."""
+    """The one row of external re-encoding."""
 
     __tablename__ = "encode_settings"
     __table_args__ = (CheckConstraint("id = 1", name="single_row"),)
@@ -496,7 +495,7 @@ class EncodeSettings(Base):
 
 
 class EncodeJob(Base):
-    """One job file under `.encode/` (docs/plan/encode.md, Job files). The
+    """One job file under `.encode/`. The
     scheduler moves `state` along as it finds the file in each folder."""
 
     __tablename__ = "encode_job"
@@ -535,7 +534,7 @@ class EncodeJob(Base):
 
 
 class AttentionDismissal(Base):
-    """A Needs attention item the user dismissed (docs/plan/frontend.md, Home)."""
+    """A Needs attention item the user dismissed."""
 
     __tablename__ = "attention_dismissal"
 
@@ -548,8 +547,7 @@ class AttentionDismissal(Base):
 
 
 class Notification(Base):
-    """An item the scheduler posted to Discord, so it posts once
-    (docs/plan/operations.md, Notifications and monitoring)."""
+    """An item the scheduler posted to Discord, so it posts once."""
 
     __tablename__ = "notification"
 

@@ -183,8 +183,8 @@ async def video(session: Session, video_id: str) -> VideoDetail:
 
 @router.delete("/videos/{video_id}", status_code=204)
 async def delete_video(request: Request, video_id: str) -> None:
-    """Ask the scheduler to delete the video's files. The web pod mounts the
-    archive read-only. The row stays as `deleted`."""
+    """Ask the scheduler to delete the video's files, through `call_scheduler`. The row stays as
+    `deleted`."""
     await call_scheduler(
         request,
         f"/videos/{quote(video_id, safe='')}",

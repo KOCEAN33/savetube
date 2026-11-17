@@ -1,6 +1,6 @@
-"""The add-channel scan (docs/plan/frontend.md, Adding a channel), run by the
+"""The add-channel scan, run by the
 scheduler because it lists with the cookie profiles, which the web pod never
-mounts (docs/plan/access.md, Cookies and account)."""
+mounts."""
 
 import asyncio
 import logging
