@@ -6,7 +6,7 @@ The frontend API types come from the backend schema, so `frontend/src/lib/api/ty
 
 ## Start
 
-Generate the types from the FastAPI OpenAPI schema and replace the hand-written ones, because the user decided this fix. Done when `types.ts` is generated or imports generated types, a check fails when the generated file differs from the schema, and `pnpm run typecheck` and `scripts/test-db.sh make e2e-smoke` pass.
+Generate the types from the FastAPI OpenAPI schema and replace the hand-written ones, because the user decided this fix. Done when `types.ts` is generated or imports generated types, a check fails when the generated file differs from the schema, `.comment-lint-baseline.json` is deleted and `make lint-comments` passes without it, and `pnpm run typecheck` and `scripts/test-db.sh make e2e-smoke` pass. The baseline's 50 entries are field sentences `types.ts` shares with the backend schema, so generating the types removes them.
 
 Orders from the user that still bind:
 
