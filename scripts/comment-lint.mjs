@@ -108,7 +108,7 @@ function extract(astGrep, paths) {
   const [bin, ...pre] = astGrep.split(' ');
   const comments = [];
   for (const lang of LANGUAGES) {
-    const run = spawnSync(bin, [...pre, 'run', '--kind', 'comment', '--lang', lang, '--json=stream', ...paths], {
+    const run = spawnSync(bin, [...pre, 'run', '--kind', 'comment', '--lang', lang, '--no-ignore', 'hidden', '--globs', '!.git', '--json=stream', ...paths], {
       encoding: 'utf8',
       maxBuffer: 1 << 28,
     });
