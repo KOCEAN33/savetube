@@ -366,8 +366,7 @@ def run(browser, name, check) -> bool:
     detail = ""
     try:
         detail = check(page)
-    # Any exception fails this check only, so the other checks still run.
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 -- one failing check must not stop the others
         problems.append(f"assertion: {type(e).__name__}: {e}")
         traceback.print_exc(file=sys.stderr)
     finally:

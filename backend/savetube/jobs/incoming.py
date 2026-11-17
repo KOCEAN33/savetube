@@ -12,8 +12,7 @@ from savetube.db.models import Job, JobKind, JobState, Video
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.storage import dir_size
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # A partial directory no queued or running job wants is deleted after this.
 ORPHAN_DAYS = 7

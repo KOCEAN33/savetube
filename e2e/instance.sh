@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # One savetube instance for local checks: a fresh seeded database and the app
-# served with login skipped (e2e/app.py), kept running until "down".
-# Usage: e2e/instance.sh up|doctor|down <dir>
+# served with login skipped (`app.py` beside this script), kept running until "down".
+# Usage: instance.sh up|doctor|down <dir>
 #   up      build the frontend, seed a database, serve on a free port. Returns
 #           once the API answers from the database.
 #   doctor  read-only check that the instance in <dir> is the one "up" started
 #           and still serves the checkout it was built from.
 #   down    stop the server, drop the database, remove <dir>/work.
 # up and down need SAVETUBE_TEST_DATABASE_URL, an admin URL whose role has
-# CREATEDB (scripts/test-db.sh sets it). <dir>/instance.env holds db, port,
+# CREATEDB (`test-db.sh` sets it). <dir>/instance.env holds db, port,
 # base, pid and build. Nothing else in <dir> is touched.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,7 +34,7 @@ need_db_url() {
 
 load() {
   db="" port="" base="" pid="" build=""
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090 # the state file's path is known only at run time
   [ -f "$state" ] && . "$state"
   return 0
 }

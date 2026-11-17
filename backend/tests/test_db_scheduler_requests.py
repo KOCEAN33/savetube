@@ -191,16 +191,9 @@ class _Scheduler:
     """The scheduler's API behind the web's outbound httpx2 calls."""
 
     def __init__(self, settings):
-        from sqlalchemy.ext.asyncio import create_async_engine
-        from sqlalchemy.pool import NullPool
+        from conftest import nullpool_engine
 
-        from savetube.db import PSYCOPG_CONNECT_ARGS
-
-        # NullPool: the web app's loop runs these calls, so no connection
-        # outlives it.
-        engine = create_async_engine(
-            settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
-        )
+        engine = nullpool_engine(settings)
         self.requests = Requests()
         self.app = create_app(
             settings,

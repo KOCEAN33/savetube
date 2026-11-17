@@ -33,7 +33,7 @@ FIELDS = (
 )
 
 
-def _has(codec: str | None) -> bool:
+def has_stream(codec: str | None) -> bool:
     # "none" is a format without that stream. None is unknown.
     return codec not in (None, "none")
 
@@ -41,7 +41,7 @@ def _has(codec: str | None) -> bool:
 def kind(f: dict[str, Any]) -> Kind | None:
     """`audio` for an audio-only format, `video` for a video-only one, None
     for a muxed or unknown format."""
-    audio, video = _has(f.get("acodec")), _has(f.get("vcodec"))
+    audio, video = has_stream(f.get("acodec")), has_stream(f.get("vcodec"))
     if audio and f.get("vcodec") == "none":
         return "audio"
     if video and f.get("acodec") == "none":
@@ -83,9 +83,9 @@ def stored_streams(info: dict[str, Any]) -> dict[Kind, dict[str, Any]]:
     """The stored file's video and audio format, from its info dict."""
     out: dict[Kind, dict[str, Any]] = {}
     for f in info.get("requested_formats") or [info]:
-        if _has(f.get("vcodec")):
+        if has_stream(f.get("vcodec")):
             out.setdefault("video", f)
-        if _has(f.get("acodec")):
+        if has_stream(f.get("acodec")):
             out.setdefault("audio", f)
     return out
 

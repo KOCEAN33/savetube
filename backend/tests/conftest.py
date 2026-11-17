@@ -38,6 +38,19 @@ TEST_DB_RE = re.compile(r"savetube_test_(\d+)_[0-9a-f]+")
 STALE_AFTER_S = 24 * 3600
 
 
+def nullpool_engine(settings):
+    """An engine for an app a `TestClient` runs. The app's event loop runs these
+    calls, so NullPool keeps any connection from outliving that loop."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from savetube.db import PSYCOPG_CONNECT_ARGS
+
+    return create_async_engine(
+        settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
+    )
+
+
 def _db_name():
     return f"savetube_test_{int(time.time())}_{secrets.token_hex(6)}"
 

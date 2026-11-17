@@ -28,8 +28,7 @@ from savetube.logs import emit, human_duration
 from savetube.tz import TIMEZONE
 from savetube.ytdl import bare_unavailable
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # The `log_tail` prefix of a run a network error interrupted that added no bytes
 # before it. NETWORK_LOG is the prefix of any network interruption.

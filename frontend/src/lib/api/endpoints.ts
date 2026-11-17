@@ -135,7 +135,7 @@ export const api = {
     channel_name?: string
     // The uploader, or a channel whose sources list the video.
     listed_by?: string
-    // Videos the source lists. A `playlists` parent lists through its children.
+    // Videos the source lists.
     source_id?: number
     type?: string
     state?: string

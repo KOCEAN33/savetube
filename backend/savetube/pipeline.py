@@ -60,7 +60,10 @@ async def from_shorts_tab(session: AsyncSession, video_id: str) -> bool:
 
 
 async def get_or_create_channel(session: AsyncSession, info: dict[str, Any]) -> Channel:
-    """`info` is a video's info dict, or a flat listing with the same channel keys."""
+    """`info` is a video's info dict, or a flat listing with the same channel keys.
+
+    A new channel is only added. No relationship() orders inserts, so the caller
+    flushes before it adds a row that references the channel."""
     channel_id = info["channel_id"]
     channel = await session.get(Channel, channel_id)
     if channel is None:

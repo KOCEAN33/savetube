@@ -292,7 +292,7 @@ def test_oidc_values_reach_web():
     assert env["SAVETUBE_PUBLIC_URL"] == "https://savetube.lab.hiriri.com"
 
 
-# Expected shape from homelab-platform docs/deploying-to-kubernetes.md: every
+# Expected shape from homelab-platform's Kubernetes deploy guide: every
 # Gateway API default written out, or Argo CD reads OutOfSync forever.
 def test_httproute_writes_gateway_defaults_out():
     values = {

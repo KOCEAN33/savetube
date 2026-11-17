@@ -77,8 +77,7 @@ from savetube.ytdl import (
     youtube_block,
 )
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # Network interruptions in a row that added no bytes. A run that adds bytes
 # resets the count, so a download that moves on is retried until it ends.

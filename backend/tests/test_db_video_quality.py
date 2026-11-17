@@ -242,7 +242,7 @@ def test_a_measured_stream_shows_its_measured_bitrate_and_origin(settings):
             "acodec": "none", "vbr": 2213.664, "tbr": 2213.664, "protocol": "encode"},
             duration=17858)  # fmt: skip
     _stored(settings, "vod", {**RECORDED, "protocol": "https"}, duration=None)
-    # YouTube serves the Premium 616 over HLS only.
+    # A Premium 616 over HLS, which `formats.DOWNLOADED` counts as a download.
     _stored(settings, "hls", {**RECORDED, "format_id": "616", "protocol": "m3u8_native"},
             duration=None)  # fmt: skip
 

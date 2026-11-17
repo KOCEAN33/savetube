@@ -432,7 +432,7 @@ function EncodeJobsTable({
   )
 }
 
-// Re-encoding on the external encoder (docs/plan/encode.md): the settings, the
+// Re-encoding on the external encoder: the settings, the
 // savings, the jobs that wait on the encoder or on a user, then the finished ones.
 export function EncodePage() {
   const queryClient = useQueryClient()

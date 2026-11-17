@@ -32,7 +32,7 @@ class EncodeSettingsIn(BaseModel):
     enabled: bool
     tune: Literal["hq", "uhq"]
     cq: int = Field(ge=1, le=63)
-    # None keeps the source's frame rate.
+    # None as on `EncodeSettings.fps_cap`.
     fps_cap: Positive | None
     still_fps_cap: Positive | None
     # None applies fps_cap without measuring the motion.

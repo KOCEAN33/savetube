@@ -11,8 +11,7 @@ from savetube.joblog import STALLED_LOG
 from savetube.jobs.rows import _describe, _interrupt
 from savetube.logs import emit
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # Queue jobs left running by a dead worker, as (queue job id, `job` id).
 Stalled = Callable[[], Awaitable[list[tuple[int, int]]]]

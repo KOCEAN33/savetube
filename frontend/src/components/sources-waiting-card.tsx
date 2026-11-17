@@ -8,7 +8,7 @@ import { api, mutations, type Source } from "@/lib/api"
 import { IDLE_REFETCH_MS } from "@/lib/constants"
 import { queryKeys } from "@/lib/query-keys"
 
-// Matches the API's job reason length (backend/savetube/web/api.py _REASON_CHARS).
+// The same cap as `_REASON_CHARS` in the backend's `savetube.web.api.jobs`.
 const ERROR_CHARS = 120
 
 function shortError(error: string): string {

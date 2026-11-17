@@ -57,8 +57,7 @@ class FormatRow(BaseModel):
     # On a `stored` row: the stream is no YouTube `https` format, such as a
     # live recording's DASH stream. A VOD with that id is another encode.
     recorded: bool
-    # On a `stored` row: the stream is savetube's re-encode
-    # (docs/plan/encode.md), not a recording.
+    # On a `stored` row: the stream is savetube's re-encode, not a recording.
     encoded: bool
     # On a `formats` row: the stored stream is this YouTube format, so it has
     # no `stored` row. Picking it keeps the stored stream.
@@ -140,7 +139,7 @@ def _row(
     if estimated:
         size = round(bitrate * 1000 / 8 * duration)
     elif stored and f.get("filesize") and duration:
-        # A live's DASH manifest states less than the recording holds.
+        # Measured as `Video.video_kbps` is, for the reason given there.
         bitrate = round(f["filesize"] * 8 / 1000 / duration, 3)
     return FormatRow(
         format_id=str(f.get("format_id")),

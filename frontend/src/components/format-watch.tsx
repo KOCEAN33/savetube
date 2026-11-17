@@ -189,8 +189,8 @@ export function FormatWatchCard({ videoId }: { videoId: string }) {
     )
   }
 
-  // A queued automatic replace gives way to a pick. A running replace or a
-  // queued pick does not.
+  // The backend's `pick_format` route cancels a queued automatic replace and
+  // refuses a pick while a replace runs or another pick is queued.
   const supersedable = w.replace?.state === "queued" && !w.replace.manual
   const blocked =
     w.replace?.state === "running" || (w.replace?.state === "queued" && w.replace.manual)

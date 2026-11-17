@@ -36,7 +36,7 @@ Listing = dict[str, Any] | None
 # scheduler passes in. A listing holds a yt-dlp extraction and YouTube requests
 # for its whole run.
 LISTINGS = 2
-# The web waits 120 s for the scan (web.api.scan.CHANNEL_SCAN_TIMEOUT). The
+# The web waits `web.api.scan.CHANNEL_SCAN_TIMEOUT` for the scan. The
 # listings get LIST_SECONDS, and the membership checks the time left up to
 # SCAN_SECONDS, so the answer reaches the web before it gives up.
 LIST_SECONDS = 80

@@ -25,8 +25,7 @@ from savetube.limits import (
 )
 from savetube.logs import emit
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # Puts the `job` row on the queue and returns the queue's job id.
 Enqueue = Callable[[int], Awaitable[int]]

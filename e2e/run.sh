@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Frontend smoke: start a seeded instance (e2e/instance.sh), run e2e/smoke.py in
+# Frontend smoke: start a seeded instance (`instance.sh`), run `smoke.py` in
 # Chrome, then stop the instance. Exits non-zero on any failure.
 # Needs SAVETUBE_TEST_DATABASE_URL, an admin URL whose role has CREATEDB.
-# Usage: e2e/run.sh   (or: make e2e-smoke)
+# Usage: run.sh   (or: make e2e-smoke)
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -17,7 +17,7 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 "$root/e2e/instance.sh" up "$dir"
-# shellcheck disable=SC1091
+# shellcheck disable=SC1091 # instance.env exists only after "up" wrote it
 . "$dir/instance.env"
 
 echo "== smoke"

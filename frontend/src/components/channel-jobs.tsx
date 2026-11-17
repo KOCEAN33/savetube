@@ -6,7 +6,7 @@ import { Pagination } from "@/components/pagination"
 import { QueryState } from "@/components/query-state"
 import { usePageParam } from "@/hooks/use-page-param"
 import { api } from "@/lib/api"
-import { DOWNLOAD_KINDS, JOB_PAGE } from "@/lib/constants"
+import { DOWNLOAD_KINDS, FINISHED_JOB_STATES, JOB_PAGE } from "@/lib/constants"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
@@ -41,8 +41,7 @@ export function ChannelJobs({ channelId }: { channelId: string }) {
       api.jobPage({
         kind: DOWNLOAD_KINDS,
         channel_id: channelId,
-        // An interrupted run is a row of its own. Its job waits in the queue again.
-        state: ["succeeded", "failed", "cancelled", "interrupted"],
+        state: FINISHED_JOB_STATES,
         limit: JOB_PAGE,
         offset: (recentPage - 1) * JOB_PAGE,
       }),

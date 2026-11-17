@@ -56,7 +56,7 @@ class JobOut(_Out):
     kind: JobKind
     state: JobState
     video_id: str | None
-    # The format ids a replace job downloads, `+`-joined. Null for other kinds.
+    # As on `Job.format_id`.
     format_id: str | None
     # The video's title and its uploader channel, null for a job without a video.
     title: str | None

@@ -1138,17 +1138,11 @@ class _Scheduler:
     """The scheduler's API behind the web's outbound httpx2 calls."""
 
     def __init__(self, settings, probe):
-        from sqlalchemy.ext.asyncio import create_async_engine
-        from sqlalchemy.pool import NullPool
+        from conftest import nullpool_engine
 
-        from savetube.db import PSYCOPG_CONNECT_ARGS
         from savetube.scheduler_api import Requests, create_app
 
-        # NullPool: the web app's loop runs these calls, so no connection
-        # outlives it.
-        engine = create_async_engine(
-            settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
-        )
+        engine = nullpool_engine(settings)
         self.app = create_app(
             settings,
             make_sessionmaker(engine),
@@ -1222,7 +1216,7 @@ def test_api_probe_answers_504_when_the_scheduler_times_out(settings, monkeypatc
 async def test_a_manual_replace_dispatches_before_waiting_archives(settings, manual, first):
     from conftest import _dispatch, _waiting_rows
 
-    # One archive runs, so max_concurrent 2 leaves one slot.
+    # Two slots, one taken by the archive `_waiting_rows` runs.
     _waiting_rows(
         settings,
         "UPDATE download_settings SET max_concurrent = 2",
@@ -1562,7 +1556,7 @@ def _vp9_download(source):
     ("format_id", "encode_state"),
     [
         # The stored video stream is no longer the encode's result, so the
-        # video may be encoded again (docs/plan/encode.md, Which videos).
+        # video may be encoded again.
         pytest.param("248", "superseded", id="video"),
         pytest.param("251", "succeeded", id="audio"),
     ],

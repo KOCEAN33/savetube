@@ -37,7 +37,8 @@ _OLD_KBPS = f"COALESCE(NULLIF({_number(_V, 'vbr')}, 0), {_number(_V, 'tbr')})::d
 
 
 def upgrade() -> None:
-    # A recording's info dict has no duration. The format watch measured it.
+    # Backfills the duration `savetube.watch` now stores for a recording from
+    # what the format watch measured.
     op.execute(
         "UPDATE video SET duration = round(w.stored_duration) FROM format_watch w"
         " WHERE w.video_id = video.id AND video.duration IS NULL"

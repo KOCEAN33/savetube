@@ -26,8 +26,8 @@ const UNPLAYABLE: Record<string, string> = {
   deleted: "The files were deleted from the archive.",
 }
 
-// A staged video sits on staging until the scheduler moves it into the tree
-// (docs/plan/storage.md, Staging). Move now moves every staged video.
+// A staged video sits on staging until the scheduler moves it into the tree.
+// Move now moves every staged video.
 function StagedNote() {
   const queryClient = useQueryClient()
   const move = useMutation({

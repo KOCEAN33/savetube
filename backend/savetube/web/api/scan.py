@@ -42,16 +42,16 @@ class ChannelUrl(BaseModel):
     url: str
 
 
-# A listing holds a yt-dlp extraction and YouTube requests for its whole run.
+# The web's own listings, capped for the reason `savetube.scan.LISTINGS` gives.
 _listings = asyncio.Semaphore(2)
 CHANNEL_PLAYLISTS_TIMEOUT = 120
-# The scheduler answers within 110 s (savetube.scan.SCAN_SECONDS).
+# The scheduler answers within `savetube.scan.SCAN_SECONDS`.
 CHANNEL_SCAN_TIMEOUT = 120
 
 
 async def _list(scanner: Scanner, url: str, limit: int | None) -> dict[str, Any]:
     async with _listings:
-        # On a timeout the thread runs on, and its result is dropped.
+        # A timeout leaves the thread running, as `savetube.scan._list` notes.
         return await asyncio.to_thread(scanner, url, limit)
 
 
