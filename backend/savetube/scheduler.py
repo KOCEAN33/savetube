@@ -28,7 +28,7 @@ from savetube.logs import emit, human_bytes
 from savetube.notify import notify
 from savetube.poll import due_sources, poll_source
 from savetube.queue import ARCHIVE_QUEUE, app, enqueue
-from savetube.recorders import start_recorders
+from savetube.recorders import settle_recorders, start_recorders
 from savetube.staging import move_staged
 from savetube.storage import disk_usage
 from savetube.tz import TIMEZONE
@@ -303,12 +303,17 @@ async def detect_lives(settings: Settings) -> None:
 
 
 async def recorders(settings: Settings) -> None:
+    sessionmaker = default_sessionmaker()
+    now = datetime.now(UTC)
+    existing = await k8s.list_recorder_jobs(settings.namespace)
     await start_recorders(
-        default_sessionmaker(),
-        datetime.now(UTC),
-        recorders=lambda: k8s.list_recorder_jobs(settings.namespace),
+        sessionmaker,
+        settings,
+        now,
+        existing,
         create=partial(k8s.create_recorder_job, settings.namespace, settings.recorder_cronjob),
     )
+    await settle_recorders(sessionmaker, settings, now, existing)
 
 
 async def format_watch(settings: Settings, probes: asyncio.Lock) -> None:

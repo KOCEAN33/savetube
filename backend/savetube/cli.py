@@ -8,6 +8,7 @@ from savetube import health, logs
 from savetube.config import get_settings
 from savetube.db import make_engine, make_sessionmaker
 from savetube.integrity import Tools
+from savetube.recorder_args import Recording
 
 log = logging.getLogger("savetube.cli")
 
@@ -80,15 +81,31 @@ def _worker(args: argparse.Namespace) -> None:
 
 def _record(args: argparse.Namespace) -> None:
     # Lazy: jobs loads yt-dlp, which migrate does not need.
-    from savetube import jobs
+    from savetube.jobs import in_process
+    from savetube.jobs.recording import progress_writer, record
 
-    # A recorder is already one process in its own pod, so no child process.
+    settings = get_settings()
+    rec = Recording.from_args(args)
+
+    async def main() -> None:
+        engine = make_engine(settings.sqlalchemy_url)
+        try:
+            # A recorder is already one process in its own pod, so no child process.
+            await record(
+                rec,
+                settings,
+                runner=in_process,
+                report=progress_writer(make_sessionmaker(engine), rec.job_id),
+                tools=Tools(),
+            )
+        finally:
+            await engine.dispose()
+
     try:
-        asyncio.run(jobs.run(args.job_id, get_settings(), live=True, runner=jobs.in_process))
-    except Exception as e:
-        if not jobs.recorded(e):
-            logs.emit(log, logging.ERROR, "record.failed", job=args.job_id, exc_info=True)
-        # A failed exit, so the Kubernetes Job retries through its backoffLimit.
+        asyncio.run(main())
+    except Exception:
+        # `record` logged it. A failed exit, so the Kubernetes Job retries
+        # through its backoffLimit.
         raise SystemExit(1) from None
 
 
@@ -160,7 +177,7 @@ def main() -> None:
     p.set_defaults(func=_worker)
 
     p = sub.add_parser("record", help="record one live from its first segment")
-    p.add_argument("--job-id", type=int, required=True)
+    Recording.add_arguments(p)
     p.set_defaults(func=_record)
 
     sub.add_parser("migrate", help="install or upgrade the database schema").set_defaults(

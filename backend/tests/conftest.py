@@ -469,14 +469,14 @@ class _Runner:
         raise DownloadFailed("stopped by the test")
 
 
-async def _run(settings, *, live=False):
+async def _run(settings):
     from savetube.jobs import run
 
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
     runner = _Runner()
     try:
-        await run(1, settings, live=live, runner=runner, sessionmaker=sessionmaker)
+        await run(1, settings, runner=runner, sessionmaker=sessionmaker)
     except Exception as e:
         if type(e).__name__ != "DownloadFailed":
             raise
@@ -622,7 +622,6 @@ async def _run_steps(settings, runner, tools=None):
         await run(
             1,
             settings,
-            live=False,
             runner=runner,
             sessionmaker=sessionmaker,
             tools=tools or _FakeTools(),
@@ -657,3 +656,38 @@ def _block_state(settings):
         ).one()
     engine.dispose()
     return row.block_count, row.blocked_until
+
+
+async def _record_live(settings, runner, *, tools=None, report=None):
+    """Play record job 1 as the cluster runs it: the scheduler creates its
+    recorder Job, the recorder records while every database write it tries
+    fails, and the scheduler applies the outcome. Returns the Recording the
+    Job got and the Job's status."""
+    from savetube.integrity import Tools
+    from savetube.jobs.recording import record
+    from savetube.recorders import settle_recorders, start_recorders
+
+    created = []
+
+    async def create(rec):
+        created.append(rec)
+        return f"savetube-recorder-{rec.job_id}"
+
+    async def database_down(message):
+        raise ConnectionError("the database is down")
+
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    now = datetime.now(UTC)
+    await start_recorders(sessionmaker, settings, now, {}, create=create)
+    [rec] = created
+    status = "succeeded"
+    try:
+        await record(
+            rec, settings, runner=runner, report=report or database_down, tools=tools or Tools()
+        )
+    except Exception:
+        status = "failed"
+    await settle_recorders(sessionmaker, settings, now, {rec.job_id: status})
+    await engine.dispose()
+    return rec, status

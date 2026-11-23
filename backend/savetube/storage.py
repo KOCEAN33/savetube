@@ -12,9 +12,13 @@ def finalize(incoming: Path, final: Path) -> None:
     """Move a finished download into the tree.
 
     `incoming` sits on the same dataset as the tree, so this is one rename and
-    a half-written file never appears there.
+    a half-written file never appears there. With `incoming` gone and
+    `final` present, an earlier call moved it and its caller's commit failed,
+    so this moves nothing.
     """
     final.parent.mkdir(parents=True, exist_ok=True)
+    if not incoming.exists() and final.exists():
+        return
     if final.exists():
         raise FileExistsError(final)
     shutil.rmtree(incoming / ".tmp", ignore_errors=True)

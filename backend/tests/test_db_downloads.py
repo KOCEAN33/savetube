@@ -59,7 +59,6 @@ async def test_a_download_stores_its_progress_on_the_job_row_for_the_api(setting
         await run(
             1,
             settings,
-            live=False,
             runner=_ProgressRunner(),
             sessionmaker=make_sessionmaker(engine),
         )
@@ -150,7 +149,7 @@ async def test_a_worker_shutdown_interrupts_the_download_and_keeps_its_parts(set
     sessionmaker = make_sessionmaker(engine)
     with caplog.at_level(logging.INFO, logger="savetube"):
         task = asyncio.create_task(
-            run(1, settings, live=False, runner=_Steps(downloading), sessionmaker=sessionmaker)
+            run(1, settings, runner=_Steps(downloading), sessionmaker=sessionmaker)
         )
         await asyncio.wait_for(started.wait(), 10)
         # procrastinate cancels the task when the worker shuts down.
@@ -192,7 +191,7 @@ async def test_an_interruption_clears_progress_to_sql_null(settings, reported):
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
     task = asyncio.create_task(
-        run(1, settings, live=False, runner=_Steps(downloading), sessionmaker=sessionmaker)
+        run(1, settings, runner=_Steps(downloading), sessionmaker=sessionmaker)
     )
     await asyncio.wait_for(started.wait(), 10)
     task.cancel()

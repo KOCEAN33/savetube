@@ -2,7 +2,6 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-import sqlalchemy as sa
 from conftest import (
     ADMIN_URL,
     _api,
@@ -25,7 +24,6 @@ from conftest import (
 
 from savetube.db import make_engine, make_sessionmaker
 from savetube.db.models import (
-    Job,
     JobState,
     VideoState,
 )
@@ -188,29 +186,6 @@ async def test_a_success_after_the_pause_ends_the_probe(settings, caplog):
     assert _block_state(settings) == (0, None)
     [line] = _events(caplog, "dispatch.unblocked")
     assert line.levelno == logging.INFO and _fields(line)["count"] == 2
-
-
-@pytest.mark.anyio
-async def test_a_blocked_recording_still_fails(settings, caplog):
-    import logging
-
-    from savetube.jobs import DownloadFailed, run
-
-    _job_rows(settings, "UPDATE job SET kind = 'record'")
-
-    async def blocked(params, report):
-        raise DownloadFailed(BOT_CHECK)
-
-    engine = make_engine(settings.sqlalchemy_url)
-    sessionmaker = make_sessionmaker(engine)
-    with caplog.at_level(logging.INFO, logger="savetube"), pytest.raises(DownloadFailed):
-        await run(1, settings, live=True, runner=_Steps(blocked), sessionmaker=sessionmaker)
-    async with sessionmaker() as session:
-        job = await session.get(Job, 1)
-    await engine.dispose()
-    assert job.state is JobState.FAILED and job.log_tail == BOT_CHECK
-    assert _block_state(settings) == (0, None)
-    assert len(_events(caplog, "job.failed")) == 1
 
 
 UNAVAILABLE = "DownloadError: ERROR: [youtube] v1: Video unavailable"
@@ -378,33 +353,6 @@ async def test_a_pause_interrupts_a_running_archive_download_and_keeps_its_parts
     assert _events(caplog, "job.failed") == []
     [line] = _events(caplog, "job.interrupted")
     assert line.levelno == logging.INFO and _fields(line)["reason"] == "paused by user"
-
-
-@pytest.mark.anyio
-async def test_a_pause_never_cancels_a_live_recording(settings, monkeypatch):
-    from savetube.jobs import DownloadFailed, guards, run
-
-    monkeypatch.setattr(guards, "PAUSE_POLL_SECONDS", 0.01)
-    _job_rows(
-        settings,
-        "UPDATE job SET kind = 'record'",
-        "UPDATE download_settings SET paused = true",
-    )
-
-    async def recording(params, report):
-        # Many poll intervals pass while the recording runs.
-        await asyncio.sleep(0.3)
-        raise DownloadFailed("the live ended badly")
-
-    engine = make_engine(settings.sqlalchemy_url)
-    sessionmaker = make_sessionmaker(engine)
-    with pytest.raises(DownloadFailed):
-        await run(1, settings, live=True, runner=_Steps(recording), sessionmaker=sessionmaker)
-    async with sessionmaker() as session:
-        jobs = {j.id: j for j in await session.scalars(sa.select(Job))}
-    await engine.dispose()
-    assert list(jobs) == [1]
-    assert jobs[1].state is JobState.FAILED and jobs[1].log_tail == "the live ended badly"
 
 
 def test_api_pauses_and_resumes_archive_downloads(settings, caplog):

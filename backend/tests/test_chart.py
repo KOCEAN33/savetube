@@ -81,13 +81,13 @@ def test_every_role_runs_the_one_image_and_yt_dlp_pods_carry_the_sidecar():
 # Anchor 2: the rendered template goes through the scheduler's own code.
 def test_rendered_cronjob_makes_a_recorder_job():
     cj = CronJob.from_dict(one(render(), "CronJob", "savetube-recorder"))
-    job = recorder_job(cj, 42, "dQw4w9WgXcQ").to_dict()
+    job = recorder_job(cj, 42, "dQw4w9WgXcQ", ["--job-id=42"]).to_dict()
 
     assert job["metadata"]["name"] == "savetube-recorder-42"
     spec = job["spec"]["template"]["spec"]
     (recorder,) = [c for c in spec["containers"] if c["name"] == RECORDER_CONTAINER]
     assert recorder["image"] == IMAGE
-    assert recorder["args"] == ["record", "--job-id", "42"]
+    assert recorder["args"] == ["record", "--job-id=42"]
     assert "pot-provider" in [c["name"] for c in spec["initContainers"]]
 
     volumes = {v["name"]: v for v in spec["volumes"]}

@@ -654,7 +654,7 @@ async def test_a_members_only_download_takes_a_member_profile_and_no_other(setti
         caplog.clear()
         with caplog.at_level(logging.INFO, logger="savetube"):
             try:
-                await run(job_id, settings, live=False, runner=runner, sessionmaker=sessionmaker)
+                await run(job_id, settings, runner=runner, sessionmaker=sessionmaker)
             except Exception as e:
                 if type(e).__name__ != "DownloadFailed":
                     raise
@@ -675,7 +675,7 @@ async def test_a_members_only_download_takes_a_member_profile_and_no_other(setti
     runner = _CookieRunner()
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="savetube"):
-        await run(2, settings, live=False, runner=runner, sessionmaker=sessionmaker)
+        await run(2, settings, runner=runner, sessionmaker=sessionmaker)
     assert not hasattr(runner, "cookies")
     [returned] = [r for r in caplog.records if r.getMessage() == "job.returned"]
     assert _fields(returned)["reason"] == "no_member"
