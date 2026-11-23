@@ -421,6 +421,23 @@ class _BeforeDownload(PostProcessor):
         return [], info
 
 
+class _WaitLogger(YtdlpLogger):
+    """Ends yt-dlp's wait for a stream on YouTube's members-only text. While
+    `wait_for_video` is set, yt-dlp only warns that text and extracts again
+    forever. Without the option, it raises "No video formats found", so
+    `download` raises the kept text instead."""
+
+    def __init__(self) -> None:
+        self.ydl: yt_dlp.YoutubeDL | None = None
+        self.members_only: str | None = None
+
+    def warning(self, msg: str) -> None:
+        super().warning(msg)
+        if self.ydl is not None and members_only(msg):
+            self.members_only = msg
+            self.ydl.params.pop("wait_for_video", None)
+
+
 def download(
     url: str,
     params: dict[str, Any],
@@ -433,7 +450,8 @@ def download(
     With WAIT_UNTIL in `params`, a stream with no format chosen by then
     raises NotStarted. With REFUSE_DEGRADED, a `degraded` pick raises
     DegradedFormats before any byte."""
-    params = {**params, "logger": YtdlpLogger()}
+    logger = _WaitLogger()
+    params = {**params, "logger": logger}
     wait_until = params.pop(WAIT_UNTIL, None)
     refuse_degraded = params.pop(REFUSE_DEGRADED, False)
     chosen = threading.Event()
@@ -447,6 +465,7 @@ def download(
             on_format(info)
 
     with yt_dlp.YoutubeDL(params) as ydl:
+        logger.ydl = ydl
         ydl.add_post_processor(_BeforeDownload(before_download), when="before_dl")
 
         def give_up() -> None:
@@ -466,6 +485,8 @@ def download(
         except yt_dlp.utils.DownloadError as e:
             if gave_up.is_set() and not chosen.is_set():
                 raise NotStarted(str(e)) from e
+            if logger.members_only is not None and not chosen.is_set():
+                raise yt_dlp.utils.DownloadError(logger.members_only) from e
             raise
         finally:
             if timer is not None:

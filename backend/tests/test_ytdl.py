@@ -1,7 +1,14 @@
 import pytest
 
 from savetube.storage import finalize
-from savetube.ytdl import WAIT_FOR_VIDEO, NotStarted, build_params, copy_cookies, download
+from savetube.ytdl import (
+    WAIT_FOR_VIDEO,
+    NotStarted,
+    build_params,
+    copy_cookies,
+    download,
+    members_only,
+)
 
 
 def test_archive_params_never_record_from_start(tmp_path):
@@ -136,6 +143,64 @@ def test_a_recording_gives_up_on_a_stream_still_upcoming_at_its_deadline(tmp_pat
     assert error is NotStarted
     # It waited for the stream until the deadline, extracting again each second.
     assert took >= 3 and len(extractions) >= 3
+
+
+def test_a_recording_stops_waiting_on_a_members_video_the_account_may_not_watch(
+    tmp_path, monkeypatch
+):
+    """With wait_for_video set, yt-dlp only warns on a members-only block and
+    extracts again until the deadline."""
+    import threading
+    import time
+
+    import yt_dlp
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import DownloadError
+
+    class _MembersIE(InfoExtractor):
+        _VALID_URL = r"members:(?P<id>\w+)"
+
+        def _real_extract(self, url):
+            # As the YouTube extractor reports a membership tier the account lacks.
+            self.raise_no_formats(
+                "This video is available to this channel's members on level: X "
+                "(or any higher level). Join this channel to get access to "
+                "members-only content and other exclusive perks.",
+                expected=True,
+            )
+            return {
+                "id": "v1",
+                "title": "t",
+                "live_status": "is_upcoming",
+                "release_timestamp": int(time.time()) - 3600,
+                "formats": [],
+            }
+
+    class _YoutubeDL(yt_dlp.YoutubeDL):
+        def __init__(self, params):
+            super().__init__(params, auto_init=False)
+            self.add_info_extractor(_MembersIE())
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _YoutubeDL)
+    params = build_params(tmp_path, live=True, wait_until=time.time() + 60)
+    params["wait_for_video"] = (1, 1)
+    outcome = []
+
+    def run():
+        started = time.monotonic()
+        try:
+            download("members:v1", params)
+        except Exception as e:
+            outcome.append((e, time.monotonic() - started))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=15)
+    assert not thread.is_alive(), "the recording still waits on a video it may not watch"
+    [(error, took)] = outcome
+    assert type(error) is DownloadError
+    assert members_only(str(error))
+    assert took < 10
 
 
 def test_cookie_copy_is_writable_and_passed(tmp_path):
