@@ -1,12 +1,12 @@
-"""User actions the web asks the scheduler to do now, over its internal API
-(docs/plan/runtime.md, Scheduler API): Poll now, archiving on, Move now."""
+"""User actions the web asks the scheduler to do now, over its internal API: Poll now,
+archiving on, Move now."""
 
 import asyncio
 import logging
 
 import httpx2
 import pytest
-from conftest import ADMIN_URL, _api, _events, _fields, _sql
+from conftest import ADMIN_URL, SchedulerFake, _api, _events, _fields, _sql
 
 from savetube.db import make_engine, make_sessionmaker
 from savetube.integrity import Tools
@@ -187,48 +187,13 @@ async def test_a_poll_requested_during_a_round_goes_ahead_of_the_due_sources_lef
 # The web's routes ------------------------------------------------------------
 
 
-class _Scheduler:
-    """The scheduler's API behind the web's outbound httpx2 calls."""
-
-    def __init__(self, settings):
-        from sqlalchemy.ext.asyncio import create_async_engine
-        from sqlalchemy.pool import NullPool
-
-        from savetube.db import PSYCOPG_CONNECT_ARGS
-
-        # NullPool: the web app's loop runs these calls, so no connection
-        # outlives it.
-        engine = create_async_engine(
-            settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
-        )
-        self.requests = Requests()
-        self.app = create_app(
-            settings,
-            make_sessionmaker(engine),
-            probes=asyncio.Lock(),
-            probe=_never_probe,
-            tools=Tools(),
-            requests=self.requests,
-            encodes=asyncio.Lock(),
-            moves=asyncio.Lock(),
-            listings=asyncio.Semaphore(2),
-            lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
-            prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
-        )
-        self.urls = []
-
-    async def handle(self, request):
-        self.urls.append(str(request.url))
-        return await httpx2.ASGITransport(app=self.app).handle_async_request(request)
-
-
 async def _unreachable(self, request):
     raise httpx2.ConnectError("connection refused", request=request)
 
 
 def test_api_poll_now_asks_the_scheduler(settings, monkeypatch):
     _sources(settings)
-    scheduler = _Scheduler(settings)
+    scheduler = SchedulerFake(settings)
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
 
     with _api(settings) as api:
@@ -244,7 +209,7 @@ def test_api_poll_now_refuses_a_disabled_source_without_asking_the_scheduler(
     settings, monkeypatch, source_id
 ):
     _sources(settings)
-    scheduler = _Scheduler(settings)
+    scheduler = SchedulerFake(settings)
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
 
     with _api(settings) as api:
@@ -265,7 +230,7 @@ def test_api_poll_now_shows_an_unreachable_scheduler(settings, monkeypatch):
 
 def test_api_archiving_on_asks_the_scheduler_to_poll(settings, monkeypatch):
     _sources(settings)
-    scheduler = _Scheduler(settings)
+    scheduler = SchedulerFake(settings)
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
 
     with _api(settings) as api:
@@ -300,7 +265,7 @@ def test_api_move_now_asks_the_scheduler(settings, monkeypatch):
         "INSERT INTO video (id, channel_id, type, title, state, size_bytes) VALUES"
         " ('s1', 'UC1', 'videos', 't', 'staged', 10)",
     )
-    scheduler = _Scheduler(staged)
+    scheduler = SchedulerFake(staged)
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
 
     with _api(settings) as api:
@@ -312,7 +277,7 @@ def test_api_move_now_asks_the_scheduler(settings, monkeypatch):
 
 
 def test_api_move_now_passes_on_the_scheduler_refusal(settings, monkeypatch):
-    scheduler = _Scheduler(settings)
+    scheduler = SchedulerFake(settings)
     monkeypatch.setattr(httpx2.AsyncHTTPTransport, "handle_async_request", scheduler.handle)
 
     with _api(settings) as api:

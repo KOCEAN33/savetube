@@ -1,4 +1,4 @@
-"""Discord posts (docs/plan/operations.md, Notifications and monitoring)."""
+"""Discord posts."""
 
 from datetime import UTC, datetime
 

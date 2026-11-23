@@ -1,4 +1,4 @@
-"""encode_settings: the -srcfps profiles keep a 60 fps source's rate (docs/plan/encode.md)
+"""encode_settings: the -srcfps profiles keep a 60 fps source's rate
 
 Revision ID: 0032
 Revises: 0031

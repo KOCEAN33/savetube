@@ -1,5 +1,5 @@
-"""Rules the Needs attention card (docs/plan/frontend.md, Home), the job and
-encode lists, and the Discord notifications (docs/plan/operations.md) share."""
+"""Rules the Needs attention card, the job and encode lists, and the Discord notifications
+share."""
 
 from typing import Literal
 
@@ -111,7 +111,7 @@ def encode_failed() -> ColumnElement[bool]:
 
 def signed_out() -> ColumnElement[bool]:
     """A cookie profile whose account read failed: a failed read clears the
-    digest (docs/plan/access.md)."""
+    digest."""
     return and_(
         CookieProfile.account_digest.is_(None), CookieProfile.account_checked_at.is_not(None)
     )

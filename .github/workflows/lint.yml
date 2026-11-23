@@ -1,0 +1,16 @@
+name: lint
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  comments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: make lint-comments AST_GREP="pipx run --spec ast-grep-cli==0.51.3 ast-grep"

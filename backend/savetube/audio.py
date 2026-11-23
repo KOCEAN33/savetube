@@ -1,4 +1,4 @@
-"""The audio-only copy beside an archived video (docs/plan/archive.md, Audio copy)."""
+"""The audio-only copy beside an archived video."""
 
 import asyncio
 import logging

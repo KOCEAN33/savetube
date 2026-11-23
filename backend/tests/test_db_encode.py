@@ -1,4 +1,4 @@
-"""External re-encoding (docs/plan/encode.md): queueing, tracking the job
+"""External re-encoding: queueing, tracking the job
 files, checking and swapping a result, and the routes."""
 
 import asyncio
@@ -23,7 +23,7 @@ needs_ffmpeg = pytest.mark.skipif(
     reason="ffmpeg or ffprobe not on PATH",
 )
 
-# The name _enable's options derive (docs/plan/encode.md, Profiles).
+# The name _enable's options derive.
 PROFILE = "av1-uhq-cq46-30fps"
 # Named profiles a job queued before the options carries.
 LEGACY = "vtuber-av1-uhq-cq46"
@@ -182,7 +182,7 @@ async def test_nothing_is_queued_while_disabled(settings):
 
 
 # A still title's options under the migrated defaults with hq, and every
-# other title's, which measure the motion (docs/plan/encode.md, Profiles).
+# other title's, which measure the motion.
 STILL = {"tune": "hq", "cq": 46, "fps_cap": 30}
 MEASURED = {**STILL, "motion_threshold": 1.0}
 
@@ -666,8 +666,7 @@ async def test_a_result_runs_at_the_options_frame_rate(settings, tmp_path, fps_c
     assert row.state == state, row.reason
 
 
-# A measured job's frame rate follows its motion (docs/plan/encode.md,
-# Checking and swapping a result). The source runs at 60 fps.
+# A measured job's frame rate follows its motion. The source runs at 60 fps.
 @needs_ffmpeg
 @pytest.mark.anyio
 @pytest.mark.parametrize(
@@ -931,16 +930,12 @@ class _Scheduler:
     (test_db_scheduler_requests._Scheduler)."""
 
     def __init__(self, settings):
-        from sqlalchemy.ext.asyncio import create_async_engine
-        from sqlalchemy.pool import NullPool
+        from conftest import nullpool_engine
 
-        from savetube.db import PSYCOPG_CONNECT_ARGS
         from savetube.integrity import Tools
         from savetube.scheduler_api import Requests, create_app
 
-        engine = create_async_engine(
-            settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
-        )
+        engine = nullpool_engine(settings)
         self.app = create_app(
             settings,
             make_sessionmaker(engine),

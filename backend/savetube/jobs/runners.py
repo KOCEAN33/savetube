@@ -18,8 +18,7 @@ from savetube import logs
 from savetube.logs import emit, human_bytes, human_duration
 from savetube.ytdl import download
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # The child sends progress at most this often, and the parent writes the job
 # row at most every PROGRESS_WRITE_SECONDS.

@@ -258,7 +258,7 @@ async def sync(
     new_channels.pop(source.channel_id, None)
     for e in new_channels.values():
         await get_or_create_channel(session, e)
-    # No relationship() orders inserts, so each FK target is flushed first.
+    # The channel rows first, as `get_or_create_channel` requires.
     await session.flush()
 
     for vid, e in entries.items():
@@ -281,7 +281,7 @@ async def sync(
             # A running recording, merging after its live ended, stores the
             # video unless it fails. A VOD beside it would race it for one
             # tree directory. A queued record job does not count: outside a
-            # cluster no recorder ever takes it (docs/plan/live.md).
+            # cluster no recorder ever takes it.
             select(Job.video_id).where(
                 Job.video_id.in_(wanted),
                 or_(

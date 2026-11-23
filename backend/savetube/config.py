@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     archive_root: Path = Path("/archive")
     # A volume on quiet disks for archive downloads. Finished ones wait there
-    # and move into the tree in batches (docs/plan/storage.md, Staging).
+    # and move into the tree in batches (`savetube.staging.move_staged`).
     # Unset downloads into the archive's `.incoming/`.
     staging_root: Path | None = None
     static_dir: Path | None = None
@@ -43,8 +43,7 @@ class Settings(BaseSettings):
     # header. Unset calls the issuer URL.
     oidc_internal_url: str | None = None
 
-    # The savetube Discord channel's webhook. Unset posts nothing
-    # (docs/plan/operations.md, Notifications and monitoring).
+    # The savetube Discord channel's webhook. Unset posts nothing.
     discord_webhook_url: SecretStr | None = None
 
     metrics_port: int = 9090
@@ -55,7 +54,6 @@ class Settings(BaseSettings):
     scheduler_api_port: int = 8082
     scheduler_url: str = "http://127.0.0.1:8082"
 
-    # DEBUG, INFO, WARNING or ERROR, any case (docs/plan/operations.md, Logging).
     log_level: str = "INFO"
 
     namespace: str = "default"

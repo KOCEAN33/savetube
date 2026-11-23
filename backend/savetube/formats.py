@@ -1,4 +1,4 @@
-"""The format pick of the format watch (docs/plan/live.md, Format watch).
+"""The format pick of the format watch.
 
 Audio and video are judged apart. Only `https` formats count, and audio
 formats with `-drc` in the id do not."""
@@ -33,7 +33,7 @@ FIELDS = (
 )
 
 
-def _has(codec: str | None) -> bool:
+def has_stream(codec: str | None) -> bool:
     # "none" is a format without that stream. None is unknown.
     return codec not in (None, "none")
 
@@ -41,7 +41,7 @@ def _has(codec: str | None) -> bool:
 def kind(f: dict[str, Any]) -> Kind | None:
     """`audio` for an audio-only format, `video` for a video-only one, None
     for a muxed or unknown format."""
-    audio, video = _has(f.get("acodec")), _has(f.get("vcodec"))
+    audio, video = has_stream(f.get("acodec")), has_stream(f.get("vcodec"))
     if audio and f.get("vcodec") == "none":
         return "audio"
     if video and f.get("acodec") == "none":
@@ -83,9 +83,9 @@ def stored_streams(info: dict[str, Any]) -> dict[Kind, dict[str, Any]]:
     """The stored file's video and audio format, from its info dict."""
     out: dict[Kind, dict[str, Any]] = {}
     for f in info.get("requested_formats") or [info]:
-        if _has(f.get("vcodec")):
+        if has_stream(f.get("vcodec")):
             out.setdefault("video", f)
-        if _has(f.get("acodec")):
+        if has_stream(f.get("acodec")):
             out.setdefault("audio", f)
     return out
 
@@ -122,7 +122,7 @@ def recorded(f: dict[str, Any]) -> bool:
 
 
 def encoded(f: dict[str, Any]) -> bool:
-    """Whether a stored stream is savetube's re-encode (docs/plan/encode.md),
+    """Whether a stored stream is savetube's re-encode,
     whose `protocol` the swap sets to `encode`."""
     return f.get("protocol") == "encode"
 

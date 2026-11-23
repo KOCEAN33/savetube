@@ -71,18 +71,12 @@ class _Scheduler:
     with `lister` and checking memberships with `prober`."""
 
     def __init__(self, settings, lister, prober=_no_probe):
-        from sqlalchemy.ext.asyncio import create_async_engine
-        from sqlalchemy.pool import NullPool
+        from conftest import nullpool_engine
 
-        from savetube.db import PSYCOPG_CONNECT_ARGS
         from savetube.integrity import Tools
         from savetube.scheduler_api import Requests, create_app
 
-        # NullPool: the web app's loop runs these calls, so no connection
-        # outlives it.
-        engine = create_async_engine(
-            settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
-        )
+        engine = nullpool_engine(settings)
         self.app = create_app(
             settings,
             make_sessionmaker(engine),
@@ -299,7 +293,7 @@ def test_api_channel_scan_lists_members_only_tabs_with_the_member_profile(settin
             ("main", True),
         ]
 
-        # Fresh results are not checked again.
+        # A second scan within `CHECK_EVERY` probes no profile again.
         again = client.post("/api/channel-scan", json={"url": base}).json()
         assert again["memberships"] == body["memberships"]
         assert len(probed) == 2

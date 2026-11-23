@@ -1,5 +1,5 @@
 """Integrity checks of a finished archive download or recording, before it
-moves into the tree (docs/plan/archive.md, Resuming and verifying downloads)."""
+moves into the tree."""
 
 import json
 import logging
@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from savetube.formats import has_stream
 from savetube.logs import emit
 
 log = logging.getLogger(__name__)
@@ -97,8 +98,7 @@ def _check_sizes(streams: list[dict[str, Any]]) -> bool:
 def _check_probe(probed: dict[str, Any], info: dict[str, Any]) -> None:
     kinds = {s.get("codec_type") for s in probed.get("streams") or []}
     for kind, codec in (("video", info.get("vcodec")), ("audio", info.get("acodec"))):
-        # "none" is a format without that stream. None is unknown.
-        if codec not in (None, "none") and kind not in kinds:
+        if has_stream(codec) and kind not in kinds:
             raise IntegrityFailed("streams", missing=kind)
     expected = info.get("duration")
     found = (probed.get("format") or {}).get("duration")

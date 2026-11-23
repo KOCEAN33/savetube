@@ -38,6 +38,57 @@ TEST_DB_RE = re.compile(r"savetube_test_(\d+)_[0-9a-f]+")
 STALE_AFTER_S = 24 * 3600
 
 
+def nullpool_engine(settings):
+    """An engine for an app a `TestClient` runs. The app's event loop runs these
+    calls, so NullPool keeps any connection from outliving that loop."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from savetube.db import PSYCOPG_CONNECT_ARGS
+
+    return create_async_engine(
+        settings.sqlalchemy_url, connect_args=PSYCOPG_CONNECT_ARGS, poolclass=NullPool
+    )
+
+
+class SchedulerFake:
+    """The scheduler's API behind the web's outbound httpx2 calls. `calls` holds each
+    request's method and URL. A probe, listing or membership check the test did not pass
+    fails it."""
+
+    def __init__(self, settings, *, probe=None, tools=None):
+        import asyncio
+
+        from savetube.integrity import Tools
+        from savetube.scheduler_api import Requests, create_app
+
+        self.requests = Requests()
+        self.app = create_app(
+            settings,
+            make_sessionmaker(nullpool_engine(settings)),
+            probes=asyncio.Lock(),
+            probe=probe or (lambda video_id, cookiefile: pytest.fail("no probe expected")),
+            tools=tools or Tools(),
+            requests=self.requests,
+            encodes=asyncio.Lock(),
+            moves=asyncio.Lock(),
+            listings=asyncio.Semaphore(2),
+            lister=lambda url, cookiefile, limit: pytest.fail("no listing expected"),
+            prober=lambda video_id, cookiefile: pytest.fail("no membership check expected"),
+        )
+        self.calls = []
+
+    @property
+    def urls(self):
+        return [url for _, url in self.calls]
+
+    async def handle(self, request):
+        import httpx2
+
+        self.calls.append((request.method, str(request.url)))
+        return await httpx2.ASGITransport(app=self.app).handle_async_request(request)
+
+
 def _db_name():
     return f"savetube_test_{int(time.time())}_{secrets.token_hex(6)}"
 

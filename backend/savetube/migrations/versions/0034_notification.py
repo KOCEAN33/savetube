@@ -1,4 +1,4 @@
-"""notification: items the scheduler posted to Discord (docs/plan/operations.md)
+"""notification: items the scheduler posted to Discord
 
 Revision ID: 0034
 Revises: 0033

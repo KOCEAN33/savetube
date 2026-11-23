@@ -134,7 +134,8 @@ async def test_members_only_videos_wait_for_a_confirmed_member_profile(settings,
         ("VESPERBELL", "main", "yes"),
     ]
 
-    # A confirmed member lets them pass. Fresh results are not checked again.
+    # A confirmed member lets them pass. A poll within `CHECK_EVERY` probes no
+    # profile again.
     await _poll(sessionmaker, settings, 1, listing, prober=prober)
     assert await queued() == ["member", "public", "queued_member"]
     assert len(probed) == 2

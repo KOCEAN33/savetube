@@ -1,5 +1,5 @@
 """encode_job state 'superseded': a replace swapped out the video stream an
-encode made, so the video may be encoded again (docs/plan/encode.md, Which videos)
+encode made, so the video may be encoded again
 
 Revision ID: 0038
 Revises: 0037

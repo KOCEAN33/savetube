@@ -1,4 +1,4 @@
-"""The format watch's pick rules (docs/plan/live.md, Format watch), on the two
+"""The format watch's pick rules, on the two
 lives that prompted it."""
 
 import json

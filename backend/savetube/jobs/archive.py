@@ -25,8 +25,7 @@ from savetube.ytdl import (
     youtube_block,
 )
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # yt-dlp's text when a pinned format is no longer offered.
 FORMAT_GONE = "Requested format is not available"

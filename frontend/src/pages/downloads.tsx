@@ -16,13 +16,11 @@ import {
 } from "@/components/ui/select"
 import { usePageParam } from "@/hooks/use-page-param"
 import { api, type Job, type JobState } from "@/lib/api"
-import { DOWNLOAD_KINDS, JOB_PAGE } from "@/lib/constants"
+import { DOWNLOAD_KINDS, FINISHED_JOB_STATES, JOB_PAGE } from "@/lib/constants"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
 const ALL = "all"
-// An interrupted run is a row of its own. Its job waits in the queue again.
-const FINISHED: JobState[] = ["succeeded", "failed", "interrupted", "cancelled"]
 
 // Each job carries its uploader's name, which covers channels that are not tracked.
 function channelNames(jobs: Job[]) {
@@ -36,7 +34,7 @@ function channelNames(jobs: Job[]) {
 export function DownloadsPage() {
   const [params, setParams] = useSearchParams()
   const stateParam = params.get("state") as JobState | null
-  const state = stateParam && FINISHED.includes(stateParam) ? stateParam : undefined
+  const state = stateParam && FINISHED_JOB_STATES.includes(stateParam) ? stateParam : undefined
   // Hiding resolved failures is the default, so only showing them takes a param.
   const unresolved = params.get("resolved") !== "show"
   const [queuedPage, setQueuedPage] = usePageParam("qpage")
@@ -66,7 +64,7 @@ export function DownloadsPage() {
     queryFn: () =>
       api.jobPage({
         kind: DOWNLOAD_KINDS,
-        state: state ? [state] : FINISHED,
+        state: state ? [state] : FINISHED_JOB_STATES,
         unresolved: unresolved || undefined,
         limit: JOB_PAGE,
         offset: (recentPage - 1) * JOB_PAGE,
@@ -144,7 +142,7 @@ export function DownloadsPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={ALL}>All</SelectItem>
-                {FINISHED.map((s) => (
+                {FINISHED_JOB_STATES.map((s) => (
                   <SelectItem key={s} value={s}>
                     {s}
                   </SelectItem>

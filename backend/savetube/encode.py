@@ -1,4 +1,4 @@
-"""External re-encoding through job files (docs/plan/encode.md).
+"""External re-encoding through job files.
 
 The scheduler keeps up to QUEUE_DEPTH job files in `.encode/queue/` for an
 encoder that reads the archive over Samba. It follows each job as the encoder
@@ -92,7 +92,7 @@ NAMED_PROFILES = {
 def job_options(config: EncodeSettings, title: str) -> dict[str, Any]:
     """The options a video's job file carries: a still title takes the still
     cap, and any other title measures its motion when it has a cap and a
-    threshold (docs/plan/encode.md, Profiles)."""
+    threshold."""
     # matches() lets every title through an empty include list.
     still = bool(config.still_words) and matches(
         title, config.still_words, config.still_exclude_words

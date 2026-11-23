@@ -3,8 +3,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { mutations } from "@/lib/api"
 import { queryKeys } from "@/lib/query-keys"
 
-// Every list of failures reads one dismissal state (docs/plan/frontend.md,
-// Home), so a dismissal refetches each of them.
+// Every list of failures reads one dismissal state, so a dismissal refetches
+// each of them.
 export function useDismiss() {
   const queryClient = useQueryClient()
   return useMutation({

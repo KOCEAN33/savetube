@@ -126,7 +126,6 @@ export const api = {
   jobCounts: (query: { kind?: JobKind[]; channel_id?: string }) =>
     get<Record<JobState, number>>("/api/jobs/counts", query),
   pods: () => get<Pods>("/api/pods"),
-  // The videos waiting on staging for the move into the tree.
   staging: () => get<Staging>("/api/staging"),
   videos: (query: {
     // The uploader.
@@ -135,7 +134,7 @@ export const api = {
     channel_name?: string
     // The uploader, or a channel whose sources list the video.
     listed_by?: string
-    // Videos the source lists. A `playlists` parent lists through its children.
+    // Videos the source lists.
     source_id?: number
     type?: string
     state?: string

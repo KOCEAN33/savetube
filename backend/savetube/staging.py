@@ -1,4 +1,4 @@
-"""Batch moves from staging into the tree (docs/plan/storage.md, Staging).
+"""Batch moves from staging into the tree.
 
 Archive downloads work on a staging volume, so the archive's disks stay quiet
 while bytes trickle in. A finished video waits there as `staged`, and this

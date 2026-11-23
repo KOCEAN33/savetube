@@ -1,4 +1,4 @@
-"""encode_settings and encode_job: external re-encoding (docs/plan/encode.md)
+"""encode_settings and encode_job: external re-encoding
 
 Revision ID: 0026
 Revises: 0025

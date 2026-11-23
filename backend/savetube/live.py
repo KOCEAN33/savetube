@@ -136,7 +136,7 @@ async def _record(session: AsyncSession, info: dict[str, Any]) -> Job | None:
         return None
     if video is None:
         await get_or_create_channel(session, info)
-        # No relationship() orders inserts, so each FK target is flushed first.
+        # The channel row first, as `get_or_create_channel` requires.
         await session.flush()
         session.add(
             Video(

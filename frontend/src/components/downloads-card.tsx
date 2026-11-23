@@ -19,7 +19,7 @@ import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
 
 // Finished videos waiting on staging, and Move now, which the scheduler starts
-// at once (docs/plan/storage.md, Staging).
+// at once.
 function StagingLine() {
   const queryClient = useQueryClient()
   const staged = useQuery({

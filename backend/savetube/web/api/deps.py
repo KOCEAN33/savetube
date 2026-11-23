@@ -49,7 +49,8 @@ async def call_scheduler(
     passes: Collection[int] = (404, 409),
 ) -> httpx2.Response:
     """Call `path` on the scheduler's internal API (savetube.scheduler_api)
-    and return its answer. An answer in `passes` passes through with its
+    and return its answer. A file change goes through here, because the web pod mounts the
+    archive read-only. An answer in `passes` passes through with its
     detail. A timeout answers 504 and any other failure 502, after
     `failed(status, reason)` logs it."""
     try:

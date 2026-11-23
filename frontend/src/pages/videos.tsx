@@ -54,12 +54,12 @@ const HEIGHTS = [
   ["below", "Below 720p"],
 ] as const
 
-/** The short side and frame rate, "1080p60", so a vertical short reads 1080p. */
 const ORIGIN_LABEL: Record<NonNullable<Video["origin"]>, string> = {
   recorded: "Recorded",
   encoded: "Encoded",
 }
 
+/** The short side and frame rate, "1080p60", so a vertical short reads 1080p. */
 function resolution(v: Video): string {
   const side = Math.min(v.video_width ?? Infinity, v.video_height ?? Infinity)
   if (side === Infinity) return "-"

@@ -28,8 +28,7 @@ from savetube.logs import emit, human_duration
 from savetube.tz import TIMEZONE
 from savetube.ytdl import bare_unavailable
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # The `log_tail` prefix of a run a network error interrupted that added no bytes
 # before it. NETWORK_LOG is the prefix of any network interruption.
@@ -134,7 +133,7 @@ async def _profile_blocked(
     disowned: Callable[[AsyncSession], Awaitable[bool]],
 ) -> bool:
     """Interrupt a job googlevideo refused for `profile`, as `_blocked` does,
-    and pause that profile only. Returns False when the run lost its row."""
+    and pause that profile only. Returns False when `disowned` holds."""
     async with sessionmaker() as session:
         await lock(session)
         if await disowned(session):

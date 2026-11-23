@@ -21,7 +21,7 @@ FEED = """<?xml version="1.0" encoding="UTF-8"?>
   <published>2026-10-15T10:00:00+00:00</published>
  </entry>
 </feed>
-"""  # noqa: E501
+"""  # noqa: E501 -- the fixture keeps the feed's lines as YouTube serves them
 
 
 def test_parse_feed_lists_video_ids_in_feed_order():

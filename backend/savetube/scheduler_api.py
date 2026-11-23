@@ -1,4 +1,4 @@
-"""The scheduler's internal HTTP API (docs/plan/runtime.md, Scheduler API): a
+"""The scheduler's internal HTTP API: a
 user action the web asks the scheduler to do now. Cluster-internal, with no
 auth: only the web calls it, through a ClusterIP Service."""
 

@@ -1,5 +1,5 @@
 """The Needs attention card on Home: what fails or waits on the user outside
-the page that shows it (docs/plan/frontend.md, Home)."""
+the page that shows it."""
 
 from datetime import UTC, datetime
 

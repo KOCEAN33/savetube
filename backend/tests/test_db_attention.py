@@ -1,4 +1,4 @@
-"""The Needs attention card's API (docs/plan/frontend.md, Home)."""
+"""The Needs attention card's API."""
 
 import pytest
 from conftest import ADMIN_URL, _api, _sql

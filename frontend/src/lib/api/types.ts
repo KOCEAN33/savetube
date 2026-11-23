@@ -224,7 +224,7 @@ export interface FormatRow {
   stored: boolean
   // On a stored row: no YouTube https format, such as a live recording.
   recorded: boolean
-  // On a stored row: savetube's re-encode (docs/plan/encode.md).
+  // On a stored row: savetube's re-encode.
   encoded: boolean
   // On a formats row: the stored stream is this YouTube format.
   is_stored: boolean
@@ -233,7 +233,7 @@ export interface FormatRow {
   reason: string | null
 }
 
-// A Needs attention item on Home (docs/plan/frontend.md, Home).
+// A Needs attention item on Home.
 export type AttentionKind =
   | "archive_failed"
   | "record_failed"
@@ -259,8 +259,7 @@ export interface AttentionItem {
   dismissable: boolean
 }
 
-// The format watch of a stored live, or a user's probe of any complete video
-// (docs/plan/live.md, Format watch).
+// The format watch of a stored live, or a user's probe of any complete video.
 export interface FormatWatch {
   // Null for a row a user's probe made: no automatic watch.
   started_at: string | null
@@ -270,7 +269,8 @@ export interface FormatWatch {
   probe_error: string | null
   // A pick by hand ended the automatic replaces.
   manual: boolean
-  // The VOD and the stored file differ by more than 2 s: a pick needs a confirm.
+  // The VOD and the stored file differ by more than the backend's `HOLD_SECONDS`:
+  // a pick needs a confirm.
   held: boolean
   vod_duration: number | null
   stored_duration: number | null
@@ -469,7 +469,7 @@ export interface EncodeJob {
 
 export type EncodeTune = "hq" | "uhq"
 
-// The encode options a job file carries (docs/plan/encode.md, Profiles).
+// The encode options a job file carries.
 export interface EncodeSettingsIn {
   enabled: boolean
   tune: EncodeTune

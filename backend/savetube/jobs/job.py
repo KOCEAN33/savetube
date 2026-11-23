@@ -77,8 +77,7 @@ from savetube.ytdl import (
     youtube_block,
 )
 
-# Every module of the package logs as `savetube.jobs`.
-log = logging.getLogger("savetube.jobs")
+log = logging.getLogger(__package__)
 
 # Network interruptions in a row that added no bytes. A run that adds bytes
 # resets the count, so a download that moves on is retried until it ends.
@@ -532,7 +531,7 @@ async def _download(
     except DownloadFailed as e:
         if begun.members or not members_only(str(e)):
             raise
-        profile = await _mark_members(r.sessionmaker, r.video_id, settings)
+        profile = await cookies.mark_members(r.sessionmaker, settings, r.video_id)
         if profile is None:
             raise
         emit(log, logging.INFO, "job.member_retry", job=r.job_id, video=r.video_id, cookies=profile)
@@ -585,23 +584,6 @@ async def _verify_recording(
         return None
     emit(log, logging.INFO, "download.verified", checks=",".join(checks) or "none")
     return checks
-
-
-async def _mark_members(
-    sessionmaker: async_sessionmaker, video_id: str, settings: Settings
-) -> str | None:
-    """Mark the video members-only. Returns its channel's member profile."""
-    async with sessionmaker() as session:
-        video = await session.get(Video, video_id)
-        if video is None:
-            return None
-        video.type = VideoType.MEMBERS
-        video.availability = "subscriber_only"
-        profile = await cookies.member_profile(
-            session, video.channel_id, cookies.profiles(settings)
-        )
-        await session.commit()
-    return profile
 
 
 async def _download_as(

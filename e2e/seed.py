@@ -1,10 +1,10 @@
 """Create, seed and drop the database of one frontend smoke run.
 
 Usage, from the repo root with SAVETUBE_TEST_DATABASE_URL set:
-  uv run --project backend python e2e/seed.py create <db name> <archive root> <manifest path>
-  uv run --project backend python e2e/seed.py drop <db name>
+  uv run --project backend python seed.py create <db name> <archive root> <manifest path>
+  uv run --project backend python seed.py drop <db name>
 
-The database name follows backend/tests/test_db.py, savetube_test_<unix seconds>_<hex>,
+The database name follows the `test_db` suite, savetube_test_<unix seconds>_<hex>,
 so that suite's setup also drops one a killed run leaves behind. The manifest is JSON
 with the ids the smoke checks open. Nothing here prints the database URL.
 """

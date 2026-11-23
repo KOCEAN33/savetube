@@ -1,5 +1,5 @@
 """The step of a replace job that takes the place of an archive run's move
-into the tree (docs/plan/live.md, Format watch). savetube.jobs.job runs
+into the tree. savetube.jobs.job runs
 the job like an archive job and calls `prepare`, then `swap_in`.
 
 The job downloads only the streams it names and remuxes them with the kept

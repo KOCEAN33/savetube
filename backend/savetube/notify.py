@@ -1,5 +1,5 @@
 """Discord posts for what loses content unless the user acts before opening
-the dashboard (docs/plan/operations.md, Notifications and monitoring)."""
+the dashboard."""
 
 import logging
 from collections.abc import Awaitable, Callable

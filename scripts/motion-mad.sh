@@ -2,7 +2,7 @@
 # motion-mad.sh FILE...: print each file's motion score, the median over three
 # 60 s windows at 25%, 50% and 75% of its duration of the mean absolute luma
 # difference between consecutive frames, on frames scaled to 320x180 gray.
-# docs/plan/encode-frame-rate.md, Motion score. Needs ffmpeg and ffprobe.
+# Needs ffmpeg and ffprobe.
 set -euo pipefail
 
 window() { # file start -> mean frame MAD of 60 s from start

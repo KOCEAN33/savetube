@@ -97,10 +97,10 @@ class DownloadSettingsIn(BaseModel):
     rate_limit_bytes: Annotated[int | None, Field(gt=0)] = None
     window_start: _HHMM | None = None
     window_end: _HHMM | None = None
-    # Off keeps the times and ignores them. Required: a default would turn the
-    # window off for a client that sends only the times.
+    # Off as on `DownloadSettings.window_enabled`. Required: a default would
+    # turn the window off for a client that sends only the times.
     window_enabled: bool
-    # Archive downloads per Asia/Seoul day. Null for no cap.
+    # The cap `DownloadSettings.daily_limit` stores. Null for no cap.
     daily_limit: Annotated[int | None, Field(ge=1)] = None
     # A present cookie profile's name. Null runs polls, live probes and
     # non-members downloads cookie-free.
