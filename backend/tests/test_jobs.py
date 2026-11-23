@@ -165,6 +165,19 @@ def test_a_network_error_is_a_dropped_or_timed_out_connection(message, network):
             " members-only content like this video, and other exclusive perks.",
             "members-only, no member cookie profile",
         ),
+        # A recording that waited on a stream, as savetube.ytdl.download raises it.
+        (
+            "DownloadError: [youtube] This video is available to this channel's members on"
+            " level: KMNCLUB Premium (or any higher level). Join this channel to get access to"
+            " members-only content and other exclusive perks.",
+            "members-only, needs membership level KMNCLUB Premium",
+        ),
+        (
+            "DownloadError: ERROR: [youtube] v1: This video is available to this channel's"
+            " members on level: つな友 (or any higher level). Join this channel to get access to"
+            " members-only content and other exclusive perks.",
+            "members-only, needs membership level つな友",
+        ),
         (
             "integrity check failed: size 137: 100 bytes, expected 200",
             "integrity check failed: size",

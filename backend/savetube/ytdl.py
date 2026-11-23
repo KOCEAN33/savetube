@@ -109,6 +109,8 @@ SERVER_ERROR_MARKERS = (("http error 500", "giving up after"), ("the downloaded 
 # channel's members on level: ... Join this channel to get access to
 # members-only content and other exclusive perks."
 MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
+# The membership level in the second form of that text.
+_MEMBERS_LEVEL = re.compile(r"members on level: (.+?) \(or any higher level\)")
 # yt-dlp's text when googlevideo refuses the media, such as "unable to download
 # video data: HTTP Error 403: Forbidden", in the same groups as BLOCK_MARKERS.
 # It refuses every video one account's session asks for while other accounts
@@ -187,6 +189,13 @@ def members_only(message: str) -> bool:
     """Whether a failure is a members-only video the account may not watch."""
     text = message.lower()
     return any(marker in text for marker in MEMBERS_ONLY_MARKERS)
+
+
+def members_level(message: str) -> str | None:
+    """The membership level a members-only video asks for, None when the text
+    names none."""
+    m = _MEMBERS_LEVEL.search(message)
+    return m.group(1) if m else None
 
 
 def forbidden(message: str) -> bool:

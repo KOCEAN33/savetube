@@ -20,7 +20,7 @@ from savetube.limits import DISPATCH_ORDER
 from savetube.logs import emit
 from savetube.web.api.deps import Session, _of_channel, log
 from savetube.web.api.schemas import _Out
-from savetube.ytdl import members_only, network_error, strip_noise, youtube_block
+from savetube.ytdl import members_level, members_only, network_error, strip_noise, youtube_block
 
 router = APIRouter()
 
@@ -40,6 +40,8 @@ def job_reason(log_tail: str | None) -> str | None:
         return "worker stopped"
     if log_tail.startswith(SHUTDOWN_LOG):
         return "worker shut down"
+    if level := members_level(log_tail):
+        return f"members-only, needs membership level {level}"
     if NO_MEMBER in log_tail or members_only(log_tail):
         return "members-only, no member cookie profile"
     if "integrity check failed" in text:
