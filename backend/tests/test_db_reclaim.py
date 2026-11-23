@@ -312,11 +312,10 @@ async def _work(settings, monkeypatch, step, *, reclaim):
             await _reclaim_and_start_again(settings)
         return await step(params, report)
 
-    async def run(job_id, _settings, *, live, runner):
+    async def run(job_id, _settings, *, runner):
         await real_run(
             job_id,
             settings,
-            live=live,
             runner=_Steps(first),
             sessionmaker=make_sessionmaker(engine),
             tools=_FakeTools(),

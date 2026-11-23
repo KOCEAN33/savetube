@@ -59,20 +59,6 @@ async def test_an_admitted_archive_runs_with_the_rate_limit(settings):
 
 
 @pytest.mark.anyio
-async def test_a_recording_ignores_every_download_limit(settings):
-    _job_rows(
-        settings,
-        _closed_window_sql(),
-        "UPDATE download_settings SET rate_limit_bytes = 1000",
-        "UPDATE job SET kind = 'record' WHERE id = 1",
-        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
-        " (2, 'archive', 'running', 'busy1', 1)",
-    )
-    job, runner, _ = await _run(settings, live=True)
-    assert runner.params is not None and "ratelimit" not in runner.params
-
-
-@pytest.mark.anyio
 async def test_dispatch_queues_the_oldest_waiting_archive_jobs_up_to_the_free_slots(settings):
     # One archive runs, so max_concurrent 2 leaves one slot. A recording takes none.
     _waiting_rows(settings, "UPDATE download_settings SET max_concurrent = 2")

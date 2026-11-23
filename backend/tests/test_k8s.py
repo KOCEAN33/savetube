@@ -48,7 +48,7 @@ def _cronjob(container_name: str = "recorder") -> CronJob:
 
 def test_recorder_job_copies_template_and_sets_args():
     cj = _cronjob()
-    job = recorder_job(cj, 42, "dQw4w9WgXcQ").to_dict()
+    job = recorder_job(cj, 42, "dQw4w9WgXcQ", ["--job-id=42", "--video-id=dQw4w9WgXcQ"]).to_dict()
     assert job["metadata"]["name"] == "savetube-recorder-42"
     assert job["metadata"]["labels"] == {
         "app.kubernetes.io/component": "recorder",
@@ -65,7 +65,7 @@ def test_recorder_job_copies_template_and_sets_args():
         }
     ]
     pod = job["spec"]["template"]["spec"]
-    assert pod["containers"][0]["args"] == ["record", "--job-id", "42"]
+    assert pod["containers"][0]["args"] == ["record", "--job-id=42", "--video-id=dQw4w9WgXcQ"]
     assert pod["containers"][0]["image"] == "savetube:abc"
     assert pod["initContainers"][0]["name"] == "pot-provider"
     assert job["spec"]["backoffLimit"] == 3
@@ -76,7 +76,7 @@ def test_recorder_job_copies_template_and_sets_args():
 
 def test_recorder_job_needs_the_recorder_container():
     with pytest.raises(ValueError):
-        recorder_job(_cronjob("other"), 1, "x")
+        recorder_job(_cronjob("other"), 1, "x", [])
 
 
 def _job(job_id, *conditions):
@@ -95,7 +95,7 @@ def _job(job_id, *conditions):
     )
 
 
-def test_recorder_states_reads_a_failed_job_by_its_condition():
+def test_recorder_states_reads_each_job_status_by_its_conditions():
     jobs = [
         # The controller sets FailureTarget, then Failed, once backoffLimit is spent.
         _job(7, ("FailureTarget", "True"), ("Failed", "True")),
@@ -103,7 +103,7 @@ def test_recorder_states_reads_a_failed_job_by_its_condition():
         _job(9),
         _job(10, ("Failed", "False")),
     ]
-    assert recorder_states(jobs) == {7: True, 8: False, 9: False, 10: False}
+    assert recorder_states(jobs) == {7: "failed", 8: "succeeded", 9: "pending", 10: "pending"}
 
 
 def _pod(name, phase, *, created, job_id=None):

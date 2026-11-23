@@ -67,6 +67,7 @@ New dataset `tank/youtube`, mounted read-write in Talos. Inside it:
   members/ <YYYY-MM-DD> <title> [<video id>]/
 .incoming/<video id>/   archive downloads without staging
 .incoming/<job id>/     recordings, and replace jobs' remux output
+.incoming/<job id>.json a recorder's outcome, until the scheduler applies it (live.md)
 .originals/<video id>/  the file a replace or a re-encode moved aside, until the open watch ends, or 7 days after a swap outside one
 .encode/                job files and results of the external encoder (encode.md), also a Samba share
 ```

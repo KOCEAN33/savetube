@@ -1,4 +1,5 @@
-"""Running one job, archive, replace or recording, from the `job` row to the tree."""
+"""Running one archive or replace job, from the `job` row to the tree. A
+recording runs without the database (savetube.jobs.recording)."""
 
 import asyncio
 import logging
@@ -14,14 +15,13 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import audio, cookies, formats, integrity, logs, watch
+from savetube import audio, cookies, integrity, logs, watch
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import CookieProfile, Job, JobKind, JobState, Video, VideoState
 from savetube.joblog import (
     BLOCKED_LOG,
     NETWORK_LOG,
-    NO_MEMBER,
     PROFILE_BLOCKED_LOG,
     SHUTDOWN_LOG,
 )
@@ -59,12 +59,11 @@ from savetube.limits import (
     window_opens,
 )
 from savetube.logs import emit, human_bytes, human_duration
-from savetube.pipeline import from_shorts_tab, prepare_incoming, settings_channel, store
+from savetube.pipeline import from_shorts_tab, settings_channel, store
 from savetube.poll import MAX_ARCHIVE_ATTEMPTS
 from savetube.storage import dir_size
 from savetube.ytdl import (
     DEFAULT_FORMAT,
-    NotStarted,
     bare_unavailable,
     build_params,
     degraded_formats,
@@ -73,7 +72,6 @@ from savetube.ytdl import (
     members_only,
     network_error,
     probe_video,
-    video_url,
     youtube_block,
 )
 
@@ -87,11 +85,6 @@ MAX_NETWORK_STALLS = 5
 UNAVAILABLE_STREAK = 3
 UNAVAILABLE_STREAK_WINDOW = timedelta(hours=1)
 PAUSED_LOG = "paused by user"
-# How long past its scheduled start a recording waits for a stream still
-# upcoming, such as a cancelled waiting room. The span after which live
-# detection probes a refused id again (savetube.live.RETRY_UNREADABLE).
-NOT_STARTED_LIMIT = timedelta(hours=24)
-NOT_STARTED_LOG = "the stream did not start within 24 hours of its scheduled start"
 # How long the check that another video plays may take (_another_plays).
 PLAYS_TIMEOUT_SECONDS = 60
 
@@ -108,21 +101,20 @@ async def run(
     job_id: int,
     settings: Settings,
     *,
-    live: bool,
     runner: Runner,
     sessionmaker: async_sessionmaker | None = None,
     tools: integrity.Tools | None = None,
 ) -> None:
-    """Run one job. An archive or replace job outside the download window,
-    with no free slot, at the daily cap, or while paused, goes back to
-    waiting for the dispatcher. A pause while it runs interrupts it. A
-    recording ignores the limits. A replace runs as an archive job does, up
-    to the move into the tree, which savetube.jobs.replace takes over."""
+    """Run one job. A job outside the download window, with no free slot, at
+    the daily cap, or while paused, goes back to waiting for the dispatcher.
+    A pause while it runs interrupts it. A replace runs as an archive job
+    does, up to the move into the tree, which savetube.jobs.replace takes
+    over."""
     sessionmaker = sessionmaker or default_sessionmaker()
-    begun = await _begin(sessionmaker, job_id, settings, live=live)
+    begun = await _begin(sessionmaker, job_id, settings)
     if begun is None:
         return
-    r = _Run.after(begun, job_id, settings, live=live, sessionmaker=sessionmaker)
+    r = _Run.after(begun, job_id, settings, sessionmaker=sessionmaker)
     with logs.context(job=job_id, video=r.video_id):
         r.log_start(begun)
         # Any failure past RUNNING must reach the row, or the job stays running and
@@ -133,12 +125,7 @@ async def run(
             await _finish(r, settings, info, checks, tools, shorts=begun.shorts)
         except Disowned as e:
             r.log_disowned(str(e))
-        except NotStarted:
-            await _record_not_started(r, begun)
         except (asyncio.CancelledError, Paused) as e:
-            # A recorder's retry starts from the first segment anyway.
-            if live:
-                raise
             await _record_stop(r, e)
             # A pause ends the queue job. The dispatcher queues the job again.
             if isinstance(e, Paused):
@@ -165,12 +152,10 @@ class _Begun:
     attempt: int
     limit: int | None
     described: dict[str, Any]
-    # A recording's NOT_STARTED_LIMIT past its scheduled start.
-    wait_until: datetime | None
 
 
 async def _begin(
-    sessionmaker: async_sessionmaker, job_id: int, settings: Settings, *, live: bool
+    sessionmaker: async_sessionmaker, job_id: int, settings: Settings
 ) -> _Begun | None:
     """Mark the job running in one session. An archive or replace job the
     limits keep from starting goes back to waiting, and this returns None."""
@@ -183,7 +168,7 @@ async def _begin(
             raise LookupError(f"replace job {job_id} has no format")
         video_id = job.video_id
         # A cancel can leave the queue job `todo`, so the worker gets a row it must not run.
-        if not live and job.state is not JobState.QUEUED:
+        if job.state is not JobState.QUEUED:
             emit(
                 log,
                 logging.WARNING,
@@ -193,13 +178,12 @@ async def _begin(
                 state=job.state.value,
             )
             return None
-        if not live:
-            now = datetime.now(UTC)
-            limits = await admit(session, now)
-            if limits is None:
-                await _hand_back(session, job_id, video_id, now)
-                return None
-            ratelimit = limits.rate_limit_bytes
+        now = datetime.now(UTC)
+        limits = await admit(session, now)
+        if limits is None:
+            await _hand_back(session, job_id, video_id, now)
+            return None
+        ratelimit = limits.rate_limit_bytes
         video = await session.get(Video, video_id)
         if job.kind is JobKind.REPLACE:
             # Its own directory holds only this format's parts, so the format
@@ -217,19 +201,16 @@ async def _begin(
             if video is not None
             else await cookies.general(session)
         )
-        if not live and members and profile is None:
+        if members and profile is None:
             # The next membership check or the poll's cancel ends the wait.
             await _hand_back(session, job_id, video_id, now, reason="no_member")
             return None
-        if not live and await _profile_paused(session, profile, now):
+        if await _profile_paused(session, profile, now):
             await _hand_back(session, job_id, video_id, now, reason="profile_blocked")
             return None
         run_started = await _mark_running(session, job, video_id)
-        attempt, limit = await _attempt(session, job, video_id, live=live)
+        attempt, limit = await _attempt(session, job, video_id)
         described = await _describe(session, video_id)
-        wait_until = (
-            job.scheduled_at + NOT_STARTED_LIMIT if live and job.scheduled_at is not None else None
-        )
         await session.commit()
     return _Begun(
         video_id=video_id,
@@ -244,7 +225,6 @@ async def _begin(
         attempt=attempt,
         limit=limit,
         described=described,
-        wait_until=wait_until,
     )
 
 
@@ -294,13 +274,11 @@ async def _mark_running(session: AsyncSession, job: Job, video_id: str) -> datet
     return run_started
 
 
-async def _attempt(
-    session: AsyncSession, job: Job, video_id: str, *, live: bool
-) -> tuple[int, int | None]:
+async def _attempt(session: AsyncSession, job: Job, video_id: str) -> tuple[int, int | None]:
     """This run's attempt number, and the attempts an archive job has, None
-    past them (savetube.poll.RETRY_AFTER). No poll retries a recording or a
-    replace, so they have no limit."""
-    if live or job.kind is not JobKind.ARCHIVE:
+    past them (savetube.poll.RETRY_AFTER). No poll retries a replace, so it
+    has no limit."""
+    if job.kind is not JobKind.ARCHIVE:
         return job.attempts, None
     failed = await session.scalar(
         select(func.count())
@@ -326,7 +304,6 @@ class _Run:
     job_id: int
     video_id: str
     kind: JobKind
-    live: bool
     sessionmaker: async_sessionmaker
     run_started: datetime
     described: dict[str, Any]
@@ -349,14 +326,11 @@ class _Run:
         job_id: int,
         settings: Settings,
         *,
-        live: bool,
         sessionmaker: async_sessionmaker,
     ) -> _Run:
         video_id = begun.video_id
         outdir = None
-        if live:
-            workdir = settings.incoming_root / str(job_id)
-        elif begun.kind is JobKind.REPLACE:
+        if begun.kind is JobKind.REPLACE:
             # Numbered by job, so the incoming cleanup keeps them while the job
             # is active. Without staging both roots are one, so the result
             # gets a directory of its own inside.
@@ -372,7 +346,6 @@ class _Run:
             job_id=job_id,
             video_id=video_id,
             kind=begun.kind,
-            live=live,
             sessionmaker=sessionmaker,
             run_started=begun.run_started,
             described=begun.described,
@@ -405,8 +378,6 @@ class _Run:
         """Whether the row is no longer this run's, which then writes
         nothing and leaves the directory to the owner. Locks the row
         until the session commits."""
-        if self.live:
-            return False
         reason = await _owner_lost(session, self.job_id, self.run_started, for_update=True)
         if reason is not None:
             self.log_disowned(reason)
@@ -449,7 +420,7 @@ class _Run:
                 # archive download's.
                 if self.kind is JobKind.REPLACE:
                     return
-                if self.live or await _owner_lost(session, self.job_id, self.run_started) is None:
+                if await _owner_lost(session, self.job_id, self.run_started) is None:
                     await _pin(session, self.video_id, message["format_id"])
             else:
                 await session.execute(
@@ -478,31 +449,21 @@ def _params(
     format: str,
     *,
     cookiefile: Path | None,
-    live: bool,
     ratelimit: int | None,
     video_id: str,
     media_only: bool = False,
-    wait_until: datetime | None = None,
 ) -> dict[str, Any]:
-    p = build_params(
-        workdir,
-        format=format,
-        cookiefile=cookiefile,
-        live=live,
-        ratelimit=ratelimit,
-        wait_until=wait_until.timestamp() if wait_until is not None else None,
-    )
+    p = build_params(workdir, format=format, cookiefile=cookiefile, ratelimit=ratelimit)
     if media_only:
         # A replace's stored directory keeps its own sidecar files.
         p.update(writeinfojson=False, writethumbnail=False, writesubtitles=False)
-    if not live:
-        # A `.part` file left by an interrupted run resumes.
-        p["continuedl"] = True
-        # yt-dlp rewrites every subtitle it finds, and the chat
-        # replay cannot resume. A finished one has its final name.
-        chat = f"{video_id}.live_chat.json"
-        if (workdir / chat).is_file() or (workdir / ".tmp" / chat).is_file():
-            p["subtitleslangs"] = [*p["subtitleslangs"], "-live_chat"]
+    # A `.part` file left by an interrupted run resumes.
+    p["continuedl"] = True
+    # yt-dlp rewrites every subtitle it finds, and the chat
+    # replay cannot resume. A finished one has its final name.
+    chat = f"{video_id}.live_chat.json"
+    if (workdir / chat).is_file() or (workdir / ".tmp" / chat).is_file():
+        p["subtitleslangs"] = [*p["subtitleslangs"], "-live_chat"]
     return p
 
 
@@ -513,18 +474,12 @@ async def _download(
     runner: Runner,
     tools: integrity.Tools,
 ) -> tuple[dict[str, Any], list[str] | None]:
-    """Download into the working directory. An archive or replace download is
-    also verified and returns the checks that passed. An archive download and
-    a recording get their audio copy.
+    """Download into the working directory, verified, and return the checks
+    that passed. An archive download gets its audio copy.
 
     A members-only refusal of the general profile marks the video
     members-only, and the download runs once more with the channel's member
     profile, if one exists."""
-    if r.live:
-        prepare_incoming(settings.incoming_root, r.job_id)
-    if begun.members and begun.profile is None:
-        # A poll passed the video while a member profile existed.
-        raise DownloadFailed(NO_MEMBER)
     download = partial(_download_as, r, begun, settings, runner, tools)
     try:
         info, checks = await download(begun.profile)
@@ -542,48 +497,9 @@ async def _download(
     if r.kind is JobKind.REPLACE:
         # The swap writes the audio copy of the remuxed file.
         return info, checks
-    if r.live:
-        await r.step("verifying")
-        checks = await _verify_recording(media, info, tools)
-        if not info.get("duration"):
-            # yt-dlp gives a live no duration. The Videos page shows the file's.
-            # Any error here would fail the job and delete the recording, as in
-            # _verify_recording, so the live is stored without a duration.
-            try:
-                duration = await asyncio.to_thread(watch.probe_duration, media, tools)
-            except Exception as e:
-                reason = f"{type(e).__name__}: {e}"
-                emit(log, logging.WARNING, "record.duration_failed", reason=reason)
-                duration = None
-            if duration is not None:
-                info = {**info, "duration": round(duration)}
     await r.step("audio")
     await audio.add(media, tools)
     return info, checks
-
-
-async def _verify_recording(
-    media: Path, info: dict[str, Any], tools: integrity.Tools
-) -> list[str] | None:
-    """The recording's checks, None when one fails. A failure keeps the
-    recording: it is the only copy of the live, so it is stored unverified."""
-    try:
-        checks = await asyncio.to_thread(integrity.verify_recording, media, info, tools)
-    except integrity.IntegrityFailed as e:
-        emit(log, logging.WARNING, "record.integrity_failed", check=e.check, **e.numbers)
-        return None
-    except Exception as e:
-        # Any other error would fail the job, which deletes the recording.
-        emit(
-            log,
-            logging.WARNING,
-            "record.integrity_failed",
-            check="error",
-            reason=f"{type(e).__name__}: {e}",
-        )
-        return None
-    emit(log, logging.INFO, "download.verified", checks=",".join(checks) or "none")
-    return checks
 
 
 async def _download_as(
@@ -594,7 +510,7 @@ async def _download_as(
     tools: integrity.Tools,
     profile: str | None,
 ) -> tuple[dict[str, Any], list[str] | None]:
-    """One download with `profile`'s cookies, verified for an archive job."""
+    """One download with `profile`'s cookies, verified."""
     r.profile = profile
     # Outside the working directory, so the cookie jar never moves into the tree.
     with tempfile.TemporaryDirectory(prefix="savetube-") as private:
@@ -603,14 +519,10 @@ async def _download_as(
             _params,
             r.workdir,
             cookiefile=cookiefile,
-            live=r.live,
             ratelimit=begun.ratelimit,
             video_id=r.video_id,
             media_only=r.kind is JobKind.REPLACE,
         )
-        if r.live:
-            live_params = params(begun.fmt, wait_until=begun.wait_until)
-            return await runner(video_url(r.video_id), live_params, r.report), None
         return await _unless_paused(
             r.sessionmaker,
             r.job_id,
@@ -667,18 +579,13 @@ async def _finish(
             video, swapped = await replace.swap_in(session, settings, job, prepared, tools)
             original = swapped.original_path
         else:
-            if r.live:
-                # The recorder gets no stream sizes from YouTube. The video page
-                # shows the measured ones.
-                info = formats.with_sizes(info, r.streams)
             video = await store(
                 session,
                 job=job,
                 info=info,
                 incoming=r.workdir,
                 archive_root=settings.archive_root,
-                # A recording goes straight into the tree.
-                ready_root=None if r.live else settings.ready_root,
+                ready_root=settings.ready_root,
                 from_shorts_tab=shorts,
             )
             await watch.start(session, video, video.completed_at)
@@ -687,8 +594,8 @@ async def _finish(
                 video.verified_at = video.completed_at
                 video.verified_checks = checks
         now = datetime.now(UTC)
-        unblocked = 0 if r.live else await _unblock(session, now)
-        profile_unblocked = 0 if r.live else await _unblock_profile(session, r.profile, now)
+        unblocked = await _unblock(session, now)
+        profile_unblocked = await _unblock_profile(session, r.profile, now)
         await session.commit()
     if prepared is not None:
         _remove_dirs(r)
@@ -737,28 +644,6 @@ async def _record_stop(r: _Run, e: asyncio.CancelledError | Paused) -> None:
     r.interrupted(logging.INFO, reason, _present_label(r.workdir))
 
 
-async def _record_not_started(r: _Run, begun: _Begun) -> None:
-    """End a recording whose stream was still upcoming at its deadline. The
-    run returns, so the recorder exits 0 and its Job takes no retry."""
-    shutil.rmtree(r.workdir, ignore_errors=True)
-    async with r.sessionmaker() as session:
-        job = await session.get(Job, r.job_id)
-        job.state = JobState.MISSED
-        job.finished_at = datetime.now(UTC)
-        job.log_tail = NOT_STARTED_LOG
-        await _set_video_state(session, r.video_id, VideoState.FAILED)
-        await session.commit()
-    emit(
-        log,
-        logging.WARNING,
-        "record.not_started",
-        job=r.job_id,
-        video=r.video_id,
-        **r.described,
-        scheduled=(begun.wait_until - NOT_STARTED_LIMIT).isoformat(),
-    )
-
-
 async def _record_failure(r: _Run, e: Exception, settings: Settings) -> bool:
     """Write the failure to the job row and log it: a YouTube block, an HTTP
     403, a degraded format list, a bare "Video unavailable" while another
@@ -768,7 +653,7 @@ async def _record_failure(r: _Run, e: Exception, settings: Settings) -> bool:
     while another video plays, also marks the video gone. Returns whether it
     wrote, False when the run lost its row."""
     message = str(e)
-    archive_failure = not r.live and isinstance(e, DownloadFailed)
+    archive_failure = isinstance(e, DownloadFailed)
     refused = forbidden(message) or degraded_formats(message)
     # A bare "Video unavailable" is a deleted video or this client refused.
     unavailable = archive_failure and bare_unavailable(message)
@@ -803,8 +688,7 @@ async def _record_failure(r: _Run, e: Exception, settings: Settings) -> bool:
     present = dir_size(r.workdir) if r.workdir.exists() else 0
     progressed = present > r.started_bytes
     if (
-        not r.live
-        and isinstance(e, DownloadFailed)
+        isinstance(e, DownloadFailed)
         and network_error(str(e))
         and (
             progressed
@@ -881,10 +765,9 @@ async def _record_failed(r: _Run, e: Exception, *, gone: bool = False) -> bool:
         job.finished_at = datetime.now(UTC)
         job.log_tail = (str(e) or type(e).__name__)[-LOG_TAIL_CHARS:]
         await _set_video_state(session, r.video_id, VideoState.GONE if gone else VideoState.FAILED)
-        if not r.live:
-            await _pin(session, r.video_id, None)
+        await _pin(session, r.video_id, None)
         await session.commit()
-    final = r.live or (r.limit is not None and r.attempt >= r.limit)
+    final = r.limit is not None and r.attempt >= r.limit
     emit(
         log,
         logging.ERROR if final else logging.WARNING,

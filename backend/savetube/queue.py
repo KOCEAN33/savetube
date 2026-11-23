@@ -42,7 +42,7 @@ async def enqueue(job_id: int) -> int:
 @app.task(name="archive", queue=ARCHIVE_QUEUE, retry=False)
 async def archive(job_id: int) -> None:
     try:
-        await jobs.run(job_id, get_settings(), live=False, runner=jobs.in_child)
+        await jobs.run(job_id, get_settings(), runner=jobs.in_child)
     except Exception as e:
         # The job row and the `job.failed` line hold it. Raising would make
         # procrastinate log a second error with the same traceback.

@@ -18,6 +18,7 @@ from conftest import (
     _events,
     _fields,
     _queue_row,
+    _record_live,
     _sql,
     _sql_rows,
     _Steps,
@@ -466,8 +467,6 @@ async def test_the_end_of_a_watch_keeps_an_original_with_its_own_7_days(settings
 
 @pytest.mark.anyio
 async def test_a_finished_recording_starts_a_watch(settings):
-    from savetube.jobs import run
-
     _sql(
         settings,
         "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
@@ -487,9 +486,9 @@ async def test_a_finished_recording_starts_a_watch(settings):
                 "release_timestamp": int(aired.timestamp()), "ext": "mkv",
                 "requested_downloads": [{"filepath": str(media)}]}  # fmt: skip
 
+    await _record_live(settings, _Steps(record))
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await run(1, settings, live=True, runner=_Steps(record), sessionmaker=sessionmaker)
     async with sessionmaker() as session:
         watch = await session.get(FormatWatch, "v1")
     await engine.dispose()
@@ -499,7 +498,7 @@ async def test_a_finished_recording_starts_a_watch(settings):
 
 @pytest.mark.anyio
 async def test_a_recording_stores_the_measured_size_of_each_stream(settings, monkeypatch):
-    from savetube.jobs import run, runners
+    from savetube.jobs import runners
 
     _sql(
         settings,
@@ -530,9 +529,9 @@ async def test_a_recording_stores_the_measured_size_of_each_stream(settings, mon
                 "requested_downloads": [{"filepath": str(media)}]}  # fmt: skip
 
     monkeypatch.setattr(runners, "download", download)
+    await _record_live(settings, runners.in_process)
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await run(1, settings, live=True, runner=runners.in_process, sessionmaker=sessionmaker)
     async with sessionmaker() as session:
         video = await session.get(Video, "v1")
     await engine.dispose()
@@ -546,8 +545,6 @@ async def test_a_recording_stores_the_measured_size_of_each_stream(settings, mon
 
 async def _record_media(settings, write, caplog=None, tools=None):
     """Record v1 with a runner that writes the recording with `write`."""
-    from savetube.jobs import run
-
     _sql(
         settings,
         "INSERT INTO channel (id, name, dir_name) VALUES ('UC1', 'A', 'A [UC1]')",
@@ -564,9 +561,9 @@ async def _record_media(settings, write, caplog=None, tools=None):
                 "ext": "mkv", "vcodec": "mpeg4", "acodec": "opus",
                 "requested_downloads": [{"filepath": str(media)}]}  # fmt: skip
 
+    await _record_live(settings, _Steps(record), tools=tools)
     engine = make_engine(settings.sqlalchemy_url)
     sessionmaker = make_sessionmaker(engine)
-    await run(1, settings, live=True, runner=_Steps(record), sessionmaker=sessionmaker, tools=tools)
     async with sessionmaker() as session:
         video = await session.get(Video, "v1")
         job = await session.get(Job, 1)
@@ -1255,9 +1252,7 @@ async def _replace(settings, job_id, runner):
     # The worker's task runs every queued job through jobs.run, which raises
     # a failure it already wrote to the row.
     try:
-        await run(
-            job_id, settings, live=False, runner=runner, sessionmaker=sessionmaker, tools=Tools()
-        )
+        await run(job_id, settings, runner=runner, sessionmaker=sessionmaker, tools=Tools())
     except Exception as e:
         if not recorded(e):
             raise
