@@ -519,8 +519,8 @@ def _combined(format_id, height, url, **extra):
     }
 
 
-def _fake_youtube(monkeypatch, formats):
-    """yt_dlp.YoutubeDL answers `fake:v1` with `formats`, nothing else."""
+def _fake_youtube(monkeypatch, formats, warnings=()):
+    """yt_dlp.YoutubeDL answers `fake:v1` with `warnings`, then `formats`."""
     import yt_dlp
     from yt_dlp.extractor.common import InfoExtractor
 
@@ -528,6 +528,8 @@ def _fake_youtube(monkeypatch, formats):
         _VALID_URL = r"fake:(?P<id>\w+)"
 
         def _real_extract(self, url):
+            for warning in warnings:
+                self.report_warning(warning, "v1")
             return {"id": "v1", "title": "t", "formats": [dict(f) for f in formats]}
 
     class _YoutubeDL(yt_dlp.YoutubeDL):
@@ -729,3 +731,35 @@ def test_a_failure_with_no_challenge_warning_is_no_challenge_failure(tmp_path, m
     text = _reload_error(tmp_path)
     assert "The page needs to be reloaded" in text
     assert not challenge_failed(text)
+
+
+# yt-dlp's warning when YouTube served one client's formats without URLs.
+SABR_WARNING = (
+    "Some web_embedded client https formats have been skipped as they are missing a URL."
+    " YouTube may have enabled the SABR-only streaming experiment for your account. See"
+    "  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details"
+)
+
+
+@pytest.mark.parametrize("fmt", [None, "251+399"], ids=["selector", "pinned"])
+def test_a_list_cut_by_sabr_names_sabr(tmp_path, monkeypatch, fmt):
+    """A cookie session under YouTube's SABR experiment got only progressive 18,
+    while a session without cookies offered 251 and 399."""
+    from savetube.ytdl import sabr_only
+
+    _fake_youtube(monkeypatch, [_combined("18", 360, UNREACHABLE)], [SABR_WARNING])
+    params = build_params(tmp_path) | ({"format": fmt} if fmt else {})
+    text = _download_error("fake:v1", params)
+    assert text is not None
+    assert sabr_only(text)
+
+
+@pytest.mark.parametrize("fmt", [None, "251+399"], ids=["selector", "pinned"])
+def test_a_cut_list_with_no_sabr_warning_is_no_sabr(tmp_path, monkeypatch, fmt):
+    from savetube.ytdl import sabr_only
+
+    _fake_youtube(monkeypatch, [_combined("18", 360, UNREACHABLE)])
+    params = build_params(tmp_path) | ({"format": fmt} if fmt else {})
+    text = _download_error("fake:v1", params)
+    assert text is not None
+    assert not sabr_only(text)

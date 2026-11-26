@@ -17,6 +17,7 @@ from savetube.logs import emit, human_bytes
 from savetube.storage import dir_size
 from savetube.ytdl import (
     FORBIDDEN_FALLBACK_CLIENTS,
+    FORMAT_GONE,
     exclude_formats,
     forbidden,
     format_server_error,
@@ -27,8 +28,6 @@ from savetube.ytdl import (
 
 log = logging.getLogger(__package__)
 
-# yt-dlp's text when a pinned format is no longer offered.
-FORMAT_GONE = "Requested format is not available"
 # Formats one attempt excludes after googlevideo refused each before its first
 # byte. A video offers a few formats near each quality, and more refusals in a
 # row point at the host rather than one format.
