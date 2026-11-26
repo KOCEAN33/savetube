@@ -2,8 +2,8 @@
 FROM node:26-bookworm-slim AS frontend
 WORKDIR /src
 # npm, not corepack: corepack may not know the keys that sign newer pnpm releases.
-RUN npm install -g pnpm@12.9.1
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN npm install -g "$(node -p 'require("./package.json").packageManager')"
 RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm build
