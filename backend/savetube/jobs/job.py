@@ -21,6 +21,7 @@ from savetube.db import default_sessionmaker
 from savetube.db.models import CookieProfile, Job, JobKind, JobState, Video, VideoState
 from savetube.joblog import (
     BLOCKED_LOG,
+    CHALLENGE_LOG,
     NETWORK_LOG,
     PROFILE_BLOCKED_LOG,
     SHUTDOWN_LOG,
@@ -66,6 +67,7 @@ from savetube.ytdl import (
     DEFAULT_FORMAT,
     bare_unavailable,
     build_params,
+    challenge_failed,
     degraded_formats,
     forbidden,
     gone,
@@ -645,10 +647,11 @@ async def _record_stop(r: _Run, e: asyncio.CancelledError | Paused) -> None:
 
 
 async def _record_failure(r: _Run, e: Exception, settings: Settings) -> bool:
-    """Write the failure to the job row and log it: a YouTube block, an HTTP
-    403, a degraded format list, a bare "Video unavailable" while another
-    video does not play, or ends a streak when no check tells, or a network
-    error interrupts an archive job, anything else fails it. A failure that
+    """Write the failure to the job row and log it: a YouTube block, a JS
+    challenge yt-dlp could not solve, an HTTP 403, a degraded format list, a
+    bare "Video unavailable" while another video does not play, or ends a
+    streak when no check tells, or a network error interrupts an archive job,
+    anything else fails it. A failure that
     says the video is removed or private, or a bare "Video unavailable"
     while another video plays, also marks the video gone. Returns whether it
     wrote, False when the run lost its row."""
@@ -667,6 +670,12 @@ async def _record_failure(r: _Run, e: Exception, settings: Settings) -> bool:
             r.sessionmaker, r.video_id, UNAVAILABLE_STREAK - 1, UNAVAILABLE_STREAK_WINDOW
         )
     )
+    if archive_failure and challenge_failed(message):
+        if not await _blocked(r.sessionmaker, r.job_id, e, r.disowned, CHALLENGE_LOG):
+            return False
+        r.interrupted(logging.WARNING, CHALLENGE_LOG, _present_label(r.workdir))
+        setattr(e, _RECORDED, True)
+        return True
     if archive_failure and not youtube_block(message) and refused and r.profile is not None:
         if not await _profile_blocked(r.sessionmaker, r.job_id, r.profile, e, r.disowned):
             return False

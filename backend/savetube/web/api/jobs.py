@@ -36,6 +36,8 @@ def job_reason(log_tail: str | None) -> str | None:
         return PROFILE_BLOCKED_LOG
     if log_tail.startswith(BLOCKED_LOG) or youtube_block(log_tail):
         return BLOCKED_LOG
+    if log_tail.startswith(CHALLENGE_LOG):
+        return CHALLENGE_LOG
     if log_tail.startswith(STALLED_LOG):
         return "worker stopped"
     if log_tail.startswith(SHUTDOWN_LOG):

@@ -783,3 +783,34 @@ async def test_a_degraded_format_list_with_a_member_profile_pauses_that_profile(
         1,
         "v1",
     )
+
+
+CHALLENGE = (
+    "yt-dlp failed YouTube's JS challenges:"
+    " DownloadError: ERROR: [youtube] v1: The page needs to be reloaded."
+)
+
+
+@pytest.mark.anyio
+async def test_a_failed_js_challenge_interrupts_the_archive_job_and_pauses_downloads(settings):
+    """An outdated yt-dlp fails every download the same way, so the failure is
+    no fault of the video and counts none of its attempts."""
+    _job_rows(settings, "UPDATE channel SET format = 'wa'", "SELECT setval('job_id_seq', 200)")
+
+    async def challenge_failed(params, report):
+        from savetube.jobs import DownloadFailed
+
+        raise DownloadFailed(CHALLENGE)
+
+    jobs, _ = await _run_steps(settings, _Steps(challenge_failed))
+    assert (jobs[1].state, jobs[1].queue_job_id, jobs[1].attempts) == (JobState.QUEUED, None, 0)
+    assert [j.id for j in jobs.values() if j.video_id == "v1" and j.state is JobState.FAILED] == []
+    [history] = [j for j in jobs.values() if j.id != 1]
+    assert (history.state, history.video_id) == ("interrupted", "v1")
+    assert history.log_tail.startswith("yt-dlp failed YouTube's JS challenges")
+    _, until = _block_state(settings)
+    assert until is not None and until > datetime.now(UTC)
+
+    from savetube.joblog import CHALLENGE_LOG
+
+    assert history.log_tail.startswith(CHALLENGE_LOG)

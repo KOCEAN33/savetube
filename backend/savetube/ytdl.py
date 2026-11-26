@@ -13,6 +13,7 @@ import yt_dlp
 from yt_dlp.plugins import load_all_plugins
 from yt_dlp.postprocessor import PostProcessor
 
+from savetube.joblog import CHALLENGE_LOG
 from savetube.layout import OUTTMPL
 from savetube.logs import YtdlpLogger
 
@@ -112,6 +113,8 @@ MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
 # yt-dlp's text for a stream that ended before a format was chosen. YouTube can
 # show it for many hours, until the archive of the stream is ready.
 LIVE_ENDED_MARKERS = ("this live event has ended",)
+# yt-dlp's warnings when it cannot solve a JS challenge of YouTube's player.
+CHALLENGE_MARKERS = ("challenge solving failed", "signature solving failed")
 # The membership level in the second form of that text.
 _MEMBERS_LEVEL = re.compile(r"members on level: (.+?) \(or any higher level\)")
 # yt-dlp's text when googlevideo refuses the media, such as "unable to download
@@ -433,18 +436,23 @@ class _BeforeDownload(PostProcessor):
         return [], info
 
 
-class _WaitLogger(YtdlpLogger):
+class _DownloadLogger(YtdlpLogger):
     """Ends yt-dlp's wait for a stream on YouTube's members-only text or on
     LIVE_ENDED_MARKERS. While `wait_for_video` is set, yt-dlp only warns that
     text and extracts again forever. Without the option, it raises "No video
-    formats found", so `download` raises the kept text instead."""
+    formats found", so `download` raises the kept text instead. Also notes a
+    CHALLENGE_MARKERS warning, whose failure `download` names as such."""
 
     def __init__(self) -> None:
         self.ydl: yt_dlp.YoutubeDL | None = None
         self.final: str | None = None
+        self.challenge = False
 
     def warning(self, msg: str) -> None:
         super().warning(msg)
+        text = msg.lower()
+        if any(marker in text for marker in CHALLENGE_MARKERS):
+            self.challenge = True
         if self.ydl is not None and (members_only(msg) or _live_ended(msg)):
             self.final = msg
             self.ydl.params.pop("wait_for_video", None)
@@ -453,6 +461,12 @@ class _WaitLogger(YtdlpLogger):
 def _live_ended(message: str) -> bool:
     text = message.lower()
     return any(marker in text for marker in LIVE_ENDED_MARKERS)
+
+
+def challenge_failed(message: str) -> bool:
+    """Whether a download failed because yt-dlp could not solve YouTube's JS
+    challenges, as `download` raises it."""
+    return CHALLENGE_LOG.lower() in message.lower()
 
 
 def download(
@@ -467,7 +481,7 @@ def download(
     With WAIT_UNTIL in `params`, a stream with no format chosen by then
     raises NotStarted. With REFUSE_DEGRADED, a `degraded` pick raises
     DegradedFormats before any byte."""
-    logger = _WaitLogger()
+    logger = _DownloadLogger()
     params = {**params, "logger": logger}
     wait_until = params.pop(WAIT_UNTIL, None)
     refuse_degraded = params.pop(REFUSE_DEGRADED, False)
@@ -504,6 +518,9 @@ def download(
                 raise NotStarted(str(e)) from e
             if logger.final is not None and not chosen.is_set():
                 raise yt_dlp.utils.DownloadError(logger.final) from e
+            # The error itself names a symptom, such as "The page needs to be reloaded".
+            if logger.challenge and not chosen.is_set():
+                raise yt_dlp.utils.DownloadError(f"{CHALLENGE_LOG}: {e}") from e
             raise
         finally:
             if timer is not None:

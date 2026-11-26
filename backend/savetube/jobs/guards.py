@@ -87,9 +87,12 @@ async def _blocked(
     job_id: int,
     e: DownloadFailed,
     disowned: Callable[[AsyncSession], Awaitable[bool]],
+    reason: str = BLOCKED_LOG,
 ) -> bool:
     """Interrupt an archive job YouTube refused, so it counts no attempt and
-    keeps its parts, and pause archive downloads. Jobs refused together pause
+    keeps its parts, and pause archive downloads. `reason` heads the
+    interrupted row's log_tail, such as CHALLENGE_LOG for a failure every
+    download shares until yt-dlp is updated. Jobs refused together pause
     once: only the first one past an expired pause lengthens it. A run whose
     row `disowned` finds is no longer its own writes nothing, and this returns
     False."""
@@ -108,7 +111,9 @@ async def _blocked(
             pause = backoff(limits.block_count)
             limits.blocked_until = now + pause
         job = await session.get(Job, job_id)
-        await _interrupt(session, job, f"{BLOCKED_LOG}: {e}"[:LOG_TAIL_CHARS])
+        text = str(e)
+        tail = text if text.startswith(reason) else f"{reason}: {text}"
+        await _interrupt(session, job, tail[:LOG_TAIL_CHARS])
         await session.commit()
     if pause is not None:
         emit(
