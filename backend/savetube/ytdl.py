@@ -109,6 +109,9 @@ SERVER_ERROR_MARKERS = (("http error 500", "giving up after"), ("the downloaded 
 # channel's members on level: ... Join this channel to get access to
 # members-only content and other exclusive perks."
 MEMBERS_ONLY_MARKERS = ("join this channel", "members-only content")
+# yt-dlp's text for a stream that ended before a format was chosen. YouTube can
+# show it for many hours, until the archive of the stream is ready.
+LIVE_ENDED_MARKERS = ("this live event has ended",)
 # The membership level in the second form of that text.
 _MEMBERS_LEVEL = re.compile(r"members on level: (.+?) \(or any higher level\)")
 # yt-dlp's text when googlevideo refuses the media, such as "unable to download
@@ -431,20 +434,25 @@ class _BeforeDownload(PostProcessor):
 
 
 class _WaitLogger(YtdlpLogger):
-    """Ends yt-dlp's wait for a stream on YouTube's members-only text. While
-    `wait_for_video` is set, yt-dlp only warns that text and extracts again
-    forever. Without the option, it raises "No video formats found", so
-    `download` raises the kept text instead."""
+    """Ends yt-dlp's wait for a stream on YouTube's members-only text or on
+    LIVE_ENDED_MARKERS. While `wait_for_video` is set, yt-dlp only warns that
+    text and extracts again forever. Without the option, it raises "No video
+    formats found", so `download` raises the kept text instead."""
 
     def __init__(self) -> None:
         self.ydl: yt_dlp.YoutubeDL | None = None
-        self.members_only: str | None = None
+        self.final: str | None = None
 
     def warning(self, msg: str) -> None:
         super().warning(msg)
-        if self.ydl is not None and members_only(msg):
-            self.members_only = msg
+        if self.ydl is not None and (members_only(msg) or _live_ended(msg)):
+            self.final = msg
             self.ydl.params.pop("wait_for_video", None)
+
+
+def _live_ended(message: str) -> bool:
+    text = message.lower()
+    return any(marker in text for marker in LIVE_ENDED_MARKERS)
 
 
 def download(
@@ -494,8 +502,8 @@ def download(
         except yt_dlp.utils.DownloadError as e:
             if gave_up.is_set() and not chosen.is_set():
                 raise NotStarted(str(e)) from e
-            if logger.members_only is not None and not chosen.is_set():
-                raise yt_dlp.utils.DownloadError(logger.members_only) from e
+            if logger.final is not None and not chosen.is_set():
+                raise yt_dlp.utils.DownloadError(logger.final) from e
             raise
         finally:
             if timer is not None:
