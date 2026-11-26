@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from yt_dlp.utils import DownloadError
 
-from savetube import cookies, limits, logs
+from savetube import cookies, limits, logs, membership
 from savetube.config import Settings
 from savetube.db.models import Membership, SourceKind
 from savetube.layout import VideoType, classify
@@ -155,7 +155,7 @@ async def scan_channel(
     base: str,
     *,
     lister: Lister,
-    prober: cookies.Prober,
+    prober: membership.Prober,
     slots: asyncio.Semaphore,
 ) -> dict[str, Any]:
     """List the first page of each video tab without cookies and with each
@@ -207,8 +207,8 @@ async def scan_channel(
             await session.commit()
         try:
             async with asyncio.timeout(max(SCAN_SECONDS - (time.monotonic() - started), 0)):
-                await cookies.check_memberships(
-                    sessionmaker, settings, {channel_id: members_only[0]}, prober=prober
+                await membership.check_memberships(
+                    sessionmaker, settings, {channel_id: members_only}, prober=prober
                 )
         except TimeoutError:
             # The next poll that lists a members-only entry checks the rest.

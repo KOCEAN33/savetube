@@ -284,3 +284,17 @@ async def test_the_outcome_of_a_job_no_longer_open_is_deleted_unapplied(settings
     assert jobs[1].state is JobState.CANCELLED
     assert videos["v1"].state is VideoState.PENDING
     assert not (settings.incoming_root / "1.json").exists()
+
+
+@pytest.mark.anyio
+async def test_a_recorder_refused_by_level_records_the_level_on_its_video(settings):
+    error = (
+        "ERROR: [youtube] v1: This video is available to this channel's members on level:"
+        " KMNCLUB Premium (or any higher level). Join this channel to get access to"
+        " members-only content and other exclusive perks."
+    )
+    _record_rows(settings, (1, "running", "NULL"))
+    _outcome(settings, 1, outcome="failed", error=error)
+    jobs, videos = await _settle(settings, {1: "failed"})
+    assert jobs[1].state is JobState.FAILED and jobs[1].log_tail == error
+    assert videos["v1"].members_level == "KMNCLUB Premium"

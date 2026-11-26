@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import cookies, formats, logs
+from savetube import cookies, formats, logs, membership
 from savetube.config import Settings
 from savetube.db.models import FormatWatch, Job, JobKind, JobState, Video, VideoState
 from savetube.integrity import IntegrityFailed, Tools
@@ -219,7 +219,7 @@ async def check(
     async with sessionmaker() as session:
         video = await session.get(Video, video_id)
         if video.type is VideoType.MEMBERS:
-            profile = await cookies.member_profile(
+            profile = await membership.member_profile(
                 session, video.channel_id, cookies.profiles(settings)
             )
         else:
@@ -230,7 +230,7 @@ async def check(
         except Exception as e:
             if video.type is VideoType.MEMBERS or not members_only(str(e)):
                 raise
-            profile = await cookies.mark_members(sessionmaker, settings, video_id)
+            profile = await membership.mark_members(sessionmaker, settings, video_id)
             if profile is None:
                 raise
             emit(log, logging.INFO, "watch.member_retry", video=video_id, cookies=profile)

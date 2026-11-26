@@ -18,7 +18,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from yt_dlp.utils import DownloadError
 
-from savetube import cookies, logs, words
+from savetube import logs, membership, words
 from savetube.db.models import (
     Channel,
     Job,
@@ -220,7 +220,7 @@ async def check_channel(
                     profile = None
                     if member_probe is not None and members_only(str(e)):
                         async with sessionmaker() as session:
-                            profile = await cookies.member_profile(
+                            profile = await membership.member_profile(
                                 session, channel_id, profiles or []
                             )
                     if profile is None:

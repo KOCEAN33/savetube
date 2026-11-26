@@ -21,6 +21,7 @@ from conftest import (
     _run_steps,
     _Runner,
     _sql,
+    _sql_rows,
     _Steps,
 )
 
@@ -859,3 +860,163 @@ def test_api_cookie_profiles_shows_the_end_of_a_profile_pause_that_holds(setting
                 "blocked_until": "2099-01-01T00:00:00Z",
             },
         ]
+
+
+LEVEL = "KMNCLUB Premium"
+# YouTube's refusal of a higher-tier members-only video. A non-member and a
+# lower-tier member get the same text, so it proves nothing about membership.
+LEVEL_ERROR = (
+    "ERROR: [youtube] m2: This video is available to this channel's members on level:"
+    " KMNCLUB Premium (or any higher level). Join this channel to get access to"
+    " members-only content and other exclusive perks."
+)
+
+
+def _level_rows(settings, *extra):
+    """A channel tab source, and a stored members-only video m2 without a level."""
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'VESPERBELL', 'VESPERBELL [{VESP}]')",
+        "INSERT INTO source (id, url, kind, channel_id, enabled, poll_interval_minutes) VALUES"
+        f" (1, 'https://www.youtube.com/channel/{VESP}/streams', 'tab', '{VESP}', true, 360)",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        f" ('m2', '{VESP}', 'members', 'm2', 'pending')",
+        *extra,
+    )
+
+
+def _members_listing(*video_ids):
+    return {
+        "channel_id": VESP,
+        "channel": "VESPERBELL",
+        "entries": [
+            {"id": v, "title": v, "live_status": "was_live", "availability": "subscriber_only"}
+            for v in video_ids
+        ],
+    }
+
+
+def _memberships(settings):
+    return [
+        tuple(r)
+        for r in _sql_rows(
+            settings,
+            "SELECT channel_id, profile, is_member FROM membership ORDER BY profile",
+        )
+    ]
+
+
+def _levels(settings):
+    return dict(
+        tuple(r) for r in _sql_rows(settings, "SELECT id, members_level FROM video ORDER BY id")
+    )
+
+
+async def _poll_level_refusal(settings):
+    """One poll of source 1 listing m2, with a prober that refuses with the level text."""
+    from yt_dlp.utils import DownloadError
+
+    probed = []
+
+    def prober(video_id, cookiefile):
+        probed.append((video_id, cookiefile.read_text().removeprefix("# ").strip()))
+        raise DownloadError(LEVEL_ERROR)
+
+    engine = make_engine(settings.sqlalchemy_url)
+    await _poll(make_sessionmaker(engine), settings, 1, _members_listing("m2"), prober=prober)
+    await engine.dispose()
+    return probed
+
+
+@pytest.mark.anyio
+async def test_a_level_refusal_keeps_the_previous_membership_result(settings):
+    _level_rows(
+        settings,
+        "INSERT INTO membership (channel_id, profile, is_member, video_id, checked_at) VALUES"
+        f" ('{VESP}', 'main', true, 'old', now() - interval '25 hours')",
+    )
+    settings = _profiles(settings, "main")
+    assert await _poll_level_refusal(settings) == [("m2", "main")]
+    assert _memberships(settings) == [(VESP, "main", True)]
+    assert _levels(settings)["m2"] == LEVEL
+
+
+@pytest.mark.anyio
+async def test_a_level_refusal_records_no_membership_result(settings):
+    _level_rows(settings)
+    settings = _profiles(settings, "main")
+    assert await _poll_level_refusal(settings) == [("m2", "main")]
+    assert _memberships(settings) == []
+    assert _levels(settings)["m2"] == LEVEL
+
+
+@pytest.mark.anyio
+async def test_a_membership_check_skips_a_video_with_a_known_level(settings):
+    _level_rows(
+        settings,
+        "INSERT INTO video (id, channel_id, type, title, state, members_level) VALUES"
+        f" ('m1', '{VESP}', 'members', 'm1', 'pending', '{LEVEL}')",
+    )
+    settings = _profiles(settings, "main")
+    probed = []
+
+    def prober(video_id, cookiefile):
+        probed.append(video_id)
+        return {"id": video_id, "formats": [{"format_id": "251"}]}
+
+    engine = make_engine(settings.sqlalchemy_url)
+    await _poll(make_sessionmaker(engine), settings, 1, _members_listing("m1", "m2"), prober=prober)
+    await engine.dispose()
+    assert probed == ["m2"]
+
+
+@pytest.mark.anyio
+async def test_a_level_refusal_of_a_download_fails_the_job_and_records_the_level(settings):
+    _job_rows(
+        settings,
+        "UPDATE video SET type = 'members' WHERE id = 'v1'",
+        "INSERT INTO membership (channel_id, profile, is_member, checked_at, video_id) VALUES"
+        " ('UC1', 'main', true, now(), 'other')",
+    )
+    settings = _profiles(settings, "main")
+    cookies = []
+    runner = _Steps(_cookie_step(cookies, _refuse(LEVEL_ERROR)))
+    jobs, video = await _run_steps(settings, runner)
+    assert cookies == ["main"]
+    assert jobs[1].state is JobState.FAILED
+    assert video.members_level == LEVEL
+
+
+@pytest.mark.anyio
+async def test_a_replaced_cookie_file_clears_every_video_level(settings):
+    from savetube.cookies import read_accounts, record_profiles
+
+    settings = _profiles(settings, "main")
+    engine = make_engine(settings.sqlalchemy_url)
+    sessionmaker = make_sessionmaker(engine)
+    async with sessionmaker() as session:
+        await record_profiles(session, ["main"], datetime.now(UTC))
+        await session.commit()
+
+    def reader(cookiefile):
+        return ("vivi kikirara", "@vivikikirara")
+
+    await read_accounts(sessionmaker, settings, reader=reader)
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        f" ('{VESP}', 'V', 'V [{VESP}]'), ('UC1', 'A', 'A [UC1]')",
+        "INSERT INTO video (id, channel_id, type, title, state, members_level) VALUES"
+        f" ('m1', '{VESP}', 'members', 'm1', 'pending', '{LEVEL}'),"
+        " ('m2', 'UC1', 'members', 'm2', 'failed', 'Gold')",
+    )
+
+    # The same file keeps the levels.
+    await read_accounts(sessionmaker, settings, reader=reader)
+    assert _levels(settings) == {"m1": LEVEL, "m2": "Gold"}
+
+    (settings.cookies_dir / "main.txt").write_text("# main\n# rotated\n")
+    await read_accounts(sessionmaker, settings, reader=reader)
+    assert _levels(settings) == {"m1": None, "m2": None}
+    await engine.dispose()

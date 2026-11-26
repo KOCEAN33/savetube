@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import cookies, watch
+from savetube import cookies, membership, watch
 from savetube.config import Settings
 from savetube.db.models import Job, JobKind, JobState, MissReason, Video, VideoState
 from savetube.jobs.recording import (
@@ -102,8 +102,8 @@ async def _recording(session: AsyncSession, settings: Settings, job: Job) -> Rec
     if video is None:
         profile, member = await cookies.general(session), None
     else:
-        profile = await cookies.for_video(session, video, present)
-        member = await cookies.member_profile(session, video.channel_id, present)
+        profile = await membership.for_video(session, video, present)
+        member = await membership.member_profile(session, video.channel_id, present)
     return Recording(
         job_id=job.id,
         video_id=job.video_id,
@@ -185,6 +185,8 @@ async def _apply(
             _end(job, JobState.MISSED, now, log_tail=NOT_STARTED_LOG)
         else:
             _end(job, JobState.FAILED, now, log_tail=outcome["error"][-LOG_TAIL_CHARS:])
+            if job.video_id is not None:
+                await membership.note_level(session, job.video_id, outcome["error"])
         if job.video_id is not None:
             await _set_video_state(session, job.video_id, VideoState.FAILED)
         await session.commit()

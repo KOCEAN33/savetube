@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased, defer
 from yt_dlp.utils import DownloadError
 
-from savetube import cookies, limits, logs, words
+from savetube import cookies, limits, logs, membership, words
 from savetube.config import Settings
 from savetube.db.models import (
     Channel,
@@ -154,7 +154,7 @@ class Synced:
     added: int = 0
     disabled: list[Source] = field(default_factory=list)
     # One listed members-only video id per channel, for the membership checks.
-    members_only: dict[str, str] = field(default_factory=dict)
+    members_only: dict[str, list[str]] = field(default_factory=dict)
 
 
 async def sync(
@@ -189,7 +189,7 @@ async def sync(
     result = Synced(listed=len(listed))
     for vid, e in listed.items():
         if e["channel_id"] and classify(e) is VideoType.MEMBERS:
-            result.members_only.setdefault(e["channel_id"], vid)
+            result.members_only.setdefault(e["channel_id"], []).append(vid)
     if not listed:
         # Keeps the last titles for suggestions and the preview.
         return result
@@ -206,8 +206,9 @@ async def sync(
     for vid, v in videos.items():
         if v.type is VideoType.MEMBERS:
             listed[vid]["availability"] = "subscriber_only"
-            if listed[vid]["channel_id"]:
-                result.members_only.setdefault(listed[vid]["channel_id"], vid)
+            channel_id = listed[vid]["channel_id"]
+            if channel_id and vid not in result.members_only.setdefault(channel_id, []):
+                result.members_only[channel_id].append(vid)
 
     if source.kind is SourceKind.PLAYLIST and not source.other_channels and not source.channel_id:
         source.last_error = NO_OWNER
@@ -234,7 +235,7 @@ async def sync(
     # The source's channel holds the date cutoff, also for another channel's
     # video in its playlist.
     channel = await session.get(Channel, source.channel_id) if source.channel_id else None
-    members = await cookies.member_channels(session, list(result.members_only), profiles)
+    members = await membership.member_channels(session, list(result.members_only), profiles)
     entries: dict[str, dict[str, Any]] = {}
     skipped: dict[str, str] = {}
     for vid, e in listed.items():
@@ -502,7 +503,7 @@ async def poll_source(
     *,
     lister: Lister,
     cancel: Cancel,
-    prober: cookies.Prober,
+    prober: membership.Prober,
 ) -> None:
     # yt-dlp's own lines during the listing carry the source too.
     with logs.context(source=source_id):
@@ -518,7 +519,7 @@ async def _poll_source(
     *,
     lister: Lister,
     cancel: Cancel,
-    prober: cookies.Prober,
+    prober: membership.Prober,
 ) -> None:
     async with sessionmaker() as session:
         source = await session.get(Source, source_id)
@@ -599,7 +600,7 @@ async def _poll_source(
             reason=reason,
         )
     _log_done(source_id, url, synced, cancelled, time.monotonic() - started)
-    await cookies.check_memberships(sessionmaker, settings, synced.members_only, prober=prober)
+    await membership.check_memberships(sessionmaker, settings, synced.members_only, prober=prober)
 
 
 async def _list(
@@ -625,9 +626,9 @@ async def _member_lister(
     async with sessionmaker() as session:
         if limits.blocked(await limits.load(session), datetime.now(UTC)) is not None:
             return None
-        if general is not None and await cookies.member_profile(session, channel_id, [general]):
+        if general is not None and await membership.member_profile(session, channel_id, [general]):
             return None
-        return await cookies.member_profile(session, channel_id, present)
+        return await membership.member_profile(session, channel_id, present)
 
 
 def _log_done(source_id: int, url: str, synced: Synced, cancelled: int, took: float) -> None:
