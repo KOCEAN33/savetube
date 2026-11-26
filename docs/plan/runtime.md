@@ -45,7 +45,7 @@ One image, three roles, plus a recorder Job per live.
 - `yt_dlp.YoutubeDL` runs in-process. Progress arrives through `progress_hooks`, and `extract_info` returns the info dict without JSON parsing.
 - One `YoutubeDL` instance per download. An instance is never shared between concurrent downloads.
 - Each archive download runs in its own child process. A Python thread cannot be stopped from outside, and a cancel or a hung download needs a process kill. A recorder is already one process in its own pod.
-- `yt-dlp[default]` pins the matching `yt-dlp-ejs`. yt-dlp 2026.8.19 pins `yt-dlp-ejs==0.8.0` and needs Python 3.10 or later.
+- `yt-dlp[default]` pins the matching `yt-dlp-ejs`.
 - `bgutil-ytdlp-pot-provider` installs from PyPI as a yt-dlp plugin. The plugin is the client; the provider server runs as the sidecar.
 - yt-dlp, `yt-dlp-ejs`, and the plugin sit in one lockfile. Renovate bumps them, and the image rebuilds on each bump.
 - The image adds Deno and ffmpeg. The base image is glibc, because Deno does not support musl.

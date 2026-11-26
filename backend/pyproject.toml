@@ -21,7 +21,7 @@ dependencies = [
     "pydantic-settings>=2.16.0",
     "sqlalchemy[asyncio]>=2.1.5",
     "uvicorn[standard]>=0.54.0",
-    "yt-dlp[default]>=2026.8.19",
+    "yt-dlp[default]>=2026.11.23",
 ]
 
 [project.scripts]
