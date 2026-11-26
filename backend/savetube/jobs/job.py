@@ -74,6 +74,7 @@ from savetube.ytdl import (
     members_only,
     network_error,
     probe_video,
+    sabr_only,
     youtube_block,
 )
 
@@ -481,20 +482,43 @@ async def _download(
 
     A members-only refusal of the general profile marks the video
     members-only, and the download runs once more with the channel's member
-    profile, if one exists."""
+    profile, if one exists. A profile YouTube served only SABR formats
+    (savetube.ytdl.sabr_only) on a video not members-only gets one more run
+    without cookies."""
     download = partial(_download_as, r, begun, settings, runner, tools)
     try:
         info, checks = await download(begun.profile)
     except DownloadFailed as e:
-        if begun.members or not members_only(str(e)):
+        if begun.members:
             raise
-        profile = await membership.mark_members(r.sessionmaker, settings, r.video_id)
-        if profile is None:
-            raise
-        emit(log, logging.INFO, "job.member_retry", job=r.job_id, video=r.video_id, cookies=profile)
-        info, checks = await download(profile)
-        # The general profile's refusal proves the video members-only.
-        info = {**info, "availability": "subscriber_only"}
+        if begun.profile is not None and sabr_only(str(e)):
+            emit(
+                log,
+                logging.WARNING,
+                "job.cookie_free_retry",
+                job=r.job_id,
+                video=r.video_id,
+                cookies=begun.profile,
+                reason="SABR",
+            )
+            info, checks = await download(None)
+        else:
+            if not members_only(str(e)):
+                raise
+            profile = await membership.mark_members(r.sessionmaker, settings, r.video_id)
+            if profile is None:
+                raise
+            emit(
+                log,
+                logging.INFO,
+                "job.member_retry",
+                job=r.job_id,
+                video=r.video_id,
+                cookies=profile,
+            )
+            info, checks = await download(profile)
+            # The general profile's refusal proves the video members-only.
+            info = {**info, "availability": "subscriber_only"}
     media = _media_path(info) or r.workdir / "missing"
     if r.kind is JobKind.REPLACE:
         # The swap writes the audio copy of the remuxed file.

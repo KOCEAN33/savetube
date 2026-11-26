@@ -52,6 +52,14 @@ REFUSE_DEGRADED = "savetube_refuse_degraded"
 DEGRADED_HEIGHT = 360
 # DegradedFormats' text, which reaches the parent inside the child's error.
 DEGRADED_MARKER = "only a degraded format list"
+# yt-dlp's text when a requested format is not in the list.
+FORMAT_GONE = "Requested format is not available"
+# yt-dlp's warning when YouTube served a client's formats without URLs, under
+# its SABR-only streaming experiment (https://github.com/yt-dlp/yt-dlp/issues/12482).
+# YouTube runs it per account, so a session without cookies still gets the URLs.
+SABR_WARNING_MARKERS = ("sabr-only streaming",)
+# The prefix `download` puts on a failure to pick a format after that warning.
+SABR_MARKER = "YouTube withheld format URLs from this session (SABR)"
 
 
 class NotStarted(Exception):
@@ -59,8 +67,9 @@ class NotStarted(Exception):
 
 
 class DegradedFormats(Exception):
-    def __init__(self, info: dict[str, Any]) -> None:
-        super().__init__(f"YouTube offered {DEGRADED_MARKER}: {info.get('format_id')}")
+    def __init__(self, info: dict[str, Any], *, sabr: bool = False) -> None:
+        text = f"YouTube offered {DEGRADED_MARKER}: {info.get('format_id')}"
+        super().__init__(f"{SABR_MARKER}: {text}" if sabr else text)
 
 
 def degraded(info: dict[str, Any]) -> bool:
@@ -78,6 +87,12 @@ def degraded(info: dict[str, Any]) -> bool:
 def degraded_formats(message: str) -> bool:
     """Whether a failure is DegradedFormats."""
     return DEGRADED_MARKER in message
+
+
+def sabr_only(message: str) -> bool:
+    """Whether a failure to pick a format followed YouTube's SABR warning, as
+    `download` raises it."""
+    return SABR_MARKER in message
 
 
 # yt-dlp's text when YouTube refuses this client rather than the video. Each
@@ -441,18 +456,22 @@ class _DownloadLogger(YtdlpLogger):
     LIVE_ENDED_MARKERS. While `wait_for_video` is set, yt-dlp only warns that
     text and extracts again forever. Without the option, it raises "No video
     formats found", so `download` raises the kept text instead. Also notes a
-    CHALLENGE_MARKERS warning, whose failure `download` names as such."""
+    CHALLENGE_MARKERS warning, whose failure `download` names as such, and a
+    SABR_WARNING_MARKERS warning."""
 
     def __init__(self) -> None:
         self.ydl: yt_dlp.YoutubeDL | None = None
         self.final: str | None = None
         self.challenge = False
+        self.sabr = False
 
     def warning(self, msg: str) -> None:
         super().warning(msg)
         text = msg.lower()
         if any(marker in text for marker in CHALLENGE_MARKERS):
             self.challenge = True
+        if any(marker in text for marker in SABR_WARNING_MARKERS):
+            self.sabr = True
         if self.ydl is not None and (members_only(msg) or _live_ended(msg)):
             self.final = msg
             self.ydl.params.pop("wait_for_video", None)
@@ -480,7 +499,8 @@ def download(
 
     With WAIT_UNTIL in `params`, a stream with no format chosen by then
     raises NotStarted. With REFUSE_DEGRADED, a `degraded` pick raises
-    DegradedFormats before any byte."""
+    DegradedFormats before any byte. A degraded pick or a requested format
+    missing after YouTube's SABR warning fails with SABR_MARKER."""
     logger = _DownloadLogger()
     params = {**params, "logger": logger}
     wait_until = params.pop(WAIT_UNTIL, None)
@@ -490,7 +510,7 @@ def download(
 
     def before_download(info: dict[str, Any]) -> None:
         if refuse_degraded and degraded(info):
-            raise DegradedFormats(info)
+            raise DegradedFormats(info, sabr=logger.sabr)
         chosen.set()
         if on_format is not None:
             on_format(info)
@@ -521,6 +541,8 @@ def download(
             # The error itself names a symptom, such as "The page needs to be reloaded".
             if logger.challenge and not chosen.is_set():
                 raise yt_dlp.utils.DownloadError(f"{CHALLENGE_LOG}: {e}") from e
+            if logger.sabr and not chosen.is_set() and FORMAT_GONE in str(e):
+                raise yt_dlp.utils.DownloadError(f"{SABR_MARKER}: {e}") from e
             raise
         finally:
             if timer is not None:

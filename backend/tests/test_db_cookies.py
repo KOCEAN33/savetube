@@ -690,8 +690,9 @@ def _cookie_step(cookies, then):
     """A runner step that records the call's cookie profile, then runs `then`."""
 
     async def step(params, report):
-        text = await asyncio.to_thread(Path(params["cookiefile"]).read_text)
-        cookies.append(text.removeprefix("# ").strip())
+        path = params.get("cookiefile")
+        text = await asyncio.to_thread(Path(path).read_text) if path else None
+        cookies.append(text and text.removeprefix("# ").strip())
         return await then(params, report)
 
     return step
@@ -752,6 +753,40 @@ async def test_another_refusal_takes_no_member_profile(settings):
     assert cookies == ["general"]
     assert jobs[1].state is JobState.FAILED
     assert (video.type, video.availability) == (VideoType.SHORTS, None)
+
+
+def _sabr_error():
+    from savetube.ytdl import SABR_MARKER
+
+    return (
+        f"DownloadError: {SABR_MARKER}: ERROR: [youtube] v1: Requested format is not"
+        " available. Use --list-formats for a list of available formats"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_sabr_refusal_retries_once_without_cookies(settings):
+    settings = _short_job_rows(settings, member=False)
+    cookies = []
+    runner = _Steps(
+        _cookie_step(cookies, _refuse(_sabr_error())),
+        _cookie_step(cookies, _finished()),
+    )
+    jobs, video = await _run_steps(settings, runner)
+    assert cookies == ["general", None]
+    assert jobs[1].state is JobState.SUCCEEDED
+    assert video.type is not VideoType.MEMBERS and video.availability is None
+
+
+@pytest.mark.anyio
+async def test_a_sabr_refusal_of_a_members_video_takes_no_cookie_free_run(settings):
+    settings = _short_job_rows(settings, member=True)
+    _sql(settings, "UPDATE video SET type = 'members' WHERE id = 'v1'")
+    cookies = []
+    runner = _Steps(_cookie_step(cookies, _refuse(_sabr_error())))
+    jobs, _ = await _run_steps(settings, runner)
+    assert cookies == ["main"]
+    assert jobs[1].state is not JobState.SUCCEEDED
 
 
 @pytest.mark.anyio
