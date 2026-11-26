@@ -1,0 +1,30 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  timezone: "Asia/Seoul",
+  // A merge to main deploys, so updates land on develop and ship with the next release.
+  baseBranchPatterns: ["develop"],
+  // Branch creation window: Saturday morning, once a week.
+  schedule: ["* 6-11 * * 6"],
+  dependencyDashboard: { enabled: true },
+  separateMajorMinor: true,
+  separateMultipleMajor: true,
+  packageRules: [
+    { matchUpdateTypes: ["major"], addLabels: ["major"] },
+    { matchUpdateTypes: ["minor", "patch", "digest", "pin"], groupName: "non-major" },
+    {
+      // YouTube changes break a stale yt-dlp within days, so these land at
+      // once. The pot provider sidecar tag must equal the plugin version.
+      matchPackageNames: [
+        "yt-dlp",
+        "yt-dlp-ejs",
+        "bgutil-ytdlp-pot-provider",
+        "brainicism/bgutil-ytdlp-pot-provider",
+      ],
+      groupName: "yt-dlp",
+      schedule: ["at any time"],
+      automerge: true,
+      automergeType: "branch",
+    },
+  ],
+}

@@ -47,5 +47,5 @@ One image, three roles, plus a recorder Job per live.
 - Each archive download runs in its own child process. A Python thread cannot be stopped from outside, and a cancel or a hung download needs a process kill. A recorder is already one process in its own pod.
 - `yt-dlp[default]` pins the matching `yt-dlp-ejs`.
 - `bgutil-ytdlp-pot-provider` installs from PyPI as a yt-dlp plugin. The plugin is the client; the provider server runs as the sidecar.
-- yt-dlp, `yt-dlp-ejs`, and the plugin sit in one lockfile. Renovate bumps them, and the image rebuilds on each bump.
+- yt-dlp, `yt-dlp-ejs`, and the plugin sit in one lockfile. Renovate (`renovate.json5`) lands their updates on develop as soon as the `test` workflow passes on its branch, because YouTube changes break a stale yt-dlp within days. Other updates come as a weekly grouped PR into develop, and each major as its own PR.
 - The image adds Deno and ffmpeg. The base image is glibc, because Deno does not support musl.
