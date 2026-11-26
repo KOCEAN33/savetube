@@ -8,7 +8,6 @@ from datetime import datetime
 from sqlalchemy import Text, column, func, select, table, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from savetube.cookies import videos_using, videos_without_member
 from savetube.db.models import CookieProfile, Job, JobState
 from savetube.limits import (
     DISPATCH_ORDER,
@@ -24,6 +23,7 @@ from savetube.limits import (
     window_opens,
 )
 from savetube.logs import emit
+from savetube.membership import videos_using, videos_without_member
 
 log = logging.getLogger(__package__)
 

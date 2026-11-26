@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from savetube import cookies, encode, logs, removal, scan, watch
+from savetube import encode, logs, membership, removal, scan, watch
 from savetube.config import Settings
 from savetube.db.models import Source
 from savetube.integrity import Tools
@@ -69,7 +69,7 @@ def create_app(
     encodes: asyncio.Lock,
     moves: asyncio.Lock,
     lister: scan.Lister,
-    prober: cookies.Prober,
+    prober: membership.Prober,
     listings: asyncio.Semaphore,
 ) -> FastAPI:
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)

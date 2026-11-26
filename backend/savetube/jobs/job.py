@@ -15,7 +15,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from savetube import audio, cookies, integrity, logs, watch
+from savetube import audio, cookies, integrity, logs, membership, watch
 from savetube.config import Settings
 from savetube.db import default_sessionmaker
 from savetube.db.models import CookieProfile, Job, JobKind, JobState, Video, VideoState
@@ -199,7 +199,7 @@ async def _begin(
             pinned = video.resume_format if video is not None else None
         members = video is not None and video.type is VideoType.MEMBERS
         profile = (
-            await cookies.for_video(session, video, cookies.profiles(settings))
+            await membership.for_video(session, video, cookies.profiles(settings))
             if video is not None
             else await cookies.general(session)
         )
@@ -488,7 +488,7 @@ async def _download(
     except DownloadFailed as e:
         if begun.members or not members_only(str(e)):
             raise
-        profile = await cookies.mark_members(r.sessionmaker, settings, r.video_id)
+        profile = await membership.mark_members(r.sessionmaker, settings, r.video_id)
         if profile is None:
             raise
         emit(log, logging.INFO, "job.member_retry", job=r.job_id, video=r.video_id, cookies=profile)
@@ -773,6 +773,7 @@ async def _record_failed(r: _Run, e: Exception, *, gone: bool = False) -> bool:
         job.state = JobState.FAILED
         job.finished_at = datetime.now(UTC)
         job.log_tail = (str(e) or type(e).__name__)[-LOG_TAIL_CHARS:]
+        await membership.note_level(session, r.video_id, str(e))
         await _set_video_state(session, r.video_id, VideoState.GONE if gone else VideoState.FAILED)
         await _pin(session, r.video_id, None)
         await session.commit()

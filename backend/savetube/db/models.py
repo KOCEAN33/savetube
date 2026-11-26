@@ -310,6 +310,9 @@ class Video(Base):
     # The format ids an interrupted archive download chose, so its retry
     # resumes the parts in `.incoming/<video id>/`. Null without parts.
     resume_format: Mapped[str | None] = mapped_column(Text)
+    # The membership level YouTube named when it refused the video, such as a
+    # channel's higher tier. Null when no refusal named one.
+    members_level: Mapped[str | None] = mapped_column(Text)
     # The integrity checks the stored download passed (savetube.integrity).
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     verified_checks: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
