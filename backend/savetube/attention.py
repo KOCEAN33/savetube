@@ -54,18 +54,23 @@ def dismissed_job() -> ColumnElement[bool]:
 
 def resolved_failure() -> ColumnElement[bool]:
     """A failed or interrupted archive or replace run a later run of its kind
-    and video fixed: a success, or for an interrupted run any later failure.
-    The query must join Video on Job.video_id."""
+    and video fixed or took over: a success, any later failure, or for a
+    failed run a retry waiting or running. So a video lists one failure, its
+    newest. The query must join Video on Job.video_id."""
     later = aliased(Job)
-    resolved = exists().where(
-        later.video_id == Job.video_id,
-        later.kind == Job.kind,
-        or_(
-            later.state == JobState.SUCCEEDED,
-            and_(Job.state == JobState.INTERRUPTED, later.state == JobState.FAILED),
-        ),
+    same = and_(later.video_id == Job.video_id, later.kind == Job.kind)
+    ended_later = and_(
+        later.state.in_([JobState.SUCCEEDED, JobState.FAILED]),
         later.finished_at > Job.finished_at,
     )
+    # An interrupted row records a run of an earlier job, which goes back to
+    # waiting with its lower id, so only a failed run counts a newer id.
+    retrying = and_(
+        Job.state == JobState.FAILED,
+        later.state.in_([JobState.QUEUED, JobState.RUNNING]),
+        later.id > Job.id,
+    )
+    resolved = exists().where(same, or_(ended_later, retrying))
     return and_(
         Job.kind.in_(DOWNLOAD_KINDS),
         Job.state.in_([JobState.FAILED, JobState.INTERRUPTED]),

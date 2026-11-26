@@ -256,6 +256,27 @@ async def test_an_ended_recorder_with_no_outcome_marks_its_open_job_missed(setti
 
 
 @pytest.mark.anyio
+async def test_a_running_job_whose_recorder_is_gone_ends_missed(settings):
+    _record_rows(settings, (1, "running", "NULL"))
+    _sql(settings, "UPDATE job SET started_at = '2026-10-23 15:00:00+00' WHERE id = 1")
+    jobs, videos = await _settle(settings, {})
+    assert jobs[1].state is JobState.MISSED
+    assert jobs[1].miss_reason is MissReason.RECORDER_FAILED
+    assert jobs[1].finished_at == NOW
+    assert videos["v1"].state is VideoState.FAILED
+
+
+@pytest.mark.anyio
+async def test_a_recorder_started_this_tick_is_not_settled_before_it_is_listed(settings):
+    # NOW is 15:57, and the listing predates this tick's start.
+    _record_rows(settings, (1, "running", "NULL"))
+    _sql(settings, "UPDATE job SET started_at = '2026-10-23 15:57:00+00' WHERE id = 1")
+    jobs, videos = await _settle(settings, {})
+    assert jobs[1].state is JobState.RUNNING and jobs[1].finished_at is None
+    assert videos["v1"].state is VideoState.PENDING
+
+
+@pytest.mark.anyio
 async def test_the_outcome_of_a_job_no_longer_open_is_deleted_unapplied(settings):
     _record_rows(settings, (1, "cancelled", "NULL"))
     _recorded(settings, 1, "v1")

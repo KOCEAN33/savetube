@@ -466,6 +466,9 @@ def test_the_api_lists_the_job_video_and_stats(server, downloaded, seeded):
     assert job["retryable"] is False
     r = server.post(f"/api/jobs/{seeded['job']}/retry", headers=WRITE)
     assert r.status_code == 409
+    # The seeded channel's one job succeeded, so nothing is retried.
+    r = server.post("/api/jobs/retry-failed", params={"channel_id": CHANNEL_ID}, headers=WRITE)
+    assert r.status_code == 200 and r.json() == {"job_ids": []}
 
     r = server.get("/api/jobs/counts", params={"kind": "archive", "channel_id": CHANNEL_ID})
     assert r.status_code == 200

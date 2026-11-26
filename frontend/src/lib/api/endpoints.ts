@@ -74,6 +74,8 @@ export const mutations = {
     request<Encode>("POST", withQuery(`/api/encode/jobs/${id}/cancel`, pages)),
   // Retryable jobs only (Job.retryable): queues a new archive job for the video.
   retryJob: (id: number) => request<{ job_id: number }>("POST", `/api/jobs/${id}/retry`),
+  // Every job retryJob takes at once.
+  retryFailedJobs: () => request<{ job_ids: number[] }>("POST", "/api/jobs/retry-failed"),
   // Failed jobs only: the video may be queued again.
   requeueEncodeJob: (id: number, pages: EncodePages) =>
     request<Encode>("POST", withQuery(`/api/encode/jobs/${id}/requeue`, pages)),

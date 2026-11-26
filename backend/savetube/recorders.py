@@ -119,11 +119,10 @@ async def settle_recorders(
     sessionmaker: async_sessionmaker, settings: Settings, now: datetime, existing: dict[int, str]
 ) -> None:
     """Apply the outcome of each ended recorder Job whose row is still queued
-    or running, then delete the outcome file. A failure leaves the file, and
-    the next call applies it again."""
+    or running, then delete the outcome file. A running row whose Job is gone,
+    such as one deleted by hand, settles as an ended Job. A failure leaves the
+    file, and the next call applies it again."""
     ended = {job_id: status for job_id, status in existing.items() if status in ENDED}
-    if not ended:
-        return
     async with sessionmaker() as session:
         open_ids = set(
             await session.scalars(
@@ -134,6 +133,20 @@ async def settle_recorders(
                 )
             )
         )
+        # start_recorders starts rows at `now`, after `existing` was listed,
+        # so only a row started before `now` has lost its Job.
+        gone = set(
+            await session.scalars(
+                select(Job.id).where(
+                    Job.kind == JobKind.RECORD,
+                    Job.state == JobState.RUNNING,
+                    Job.id.not_in(existing),
+                    Job.started_at < now,
+                )
+            )
+        )
+    ended |= dict.fromkeys(gone, "gone")
+    open_ids |= gone
     root = settings.incoming_root
     for job_id, status in ended.items():
         if job_id in open_ids:

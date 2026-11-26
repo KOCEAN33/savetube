@@ -1,10 +1,11 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useSearchParams } from "react-router"
 
 import { RunningJob } from "@/components/job-row"
 import { JobsTable } from "@/components/jobs-table"
 import { Pagination } from "@/components/pagination"
-import { Page, PageSection, QueryState } from "@/components/query-state"
+import { ErrorBox, Page, PageSection, QueryState } from "@/components/query-state"
+import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import {
@@ -15,7 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { usePageParam } from "@/hooks/use-page-param"
-import { api, type Job, type JobState } from "@/lib/api"
+import { api, mutations, type Job, type JobState } from "@/lib/api"
 import { DOWNLOAD_KINDS, FINISHED_JOB_STATES, JOB_PAGE } from "@/lib/constants"
 import { queryKeys } from "@/lib/query-keys"
 import { refetchMs } from "@/lib/refetch"
@@ -39,6 +40,11 @@ export function DownloadsPage() {
   const unresolved = params.get("resolved") !== "show"
   const [queuedPage, setQueuedPage] = usePageParam("qpage")
   const [recentPage, setRecentPage] = usePageParam("fpage")
+  const queryClient = useQueryClient()
+  const retryFailed = useMutation({
+    mutationFn: mutations.retryFailedJobs,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: queryKeys.jobs() }),
+  })
 
   const running = useQuery({
     queryKey: queryKeys.runningJobs(),
@@ -125,6 +131,21 @@ export function DownloadsPage() {
         title="Finished"
         actions={
           <div className="flex flex-wrap items-center gap-4">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={retryFailed.isPending}
+              onClick={() => retryFailed.mutate()}
+            >
+              Retry all failed
+            </Button>
+            {retryFailed.data && (
+              <span className="text-sm text-muted-foreground" role="status">
+                {retryFailed.data.job_ids.length === 0
+                  ? "Nothing to retry"
+                  : `${retryFailed.data.job_ids.length} queued`}
+              </span>
+            )}
             <div className="flex items-center gap-2">
               <Checkbox
                 id="downloads-hide-resolved"
@@ -152,6 +173,7 @@ export function DownloadsPage() {
           </div>
         }
       >
+        {retryFailed.error && <ErrorBox error={retryFailed.error} />}
         <QueryState query={recent}>
           {(page) => (
             <>

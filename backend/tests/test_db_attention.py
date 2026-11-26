@@ -265,3 +265,30 @@ def test_a_job_names_the_kind_its_dismissal_takes(settings):
 
     assert kinds == {1: "archive_failed", 2: "record_failed"}
     assert left == []
+
+
+def test_a_video_whose_archive_failed_twice_is_listed_once_by_its_newer_job(settings):
+    _videos(settings, "failed")
+    _job(settings, 1, "archive", "failed", "v1", "2026-11-01T00:00:00Z")
+    _job(settings, 2, "archive", "failed", "v1", "2026-11-02T00:00:00Z")
+
+    with _api(settings) as api:
+        listed = _listed(api)
+        failed = api.get("/api/jobs", params={"unresolved": True, "state": "failed"}).json()
+
+    assert listed == [("archive_failed", "2")]
+    assert [j["id"] for j in failed] == [2]
+
+
+@pytest.mark.parametrize("later", ["queued", "running"])
+def test_an_archive_failure_a_later_job_is_working_on_is_not_listed(settings, later):
+    _videos(settings, "pending")
+    _job(settings, 1, "archive", "failed", "v1", "2026-11-01T00:00:00Z")
+    _sql(
+        settings,
+        "INSERT INTO job (id, kind, state, video_id, attempts) VALUES"
+        f" (2, 'archive', '{later}', 'v1', 0)",
+    )
+
+    with _api(settings) as api:
+        assert [i for i in _listed(api) if i[0] == "archive_failed"] == []

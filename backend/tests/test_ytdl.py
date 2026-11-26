@@ -665,3 +665,67 @@ def test_download_takes_a_list_that_is_not_degraded(tmp_path, monkeypatch, forma
     assert error is None
     # The media download ran: a refusal comes before any request.
     assert media.paths
+
+
+CHALLENGE_WARNINGS = {
+    "n_challenge": (
+        "n challenge solving failed: Some formats may be missing. Ensure you have a supported"
+        " JavaScript runtime and challenge solver script distribution installed."
+    ),
+    "signature": (
+        "Signature solving failed: Some formats may be missing. Ensure you have a supported"
+        " JavaScript runtime and challenge solver script distribution installed."
+    ),
+}
+
+
+def _reload_failure(monkeypatch, warnings):
+    """yt_dlp.YoutubeDL answers `fake:v1` with `warnings`, then the reload error."""
+    import yt_dlp
+    from yt_dlp.extractor.common import InfoExtractor
+    from yt_dlp.utils import ExtractorError
+
+    class _FakeIE(InfoExtractor):
+        _VALID_URL = r"fake:(?P<id>\w+)"
+
+        def _real_extract(self, url):
+            for warning in warnings:
+                self.report_warning(warning, "v1")
+            raise ExtractorError("The page needs to be reloaded.", expected=True)
+
+    class _YoutubeDL(yt_dlp.YoutubeDL):
+        def __init__(self, params):
+            super().__init__(params, auto_init=False)
+            self.add_info_extractor(_FakeIE())
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _YoutubeDL)
+
+
+def _reload_error(tmp_path):
+    from yt_dlp.utils import DownloadError
+
+    with pytest.raises(DownloadError) as caught:
+        params = build_params(tmp_path) | _NO_SLEEP | {"quiet": True, "noprogress": True}
+        download("fake:v1", params)
+    return str(caught.value)
+
+
+@pytest.mark.parametrize("warning", list(CHALLENGE_WARNINGS.values()), ids=list(CHALLENGE_WARNINGS))
+def test_a_failure_after_a_js_challenge_warning_names_the_challenge(tmp_path, monkeypatch, warning):
+    """yt-dlp behind YouTube's player warned that a JS challenge failed, then
+    failed with 'The page needs to be reloaded.', which alone names no cause."""
+    from savetube.ytdl import challenge_failed
+
+    _reload_failure(monkeypatch, [warning])
+    text = _reload_error(tmp_path)
+    assert challenge_failed(text)
+    assert "The page needs to be reloaded" in text
+
+
+def test_a_failure_with_no_challenge_warning_is_no_challenge_failure(tmp_path, monkeypatch):
+    from savetube.ytdl import challenge_failed
+
+    _reload_failure(monkeypatch, [])
+    text = _reload_error(tmp_path)
+    assert "The page needs to be reloaded" in text
+    assert not challenge_failed(text)
