@@ -253,3 +253,74 @@ def test_api_unresolved_drops_an_interrupted_row_a_later_failure_followed(settin
     assert 4472 not in ids
     assert 4340 in ids
     assert {5001, 5003} <= ids
+
+
+NEW_JOBS = "SELECT id, kind, state, video_id FROM job WHERE id > 100 ORDER BY video_id"
+
+
+def _failures_across_videos(settings):
+    """Failed archive jobs of v1 (twice), v2 (in UC2), a stored v3, and v4, whose
+    failure a queued job already follows."""
+    _sql(
+        settings,
+        "INSERT INTO channel (id, name, dir_name) VALUES"
+        " ('UC1', 'A', 'A [UC1]'), ('UC2', 'B', 'B [UC2]')",
+        "INSERT INTO video (id, channel_id, type, title, state) VALUES"
+        " ('v1', 'UC1', 'videos', 't', 'failed'), ('v2', 'UC2', 'videos', 't', 'failed'),"
+        " ('v3', 'UC1', 'videos', 't', 'complete'), ('v4', 'UC1', 'videos', 't', 'pending')",
+        "INSERT INTO job (id, kind, state, video_id, attempts, log_tail, finished_at) VALUES"
+        " (1, 'archive', 'failed', 'v1', 1, 'ERROR: x', now() - interval '3 hours'),"
+        " (2, 'archive', 'failed', 'v1', 2, 'ERROR: x', now() - interval '2 hours'),"
+        " (3, 'archive', 'failed', 'v2', 1, 'ERROR: x', now() - interval '2 hours'),"
+        " (4, 'archive', 'failed', 'v3', 1, 'ERROR: x', now() - interval '2 hours'),"
+        " (5, 'archive', 'failed', 'v4', 1, 'ERROR: x', now() - interval '2 hours'),"
+        " (6, 'archive', 'queued', 'v4', 0, NULL, NULL)",
+        "SELECT setval('job_id_seq', 100)",
+    )
+
+
+def test_retry_failed_queues_one_archive_job_per_retryable_video(settings):
+    _failures_across_videos(settings)
+    with _api(settings) as client:
+        response = client.post("/api/jobs/retry-failed")
+        assert response.status_code == 200
+        new = _sql_rows(settings, NEW_JOBS)
+        assert [(j.kind, j.state, j.video_id) for j in new] == [
+            ("archive", "queued", "v1"),
+            ("archive", "queued", "v2"),
+        ]
+        assert sorted(response.json()["job_ids"]) == sorted(j.id for j in new)
+        assert (_video_state(settings, "v1"), _video_state(settings, "v2")) == (
+            "pending",
+            "pending",
+        )
+
+        # Every failure now has a newer job, so nothing is left to retry.
+        again = client.post("/api/jobs/retry-failed")
+        assert (again.status_code, again.json()) == (200, {"job_ids": []})
+    assert len(_sql_rows(settings, NEW_JOBS)) == 2
+
+
+def test_retry_failed_with_a_channel_retries_only_that_channels_videos(settings):
+    _failures_across_videos(settings)
+    with _api(settings) as client:
+        response = client.post("/api/jobs/retry-failed", params={"channel_id": "UC2"})
+    assert response.status_code == 200
+    [new] = _sql_rows(settings, NEW_JOBS)
+    assert (new.kind, new.state, new.video_id) == ("archive", "queued", "v2")
+    assert response.json() == {"job_ids": [new.id]}
+    assert _video_state(settings, "v1") == "failed"
+
+
+def test_retry_failed_queues_a_failed_replace_again(settings):
+    from test_db_format_watch import _failed_replace
+
+    _failed_replace(settings)
+    with _api(settings) as client:
+        response = client.post("/api/jobs/retry-failed")
+    assert response.status_code == 200
+    [new_id] = response.json()["job_ids"]
+    assert _sql_rows(
+        settings, f"SELECT kind, state, video_id, format_id, manual FROM job WHERE id = {new_id}"
+    ) == [("replace", "queued", "v1", "299", True)]
+    assert _video_state(settings) == "complete"

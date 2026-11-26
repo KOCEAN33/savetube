@@ -4,12 +4,14 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import ColumnElement, and_, exists, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from savetube.attention import JOB_FAILED, Kind, dismissed_job, open_failure, resolved_failure
 from savetube.db.models import Channel, Job, JobKind, JobState, Video, VideoState
 from savetube.joblog import (
     BLOCKED_LOG,
+    CHALLENGE_LOG,
     NETWORK_LOG,
     NO_MEMBER,
     PROFILE_BLOCKED_LOG,
@@ -223,6 +225,28 @@ async def retry_job(session: Session, job_id: int) -> dict[str, int]:
     )
     if not ok:
         raise HTTPException(status_code=409, detail="the job is not a retryable failure")
+    new = await _retry(session, job)
+    await session.commit()
+    emit(log, logging.INFO, "job.retried", job=job_id, video=job.video_id, new_job=new.id)
+    return {"job_id": new.id}
+
+
+@router.post("/jobs/retry-failed")
+async def retry_failed(session: Session, channel_id: str | None = None) -> dict[str, list[int]]:
+    """Retry every job POST /api/jobs/{id}/retry takes, of one channel with
+    `channel_id`. Returns the new jobs' ids."""
+    q = select(Job).join(Video, Video.id == Job.video_id).where(_retryable())
+    if channel_id:
+        q = q.where(_of_channel(channel_id))
+    retried = [(job, await _retry(session, job)) for job in await session.scalars(q)]
+    await session.commit()
+    for job, new in retried:
+        emit(log, logging.INFO, "job.retried", job=job.id, video=job.video_id, new_job=new.id)
+    return {"job_ids": [new.id for _, new in retried]}
+
+
+async def _retry(session: AsyncSession, job: Job) -> Job:
+    """Add the job that retries `job`, flushed so it has its id. The caller commits."""
     if job.kind is JobKind.REPLACE:
         new = Job(
             kind=JobKind.REPLACE, video_id=job.video_id, format_id=job.format_id, manual=job.manual
@@ -232,9 +256,8 @@ async def retry_job(session: Session, job_id: int) -> dict[str, int]:
         video.state = VideoState.PENDING
         new = Job(kind=JobKind.ARCHIVE, video_id=job.video_id)
     session.add(new)
-    await session.commit()
-    emit(log, logging.INFO, "job.retried", job=job_id, video=job.video_id, new_job=new.id)
-    return {"job_id": new.id}
+    await session.flush()
+    return new
 
 
 @router.get("/jobs/counts")
