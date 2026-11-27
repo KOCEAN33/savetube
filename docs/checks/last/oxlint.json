@@ -326,6 +326,6 @@
   ],
   "number_of_files": 71,
   "number_of_rules": 6,
-  "threads_count": 10,
-  "start_time": 0.328247667
+  "threads_count": 4,
+  "start_time": 0.582980524
 }
