@@ -1,0 +1,44 @@
+{
+    "version": "1.1.414",
+    "time": "1795780433799",
+    "generalDiagnostics": [
+        {
+            "file": "backend/savetube/__init__.py",
+            "severity": "error",
+            "message": "Cycle detected in import chain\n  backend/savetube/__init__.py\n  backend/savetube/cli.py",
+            "rule": "reportImportCycles"
+        },
+        {
+            "file": "backend/savetube/__init__.py",
+            "severity": "error",
+            "message": "Cycle detected in import chain\n  backend/savetube/__init__.py\n  backend/savetube/cli.py\n  backend/savetube/scheduler.py",
+            "rule": "reportImportCycles"
+        },
+        {
+            "file": "backend/savetube/__init__.py",
+            "severity": "error",
+            "message": "Cycle detected in import chain\n  backend/savetube/__init__.py\n  backend/savetube/cli.py\n  backend/savetube/scheduler.py\n  backend/savetube/cookies.py",
+            "rule": "reportImportCycles"
+        },
+        {
+            "file": "backend/savetube/__init__.py",
+            "severity": "error",
+            "message": "Cycle detected in import chain\n  backend/savetube/__init__.py\n  backend/savetube/cli.py\n  backend/savetube/scheduler.py\n  backend/savetube/encode.py",
+            "rule": "reportImportCycles"
+        },
+        {
+            "file": "backend/savetube/jobs/__init__.py",
+            "severity": "error",
+            "message": "Cycle detected in import chain\n  backend/savetube/jobs/__init__.py\n  backend/savetube/jobs/job.py",
+            "rule": "reportImportCycles"
+        }
+    ],
+    "summary": {
+        "filesAnalyzed": 66,
+        "errorCount": 5,
+        "warningCount": 0,
+        "informationCount": 0,
+        "timeInSec": 1.206
+    }
+}
+

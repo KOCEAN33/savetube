@@ -1,0 +1,331 @@
+{
+  "diagnostics": [
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/components/add-channel-dialog/index.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `Promise<void>`.",
+          "span": {
+            "offset": 3710,
+            "length": 65,
+            "line": 101,
+            "column": 7
+          }
+        },
+        {
+          "span": {
+            "offset": 3710,
+            "length": 65,
+            "line": 101,
+            "column": 7
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/components/add-channel-dialog/index.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `Promise<void>`.",
+          "span": {
+            "offset": 3782,
+            "length": 64,
+            "line": 102,
+            "column": 7
+          }
+        },
+        {
+          "span": {
+            "offset": 3782,
+            "length": 64,
+            "line": 102,
+            "column": 7
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/components/add-channel-dialog/index.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `void | Promise<void>`.",
+          "span": {
+            "offset": 3868,
+            "length": 55,
+            "line": 104,
+            "column": 7
+          }
+        },
+        {
+          "span": {
+            "offset": 3868,
+            "length": 55,
+            "line": 104,
+            "column": 7
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/components/data-table.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `void | Promise<void>`.",
+          "span": {
+            "offset": 5760,
+            "length": 27,
+            "line": 192,
+            "column": 21
+          }
+        },
+        {
+          "span": {
+            "offset": 5760,
+            "length": 27,
+            "line": 192,
+            "column": 21
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promise-returning function provided to property where a void return was expected.",
+      "code": "typescript(no-misused-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-misused-promises.html",
+      "filename": "frontend/src/components/format-watch.tsx",
+      "labels": [
+        {
+          "label": "This callback has type `() => Promise<void>`.",
+          "span": {
+            "offset": 18029,
+            "length": 2,
+            "line": 479,
+            "column": 33
+          }
+        },
+        {
+          "span": {
+            "offset": 18029,
+            "length": 2,
+            "line": 479,
+            "column": 33
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/components/sources-waiting-card.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `Promise<void>`.",
+          "span": {
+            "offset": 3492,
+            "length": 65,
+            "line": 88,
+            "column": 7
+          }
+        },
+        {
+          "span": {
+            "offset": 3492,
+            "length": 65,
+            "line": 88,
+            "column": 7
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/pages/channel/use-invalidate.ts",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `Promise<void>`.",
+          "span": {
+            "offset": 195,
+            "length": 64,
+            "line": 7,
+            "column": 5
+          }
+        },
+        {
+          "span": {
+            "offset": 195,
+            "length": 64,
+            "line": 7,
+            "column": 5
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/pages/channel/use-invalidate.ts",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `Promise<void>`.",
+          "span": {
+            "offset": 264,
+            "length": 65,
+            "line": 8,
+            "column": 5
+          }
+        },
+        {
+          "span": {
+            "offset": 264,
+            "length": 65,
+            "line": 8,
+            "column": 5
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/pages/channel/words-section.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `Promise<void>`.",
+          "span": {
+            "offset": 4060,
+            "length": 70,
+            "line": 106,
+            "column": 7
+          }
+        },
+        {
+          "span": {
+            "offset": 4060,
+            "length": 70,
+            "line": 106,
+            "column": 7
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/pages/channel/words-section.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `Promise<void>`.",
+          "span": {
+            "offset": 4319,
+            "length": 70,
+            "line": 113,
+            "column": 7
+          }
+        },
+        {
+          "span": {
+            "offset": 4319,
+            "length": 70,
+            "line": 113,
+            "column": 7
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/pages/settings.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `Promise<void>`.",
+          "span": {
+            "offset": 9763,
+            "length": 70,
+            "line": 268,
+            "column": 7
+          }
+        },
+        {
+          "span": {
+            "offset": 9763,
+            "length": 70,
+            "line": 268,
+            "column": 7
+          }
+        }
+      ]
+    },
+    {
+      "message": "Promises must be awaited, add void operator to ignore.",
+      "code": "typescript(no-floating-promises)",
+      "severity": "error",
+      "url": "https://oxc.rs/docs/guide/usage/linter/rules/typescript/no-floating-promises.html",
+      "help": "The promise must end with a call to .catch, or end with a call to .then with a rejection handler, or be explicitly marked as ignored with the `void` operator.",
+      "filename": "frontend/src/pages/videos.tsx",
+      "labels": [
+        {
+          "label": "This unhandled promise-like value has type `void | Promise<void>`.",
+          "span": {
+            "offset": 8690,
+            "length": 47,
+            "line": 259,
+            "column": 25
+          }
+        },
+        {
+          "span": {
+            "offset": 8690,
+            "length": 47,
+            "line": 259,
+            "column": 25
+          }
+        }
+      ]
+    }
+  ],
+  "number_of_files": 71,
+  "number_of_rules": 6,
+  "threads_count": 10,
+  "start_time": 0.328247667
+}

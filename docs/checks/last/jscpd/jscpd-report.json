@@ -1,0 +1,631 @@
+{
+  "duplicates": [
+    {
+      "firstFile": {
+        "end": 56,
+        "endLoc": {
+          "column": 56,
+          "line": 56,
+          "position": 1708
+        },
+        "name": ".github/workflows/periodic-checks.yml",
+        "start": 49,
+        "startLoc": {
+          "column": 6,
+          "line": 49,
+          "position": 1459
+        }
+      },
+      "format": "yaml",
+      "fragment": "      - uses: pnpm/action-setup@v6\n        with:\n          package_json_file: frontend/package.json\n      - uses: actions/setup-node@v7\n        with:\n          node-version: 26\n          cache: pnpm\n          cache-dependency-path: frontend/pnpm-lock.yaml",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 8,
+      "secondFile": {
+        "end": 38,
+        "endLoc": {
+          "column": 56,
+          "line": 38,
+          "position": 954
+        },
+        "name": ".github/workflows/test.yml",
+        "start": 31,
+        "startLoc": {
+          "column": 6,
+          "line": 31,
+          "position": 705
+        }
+      },
+      "tokens": 52
+    },
+    {
+      "firstFile": {
+        "end": 141,
+        "endLoc": {
+          "column": 3,
+          "line": 141,
+          "position": 4590
+        },
+        "name": "backend/savetube/cli.py",
+        "start": 128,
+        "startLoc": {
+          "column": 39,
+          "line": 128,
+          "position": 4299
+        }
+      },
+      "format": "python",
+      "fragment": "            return await audio.backfill(\n                make_sessionmaker(engine),\n                settings.archive_root,\n                tools=Tools(),\n                dry_run=args.dry_run,\n            )\n        finally:\n            await engine.dispose()\n\n    if asyncio.run(main())[\"failed\"]:\n        raise SystemExit(1)\n\n\ndef _verify_recordings(args: argparse.Namespace) -> None:",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 14,
+      "secondFile": {
+        "end": 163,
+        "endLoc": {
+          "column": 3,
+          "line": 163,
+          "position": 5215
+        },
+        "name": "backend/savetube/cli.py",
+        "start": 150,
+        "startLoc": {
+          "column": 48,
+          "line": 150,
+          "position": 4924
+        }
+      },
+      "tokens": 50
+    },
+    {
+      "firstFile": {
+        "end": 45,
+        "endLoc": {
+          "column": 32,
+          "line": 45,
+          "position": 1087
+        },
+        "name": "charts/savetube/templates/scheduler.yaml",
+        "start": 22,
+        "startLoc": {
+          "column": 20,
+          "line": 22,
+          "position": 582
+        }
+      },
+      "format": "yaml",
+      "fragment": "    verbs: [\"create\", \"list\"]\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: {{ $name }}\n  labels:\n    {{- include \"savetube.labels\" . | nindent 4 }}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: {{ $name }}\nsubjects:\n  - kind: ServiceAccount\n    name: {{ $name }}\n    namespace: {{ .Release.Namespace }}\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ $name }}\n  labels:\n    {{- include \"savetube.labels\" . | nindent 4 }}\n    app.kubernetes.io/component: scheduler",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 24,
+      "secondFile": {
+        "end": 46,
+        "endLoc": {
+          "column": 32,
+          "line": 46,
+          "position": 1102
+        },
+        "name": "charts/savetube/templates/web.yaml",
+        "start": 23,
+        "startLoc": {
+          "column": 17,
+          "line": 23,
+          "position": 597
+        }
+      },
+      "tokens": 131
+    },
+    {
+      "firstFile": {
+        "end": 51,
+        "endLoc": {
+          "column": 3,
+          "line": 51,
+          "position": 1717
+        },
+        "name": "frontend/src/components/add-channel-dialog/words-step.tsx",
+        "start": 44,
+        "startLoc": {
+          "column": 46,
+          "line": 44,
+          "position": 1485
+        }
+      },
+      "format": "tsx",
+      "fragment": "  for (const lists of [globalWords.data, words]) {\n    if (!lists) continue\n    for (const list of [\"include_words\", \"exclude_words\"] as const) {\n      for (const w of lists[list]) {\n        if (!present.has(w.toLowerCase())) present.set(w.toLowerCase(), list)\n      }\n    }\n  }",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 8,
+      "secondFile": {
+        "end": 134,
+        "endLoc": {
+          "column": 3,
+          "line": 134,
+          "position": 5118
+        },
+        "name": "frontend/src/pages/channel/words-section.tsx",
+        "start": 127,
+        "startLoc": {
+          "column": 53,
+          "line": 127,
+          "position": 4886
+        }
+      },
+      "tokens": 63
+    },
+    {
+      "firstFile": {
+        "end": 25,
+        "endLoc": {
+          "column": 35,
+          "line": 25,
+          "position": 1201
+        },
+        "name": "frontend/src/components/channel-jobs.tsx",
+        "start": 20,
+        "startLoc": {
+          "column": 73,
+          "line": 20,
+          "position": 991
+        }
+      },
+      "format": "tsx",
+      "fragment": "    queryFn: () => api.jobs({ kind: DOWNLOAD_KINDS, channel_id: channelId, state: [\"running\"] }),\n    refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),\n  })\n  const busy = (running.data?.length ?? 0) > 0\n  const queued = useQuery({\n    queryKey: queryKeys.queuedJobs(channelId, queuedPage),",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 6,
+      "secondFile": {
+        "end": 56,
+        "endLoc": {
+          "column": 35,
+          "line": 56,
+          "position": 2423
+        },
+        "name": "frontend/src/pages/downloads.tsx",
+        "start": 51,
+        "startLoc": {
+          "column": 50,
+          "line": 51,
+          "position": 2213
+        }
+      },
+      "tokens": 57
+    },
+    {
+      "firstFile": {
+        "end": 39,
+        "endLoc": {
+          "column": 24,
+          "line": 39,
+          "position": 1593
+        },
+        "name": "frontend/src/components/channel-jobs.tsx",
+        "start": 29,
+        "startLoc": {
+          "column": 29,
+          "line": 29,
+          "position": 1323
+        }
+      },
+      "format": "tsx",
+      "fragment": "        channel_id: channelId,\n        state: [\"queued\"],\n        order: \"dispatch\",\n        limit: JOB_PAGE,\n        offset: (queuedPage - 1) * JOB_PAGE,\n      }),\n    placeholderData: keepPreviousData,\n    refetchInterval: refetchMs(busy),\n  })\n  const recent = useQuery({\n    queryKey: queryKeys.channelRecentJobs(channelId, recentPage),",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 11,
+      "secondFile": {
+        "end": 69,
+        "endLoc": {
+          "column": 24,
+          "line": 69,
+          "position": 2780
+        },
+        "name": "frontend/src/pages/downloads.tsx",
+        "start": 59,
+        "startLoc": {
+          "column": 28,
+          "line": 59,
+          "position": 2510
+        }
+      },
+      "tokens": 51
+    },
+    {
+      "firstFile": {
+        "end": 63,
+        "endLoc": {
+          "column": 16,
+          "line": 63,
+          "position": 2133
+        },
+        "name": "frontend/src/components/downloads-card.tsx",
+        "start": 58,
+        "startLoc": {
+          "column": 15,
+          "line": 58,
+          "position": 1915
+        }
+      },
+      "format": "tsx",
+      "fragment": "  const active = useQuery({\n    queryKey: queryKeys.runningJobs(),\n    queryFn: () => api.jobs({ kind: DOWNLOAD_KINDS, state: [\"running\"] }),\n    refetchInterval: (q) => refetchMs(Boolean(q.state.data?.length)),\n  })\n  const busy = (active.data?.length ?? 0) > 0",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 6,
+      "secondFile": {
+        "end": 54,
+        "endLoc": {
+          "column": 16,
+          "line": 54,
+          "position": 2329
+        },
+        "name": "frontend/src/pages/downloads.tsx",
+        "start": 49,
+        "startLoc": {
+          "column": 16,
+          "line": 49,
+          "position": 2111
+        }
+      },
+      "tokens": 60
+    },
+    {
+      "firstFile": {
+        "end": 83,
+        "endLoc": {
+          "column": 8,
+          "line": 83,
+          "position": 3124
+        },
+        "name": "frontend/src/components/job-row.tsx",
+        "start": 70,
+        "startLoc": {
+          "column": 74,
+          "line": 70,
+          "position": 2656
+        }
+      },
+      "format": "tsx",
+      "fragment": "      <div className=\"flex flex-wrap items-baseline justify-between gap-2\">\n        {job.video_id ? (\n          <Link\n            className=\"min-w-0 truncate font-medium hover:underline\"\n            title={job.title ?? job.video_id}\n            to={`/videos/${encodeURIComponent(job.video_id)}`}\n          >\n            {job.title ?? job.video_id}\n          </Link>\n        ) : (\n          <span className=\"font-medium\">Job {job.id}</span>\n        )}\n        {job.video_id && <VideoYouTubeLink id={job.video_id} title={job.title} />}\n        {job.kind === \"replace\" && <ReplaceLabel job={job} />}",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 14,
+      "secondFile": {
+        "end": 74,
+        "endLoc": {
+          "column": 8,
+          "line": 74,
+          "position": 3283
+        },
+        "name": "frontend/src/components/recorders.tsx",
+        "start": 61,
+        "startLoc": {
+          "column": 58,
+          "line": 61,
+          "position": 2815
+        }
+      },
+      "tokens": 99
+    },
+    {
+      "firstFile": {
+        "end": 75,
+        "endLoc": {
+          "column": 6,
+          "line": 75,
+          "position": 2810
+        },
+        "name": "frontend/src/index.css",
+        "start": 69,
+        "startLoc": {
+          "column": 24,
+          "line": 69,
+          "position": 2634
+        }
+      },
+      "format": "css",
+      "fragment": "    --ring: oklch(0.708 0 0);\n    --chart-1: oklch(0.87 0 0);\n    --chart-2: oklch(0.556 0 0);\n    --chart-3: oklch(0.439 0 0);\n    --chart-4: oklch(0.371 0 0);\n    --chart-5: oklch(0.269 0 0);\n    --radius: 0.625rem;",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 7,
+      "secondFile": {
+        "end": 110,
+        "endLoc": {
+          "column": 6,
+          "line": 110,
+          "position": 4016
+        },
+        "name": "frontend/src/index.css",
+        "start": 104,
+        "startLoc": {
+          "column": 24,
+          "line": 104,
+          "position": 3840
+        }
+      },
+      "tokens": 71
+    },
+    {
+      "firstFile": {
+        "end": 261,
+        "endLoc": {
+          "column": 8,
+          "line": 261,
+          "position": 9451
+        },
+        "name": "frontend/src/pages/settings.tsx",
+        "start": 249,
+        "startLoc": {
+          "column": 58,
+          "line": 249,
+          "position": 9126
+        }
+      },
+      "format": "tsx",
+      "fragment": "      {invalid && <ErrorBox error={new Error(invalid)} />}\n      {save.isError && <ErrorBox error={save.error} />}\n      <div className=\"flex items-center gap-2\">\n        <Button type=\"submit\" disabled={save.isPending}>\n          Save\n        </Button>\n        {save.isSuccess && <span className=\"text-xs text-muted-foreground\">Saved.</span>}\n      </div>\n    </form>\n  )\n}\n\nfunction GlobalWordsForm({ initial }: { initial: TitleWords }) {",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 13,
+      "secondFile": {
+        "end": 307,
+        "endLoc": {
+          "column": 8,
+          "line": 307,
+          "position": 10949
+        },
+        "name": "frontend/src/pages/settings.tsx",
+        "start": 295,
+        "startLoc": {
+          "column": 8,
+          "line": 295,
+          "position": 10624
+        }
+      },
+      "tokens": 75
+    },
+    {
+      "firstFile": {
+        "end": 190,
+        "endLoc": {
+          "column": 21,
+          "line": 190,
+          "position": 5891
+        },
+        "name": "frontend/src/pages/videos.tsx",
+        "start": 183,
+        "startLoc": {
+          "column": 23,
+          "line": 183,
+          "position": 5689
+        }
+      },
+      "format": "tsx",
+      "fragment": "          {VIDEO_CODECS.map(([value, label]) => (\n            <SelectItem key={value} value={value}>\n              {label}\n            </SelectItem>\n          ))}\n        </SelectContent>\n      </Select>\n      <Select value={height ?? ALL} onValueChange={(v) => update({ height: v })}>",
+      "isNew": false,
+      "kind": "exact",
+      "lines": 8,
+      "secondFile": {
+        "end": 203,
+        "endLoc": {
+          "column": 21,
+          "line": 203,
+          "position": 6385
+        },
+        "name": "frontend/src/pages/videos.tsx",
+        "start": 196,
+        "startLoc": {
+          "column": 18,
+          "line": 196,
+          "position": 6183
+        }
+      },
+      "tokens": 53
+    }
+  ],
+  "statistics": {
+    "detectionDate": "2026-11-27T11:53:53.920Z",
+    "formats": {
+      "bash": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 49,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 4,
+        "tokens": 413
+      },
+      "css": {
+        "clones": 1,
+        "duplicatedLines": 7,
+        "duplicatedTokens": 71,
+        "lines": 130,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 5.384615384615385,
+        "percentageTokens": 4.742818971275885,
+        "sources": 1,
+        "tokens": 1497
+      },
+      "docker": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 47,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 1,
+        "tokens": 353
+      },
+      "javascript": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 562,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 2,
+        "tokens": 5069
+      },
+      "json": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 115,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 4,
+        "tokens": 447
+      },
+      "json5": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 30,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 1,
+        "tokens": 120
+      },
+      "makefile": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 33,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 1,
+        "tokens": 176
+      },
+      "markdown": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 1520,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 27,
+        "tokens": 40502
+      },
+      "markup": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 13,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 1,
+        "tokens": 90
+      },
+      "python": {
+        "clones": 1,
+        "duplicatedLines": 14,
+        "duplicatedTokens": 50,
+        "lines": 13063,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.10717293117966777,
+        "percentageTokens": 0.061134410114076804,
+        "sources": 63,
+        "tokens": 81787
+      },
+      "smarty": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 192,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 1,
+        "tokens": 2039
+      },
+      "text": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 12,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 1,
+        "tokens": 210
+      },
+      "toml": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 74,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 2,
+        "tokens": 245
+      },
+      "tsx": {
+        "clones": 7,
+        "duplicatedLines": 66,
+        "duplicatedTokens": 458,
+        "lines": 7577,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.8710571466279531,
+        "percentageTokens": 0.9764417439505383,
+        "sources": 48,
+        "tokens": 46905
+      },
+      "typescript": {
+        "clones": 0,
+        "duplicatedLines": 0,
+        "duplicatedTokens": 0,
+        "lines": 1217,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 0.0,
+        "percentageTokens": 0.0,
+        "sources": 18,
+        "tokens": 6456
+      },
+      "yaml": {
+        "clones": 2,
+        "duplicatedLines": 32,
+        "duplicatedTokens": 183,
+        "lines": 897,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 3.5674470457079153,
+        "percentageTokens": 3.958468526930565,
+        "sources": 12,
+        "tokens": 4623
+      }
+    },
+    "total": {
+      "clones": 11,
+      "duplicatedLines": 119,
+      "duplicatedTokens": 762,
+      "lines": 25531,
+      "newClones": 0,
+      "newDuplicatedLines": 0,
+      "percentage": 0.46610003525126315,
+      "percentageTokens": 0.39909496574696746,
+      "sources": 187,
+      "tokens": 190932
+    }
+  }
+}
