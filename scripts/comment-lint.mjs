@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Comment lint for a product repo: runs under node or bun with no dependency but the ast-grep binary.
-// Rules: https://github.com/KOCEAN33/llm-wiki/blob/main/practices/code-comments.md
+// Rules: the code comments practice in the owner's knowledge vault, which is not public.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
