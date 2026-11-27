@@ -1,0 +1,10 @@
+{
+  "name": "savetube-periodic-checks",
+  "private": true,
+  "devDependencies": {
+    "jscpd": "5.4.3",
+    "oxlint": "1.95.0",
+    "oxlint-tsgolint": "7.0.2009",
+    "pyright": "1.1.414"
+  }
+}
