@@ -2,44 +2,6 @@
   "duplicates": [
     {
       "firstFile": {
-        "end": 56,
-        "endLoc": {
-          "column": 56,
-          "line": 56,
-          "position": 1708
-        },
-        "name": ".github/workflows/periodic-checks.yml",
-        "start": 49,
-        "startLoc": {
-          "column": 6,
-          "line": 49,
-          "position": 1459
-        }
-      },
-      "format": "yaml",
-      "fragment": "      - uses: pnpm/action-setup@v6\n        with:\n          package_json_file: frontend/package.json\n      - uses: actions/setup-node@v7\n        with:\n          node-version: 26\n          cache: pnpm\n          cache-dependency-path: frontend/pnpm-lock.yaml",
-      "isNew": false,
-      "kind": "exact",
-      "lines": 8,
-      "secondFile": {
-        "end": 38,
-        "endLoc": {
-          "column": 56,
-          "line": 38,
-          "position": 954
-        },
-        "name": ".github/workflows/test.yml",
-        "start": 31,
-        "startLoc": {
-          "column": 6,
-          "line": 31,
-          "position": 705
-        }
-      },
-      "tokens": 52
-    },
-    {
-      "firstFile": {
         "end": 141,
         "endLoc": {
           "column": 3,
@@ -420,7 +382,7 @@
     }
   ],
   "statistics": {
-    "detectionDate": "2026-11-27T11:54:57.432Z",
+    "detectionDate": "2026-11-27T12:12:04.370Z",
     "formats": {
       "bash": {
         "clones": 0,
@@ -462,13 +424,13 @@
         "clones": 0,
         "duplicatedLines": 0,
         "duplicatedTokens": 0,
-        "lines": 562,
+        "lines": 176,
         "newClones": 0,
         "newDuplicatedLines": 0,
         "percentage": 0.0,
         "percentageTokens": 0.0,
-        "sources": 2,
-        "tokens": 5069
+        "sources": 1,
+        "tokens": 1630
       },
       "json": {
         "clones": 0,
@@ -603,29 +565,29 @@
         "tokens": 6456
       },
       "yaml": {
-        "clones": 2,
-        "duplicatedLines": 32,
-        "duplicatedTokens": 183,
-        "lines": 897,
+        "clones": 1,
+        "duplicatedLines": 24,
+        "duplicatedTokens": 131,
+        "lines": 836,
         "newClones": 0,
         "newDuplicatedLines": 0,
-        "percentage": 3.5674470457079153,
-        "percentageTokens": 3.958468526930565,
+        "percentage": 2.8708133971291865,
+        "percentageTokens": 3.0543250174865935,
         "sources": 12,
-        "tokens": 4623
+        "tokens": 4289
       }
     },
     "total": {
-      "clones": 11,
-      "duplicatedLines": 119,
-      "duplicatedTokens": 762,
-      "lines": 25531,
+      "clones": 10,
+      "duplicatedLines": 111,
+      "duplicatedTokens": 710,
+      "lines": 25084,
       "newClones": 0,
       "newDuplicatedLines": 0,
-      "percentage": 0.46610003525126315,
-      "percentageTokens": 0.39909496574696746,
-      "sources": 187,
-      "tokens": 190932
+      "percentage": 0.4425131557965237,
+      "percentageTokens": 0.3793565898514098,
+      "sources": 186,
+      "tokens": 187159
     }
   }
 }
