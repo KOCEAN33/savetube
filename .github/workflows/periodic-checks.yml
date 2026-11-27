@@ -1,77 +1,16 @@
+# Weekly periodic code checks. The tools and the workflow live in KOCEAN33/code-checks,
+# and the periodic-checks JSON config beside this workflow sets what this repository scans.
 name: periodic-checks
-
-# The weekly trend reading of lint findings, duplication, and import cycles on develop. It is not a
-# merge gate: the checks that gate a change are in the test and lint workflows. Findings new since
-# the last run land on develop as a work item, which the run.mjs script writes.
 on:
   schedule:
-    # Monday 06:17 in Asia/Seoul. Off the hour, when GitHub delays fewer scheduled runs.
     - cron: "17 21 * * 0"
   workflow_dispatch:
-
 permissions:
-  contents: read
-
-concurrency:
-  group: periodic-checks
-  cancel-in-progress: false
-
+  contents: write
 jobs:
-  # Ends the run when no commit but this workflow's own landed since the commit of the newest counts row.
-  gate:
-    runs-on: ubuntu-latest
-    outputs:
-      skip: ${{ steps.skip.outputs.skip }}
-      bot_name: ${{ steps.skip.outputs.bot_name }}
-      bot_email: ${{ steps.skip.outputs.bot_email }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: develop
-          fetch-depth: 0
-      - id: skip
-        run: node scripts/periodic-checks/run.mjs skip
-
-  checks:
-    needs: gate
-    if: needs.gate.outputs.skip == 'false'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      # The full history holds the last run's commit, which jscpd scans as its baseline.
-      - uses: actions/checkout@v7
-        with:
-          ref: develop
-          fetch-depth: 0
-      # setup-uv publishes no major tag.
-      - uses: astral-sh/setup-uv@v10.4.0
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: frontend/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 26
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-      # The type-aware oxlint rules read the frontend's dependency types.
-      - run: pnpm install --dir frontend --frozen-lockfile
-      - run: npm ci --prefix scripts/periodic-checks
-      - run: node scripts/periodic-checks/run.mjs run
-      - name: Commit and push
-        env:
-          BOT_NAME: ${{ needs.gate.outputs.bot_name }}
-          BOT_EMAIL: ${{ needs.gate.outputs.bot_email }}
-        run: |
-          git add docs/checks docs/next docs/NEXT.md
-          git diff --cached --quiet && exit 0
-          git config user.name "$BOT_NAME"
-          git config user.email "$BOT_EMAIL"
-          git commit -m "chore(checks): weekly periodic checks"
-          # A push to develop can land between the checkout and this push. Rebase and retry.
-          for i in 1 2 3 4 5; do
-            git push origin HEAD:develop && exit 0
-            sleep $((i * 2))
-            git pull --rebase origin develop
-          done
-          exit 1
+  periodic-checks:
+    uses: KOCEAN33/code-checks/.github/workflows/periodic-checks.yml@v1
+    with:
+      branch: develop
+      pnpm-package-json: frontend/package.json
+      setup: pnpm install --dir frontend --frozen-lockfile

@@ -1,0 +1,19 @@
+{
+  "exclude": [
+    "backend/tests/**",
+    "e2e/**",
+    "backend/savetube/migrations/versions/**",
+    "frontend/src/components/ui/**"
+  ],
+  "typescript": {
+    "installed": [
+      "frontend"
+    ]
+  },
+  "python": {
+    "sources": [
+      "backend/savetube"
+    ],
+    "importRoot": "backend"
+  }
+}
